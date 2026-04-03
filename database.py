@@ -28,7 +28,8 @@ class Database:
                 "settings": {
                     "default_markup_percent": 30
                 },
-                "processed_transactions": []
+                "processed_transactions": [],
+                "users": []
             })
 
     def _read(self) -> dict:
@@ -40,7 +41,8 @@ class Database:
                 "orders": {},
                 "custom_prices": {},
                 "settings": {},
-                "processed_transactions": []
+                "processed_transactions": [],
+                "users": []
             }
 
     def _write(self, data: dict):
@@ -175,3 +177,18 @@ class Database:
                 "total_cost": cost,
                 "total_profit": revenue - cost
             }
+
+    # === USERS ===
+    def add_user(self, user_id: int):
+        with self.lock:
+            data = self._read()
+            if "users" not in data:
+                data["users"] = []
+            if user_id not in data["users"]:
+                data["users"].append(user_id)
+                self._write(data)
+
+    def get_all_users(self) -> list:
+        with self.lock:
+            data = self._read()
+            return data.get("users", [])
