@@ -925,7 +925,7 @@ async def handle_admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
         buttons.append([InlineKeyboardButton("⬅️ Quay lại", callback_data="admin_home")])
         
         await query.edit_message_text(
-             "💰 **QUẢN LÝ GIÁ BÁN**\nChọn danh mục chứa sản phẩm bạn muốn sửa giá:",
+             "⚙️ **QUẢN LÝ SẢN PHẨM**\nChọn danh mục để quản lý các tính năng (Giá, Tên hàng, Danh mục,...):",
              parse_mode="Markdown",
              reply_markup=InlineKeyboardMarkup(buttons)
         )
