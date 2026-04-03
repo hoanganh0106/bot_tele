@@ -1033,14 +1033,19 @@ async def handle_admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
         sell_price = get_sell_price(key, info["price"] if info else 0)
         
         stock_status = "Không rõ"
+        is_custom_local = False
         if info:
             stock = info.get("stock", 0)
             status_txt = f"Còn hàng ({stock})" if stock > 0 else ("Hết hàng" if stock == 0 else "Đang cập nhật kho")
             stock_status = f"✅ {status_txt}" if stock > 0 else f"❌ {status_txt}"
+            is_custom_local = info.get("is_custom_local", False)
+            
+        source_txt = "🏷️ Hàng tự bán (Kho riêng)" if is_custom_local else "🌐 Hàng đối tác (API gốc)"
         
         text = (
             f"⚙️ **Cài đặt Sản Phẩm**\n"
             f"ID: `{key}`\n"
+            f"Nguồn gốc: **{source_txt}**\n"
             f"Trạng thái kho: **{stock_status}**\n"
             f"Tên hiển thị: **{current_name}**\n"
             f"Danh mục: {current_icon} {current_cat}\n"
