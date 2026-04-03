@@ -158,9 +158,12 @@ def classify_product(key: str, info: dict) -> tuple:
     if "spotify" in k or "spotify" in n or "music" in n: return "Spotify", "🎵", "spotify"
     return "Khác", "📦", "khac"
 
-def build_category_grid(products, callback_prefix):
+def build_category_grid(products, callback_prefix, is_admin=False):
     categories = {}
     for key, info in products.items():
+        if not is_admin and db.is_product_hidden(key):
+            continue
+            
         cat_name, icon, cat_id = classify_product(key, info)
         if cat_id not in categories:
             categories[cat_id] = {"name": cat_name, "icon": icon, "count": 0}
@@ -245,7 +248,7 @@ async def cmd_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await msg.edit_text("❌ Không thể tải sản phẩm lúc này. Vui lòng thử lại sau!")
         return
 
-    buttons = build_category_grid(products, "viewcat")
+    buttons = build_category_grid(products, "viewcat", is_admin=False)
     
     # Thêm nút cố định
     buttons.append([
@@ -882,6 +885,10 @@ async def handle_category_click(update: Update, context: ContextTypes.DEFAULT_TY
         
     buttons = []
     for key, info in products.items():
+        # KHÔNG hiển thị sản phẩm bị ẩn cho khách
+        if db.is_product_hidden(key):
+            continue
+            
         _, _, c_id = classify_product(key, info)
         if c_id == cat_id:
             sell_price = get_sell_price(key, info['price'])
@@ -966,7 +973,7 @@ async def handle_admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not products:
             return await query.edit_message_text("❌ Không lấy được dữ liệu.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Quay lại", callback_data="admin_home")]]))
             
-        buttons = build_category_grid(products, "admin_viewcat")
+        buttons = build_category_grid(products, "admin_viewcat", is_admin=True)
         buttons.append([InlineKeyboardButton("➕ Thêm sản phẩm tự bán", callback_data="admin_add_prod")])
         buttons.append([InlineKeyboardButton("➕ Thêm danh mục mới", callback_data="admin_add_cat")])
         buttons.append([InlineKeyboardButton("⬅️ Quay lại", callback_data="admin_home")])
@@ -1039,12 +1046,18 @@ async def handle_admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
             is_custom_local = info.get("is_custom_local", False)
             
         source_txt = "🏷️ Hàng tự bán (Kho riêng)" if is_custom_local else "🌐 Hàng đối tác (API gốc)"
-        
+        hide_status = "👁️ Đang hiển thị"
+        hide_btn_txt = "🙈 Ẩn sản phẩm"
+        if db.is_product_hidden(key):
+            hide_status = "❌ Đã ẨN với khách"
+            hide_btn_txt = "👀 Hiện sản phẩm"
+
         text = (
             f"⚙️ **Cài đặt Sản Phẩm**\n"
             f"ID: `{key}`\n"
             f"Nguồn gốc: **{source_txt}**\n"
-            f"Trạng thái kho: **{stock_status}**\n"
+            f"Trạng thái: **{hide_status}**\n"
+            f"Số lượng kho: **{stock_status}**\n"
             f"Tên hiển thị: **{current_name}**\n"
             f"Danh mục: {current_icon} {current_cat}\n"
             f"Giá bán hiện tại: {format_money(sell_price)}\n\n"
@@ -1054,7 +1067,8 @@ async def handle_admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
         buttons = [
             [InlineKeyboardButton("💰 Sửa giá", callback_data=f"admin_do_price_{key}"),
              InlineKeyboardButton("📦 Sửa tồn kho", callback_data=f"admin_do_stock_{key}")],
-            [InlineKeyboardButton("✏️ Đổi tên hiển thị", callback_data=f"admin_do_name_{key}")],
+            [InlineKeyboardButton("✏️ Đổi tên hiển thị", callback_data=f"admin_do_name_{key}"),
+             InlineKeyboardButton(hide_btn_txt, callback_data=f"admin_toggle_hide_{key}")],
             [InlineKeyboardButton("📜 Sửa nội dung/Mô tả", callback_data=f"admin_do_desc_{key}")],
             [InlineKeyboardButton("🔀 Chuyển danh mục", callback_data=f"admin_do_cat_{key}")],
             [InlineKeyboardButton("⬅️ Quay lại", callback_data="admin_products")]
@@ -1070,6 +1084,14 @@ async def handle_admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Hủy thay đổi", callback_data="admin_products")]])
         )
+
+    elif data.startswith("admin_toggle_hide_"):
+        key = data.replace("admin_toggle_hide_", "")
+        is_hidden = db.toggle_hidden_product(key)
+        await query.answer(f"{'✅ Đã ẩn' if is_hidden else '👁️ Đã hiện lại'} sản phẩm!", show_alert=True)
+        # Quay lại trang cài đặt sản phẩm đó để thấy update
+        query.data = f"admin_price_{key}"
+        await handle_admin_cb(update, context)
 
     elif data.startswith("admin_do_name_"):
         key = data.replace("admin_do_name_", "")

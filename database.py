@@ -46,6 +46,7 @@ class Database:
                 "custom_category_defs": {},
                 "custom_products": {},
                 "custom_stocks": {},
+                "custom_hiddens": [],
                 "settings": {},
                 "processed_transactions": [],
                 "users": []
@@ -105,6 +106,30 @@ class Database:
             return None
 
     # === CUSTOM PRICES ===
+    def get_hidden_products(self) -> list:
+        with self.lock:
+            data = self._read()
+            return data.get("custom_hiddens", [])
+
+    def is_product_hidden(self, key: str) -> bool:
+        with self.lock:
+            data = self._read()
+            return key in data.get("custom_hiddens", [])
+
+    def toggle_hidden_product(self, key: str) -> bool:
+        """Returns True if now hidden, False if now visible."""
+        with self.lock:
+            data = self._read()
+            if "custom_hiddens" not in data: data["custom_hiddens"] = []
+            if key in data["custom_hiddens"]:
+                data["custom_hiddens"].remove(key)
+                res = False
+            else:
+                data["custom_hiddens"].append(key)
+                res = True
+            self._write(data)
+            return res
+
     def get_custom_price(self, product_key: str) -> int | None:
         with self.lock:
             data = self._read()
