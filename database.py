@@ -332,6 +332,25 @@ class Database:
             }
             self._write(data)
 
+    def delete_custom_product(self, key: str):
+        """Xóa hoàn toàn sản phẩm thủ công."""
+        with self.lock:
+            data = self._read()
+            # Xóa khỏi custom_products
+            if "custom_products" in data and key in data["custom_products"]:
+                del data["custom_products"][key]
+            
+            # Xóa các thiết lập liên quan
+            for prop in ["custom_prices", "custom_names", "custom_categories", "custom_descriptions", "custom_stocks", "custom_accounts_inventory"]:
+                if prop in data and key in data[prop]:
+                    del data[prop][key]
+                    
+            # Bỏ ẩn nếu đang ẩn
+            if "hidden_products" in data and key in data["hidden_products"]:
+                data["hidden_products"].remove(key)
+                
+            self._write(data)
+
     # === SETTINGS ===
     def get_setting(self, key: str, default=None):
         with self.lock:

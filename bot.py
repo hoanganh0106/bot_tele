@@ -1369,12 +1369,16 @@ async def render_admin_product_detail(update, context, key):
         [InlineKeyboardButton("✏️ Đổi tên hiển thị", callback_data=f"admin_do_name_{key}"),
          InlineKeyboardButton(hide_btn_txt, callback_data=f"admin_toggle_hide_{key}")],
         [InlineKeyboardButton("📜 Sửa nội dung/Mô tả", callback_data=f"admin_do_desc_{key}")],
-        [InlineKeyboardButton("🔀 Chuyển danh mục", callback_data=f"admin_do_cat_{key}")],
-        [
-            InlineKeyboardButton("⬅️ Quay lại", callback_data=f"admin_viewcat_{cid}"),
-            InlineKeyboardButton("🏠 Thoát", callback_data="admin_home")
-        ]
+        [InlineKeyboardButton("🔀 Chuyển danh mục", callback_data=f"admin_do_cat_{key}")]
     ]
+    
+    if is_custom_local:
+        buttons.append([InlineKeyboardButton("🗑️ Xóa sản phẩm (Chỉ Hàng tự bán)", callback_data=f"admin_del_prod_{key}_{cid}")])
+        
+    buttons.append([
+        InlineKeyboardButton("⬅️ Quay lại", callback_data=f"admin_viewcat_{cid}"),
+        InlineKeyboardButton("🏠 Thoát", callback_data="admin_home")
+    ])
     await query.edit_message_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(buttons))
 async def handle_admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Xử lý click trong Admin Dashboard."""
@@ -1587,6 +1591,21 @@ async def handle_admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
         is_hidden = db.toggle_hidden_product(key)
         await query.answer(f"{'✅ Đã ẩn' if is_hidden else '👁️ Đã hiện lại'} sản phẩm!")
         await render_admin_product_detail(update, context, key)
+
+    elif data.startswith("admin_del_prod_"):
+        # Format: admin_del_prod_KEY_CID
+        parts = data.replace("admin_del_prod_", "").split("_")
+        key = parts[0]
+        cid = parts[1] if len(parts) > 1 else "khac"
+        
+        # Xóa sản phẩm
+        db.delete_custom_product(key)
+        invalidate_cache()
+        await query.answer("✅ Đã xóa sản phẩm thành công!", show_alert=True)
+        
+        # Quay lại menu trước đó bằng cách tạo data giả và chuyển hướng
+        query.data = f"admin_viewcat_{cid}"
+        await handle_admin_cb(update, context)
 
     elif data.startswith("admin_do_name_"):
         key = data.replace("admin_do_name_", "")
