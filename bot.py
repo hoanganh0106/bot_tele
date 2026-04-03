@@ -97,6 +97,65 @@ def generate_qr_url(amount: int, content: str) -> str:
     )
 
 
+def _generate_default_description(product_key: str, info: dict) -> str:
+    """Tự tạo mô tả mặc định dựa vào tên/key sản phẩm."""
+    name = info.get("name", product_key).lower()
+    key = product_key.lower()
+    
+    parts = []
+    
+    # Phát hiện thời hạn
+    if "1thang" in key or "1 tháng" in name or "1t" in key:
+        parts.append("⏱ Thời hạn: 1 tháng")
+    elif "3thang" in key or "3 tháng" in name or "3t" in key:
+        parts.append("⏱ Thời hạn: 3 tháng")
+    elif "6thang" in key or "6 tháng" in name or "6t" in key:
+        parts.append("⏱ Thời hạn: 6 tháng")
+    elif "1nam" in key or "1 năm" in name or "12thang" in key:
+        parts.append("⏱ Thời hạn: 1 năm")
+    elif "1m" in key:
+        parts.append("⏱ Thời hạn: 1 tháng")
+    elif "3m" in key:
+        parts.append("⏱ Thời hạn: 3 tháng")
+    elif "6m" in key:
+        parts.append("⏱ Thời hạn: 6 tháng")
+    elif "12m" in key or "1y" in key:
+        parts.append("⏱ Thời hạn: 1 năm")
+    
+    # Phát hiện bảo hành
+    if "kbh" in key or "kbh" in name or "không bh" in name:
+        parts.append("🛡 Bảo hành: Không")
+    elif "bh" in key or "bảo hành" in name or "bh " in name:
+        # Tìm thời gian bảo hành
+        import re as _re
+        bh_match = _re.search(r'bh\s*(\d+\s*[hH]|trọn đời|vĩnh viễn)', name)
+        if not bh_match:
+            bh_match = _re.search(r'bh\s*(\d+\s*[hH])', key)
+        if bh_match:
+            parts.append(f"🛡 Bảo hành: {bh_match.group(1)}")
+        else:
+            parts.append("🛡 Có bảo hành")
+    
+    # Loại tài khoản
+    if "cá nhân" in name or "canhan" in key or "personal" in name:
+        parts.append("👤 Loại: Tài khoản cá nhân")
+    elif "team" in name or "team" in key:
+        parts.append("👥 Loại: Tài khoản team/nhóm")
+    elif "gia đình" in name or "family" in name:
+        parts.append("👨‍👩‍👧‍👦 Loại: Gói gia đình")
+    
+    # Nếu có slot
+    if "slot" in key or "slot" in name:
+        parts.append("🎰 Hình thức: Slot (mời vào nhóm)")
+    
+    # Tự động nhận
+    if "test" not in key:
+        parts.append("⚡ Nhận tài khoản tự động sau thanh toán")
+    
+    if parts:
+        return "\n".join(parts)
+    return ""
+
 
 
 ALL_CATEGORIES = {
@@ -113,20 +172,38 @@ ALL_CATEGORIES = {
 }
 
 
-def get_all_products_merged() -> tuple[dict, int]:
+# Cache cho API
+_api_cache = {"data": None, "expiry": 0}
+API_CACHE_TTL = 10 # 10 giây
+
+def invalidate_cache():
+    """Xóa cache để lần gọi tiếp theo lấy dữ liệu mới."""
+    global _api_cache
+    _api_cache = {"data": None, "expiry": 0}
+
+def get_all_products_merged(force_refresh: bool = False) -> tuple[dict, int]:
+    global _api_cache
+    now = time.time()
+    
+    # Trả về cache nếu chưa hết hạn và không buộc refresh
+    if not force_refresh and _api_cache["data"] and now < _api_cache["expiry"]:
+        return _api_cache["data"]
+        
     products, balance = api.get_stock()
     if products is None:
         products = {}
         
     custom_products = db.get_custom_products()
     for k, v in custom_products.items():
-        products[k] = v
+        products[k] = dict(v) # Clone
         
     custom_stocks = db.get_custom_stocks()
     for k, v in products.items():
         if k in custom_stocks:
             products[k]["stock"] = custom_stocks[k]
             
+    _api_cache["data"] = (products, balance)
+    _api_cache["expiry"] = now + API_CACHE_TTL
     return products, balance
 
 def get_all_categories_merged() -> dict:
@@ -271,18 +348,27 @@ async def handle_product_select(update: Update, context: ContextTypes.DEFAULT_TY
     await query.answer()
 
     product_key = query.data.replace("prod_", "")
+    
+    # Xóa dữ liệu cũ để tránh lẫn giá từ sản phẩm trước
+    context.user_data.pop("selected_product", None)
+    context.user_data.pop("product_info", None)
+    context.user_data.pop("sell_price", None)
+    
     context.user_data["selected_product"] = product_key
 
-    # Lấy thông tin sản phẩm
+    # Lấy thông tin sản phẩm (dùng cache hiện tại, không cần force refresh)
     products, _ = get_all_products_merged()
     if not products or product_key not in products:
         await query.edit_message_text("❌ Sản phẩm không tồn tại hoặc server lỗi!")
         return
 
-    info = products[product_key]
+    # Clone info để KHÔNG mutate cache
+    info = dict(products[product_key])
     custom_name = db.get_custom_name(product_key)
     if custom_name:
         info["name"] = custom_name
+    
+    # Luôn tính giá bán từ nguồn chính xác nhất
     sell_price = get_sell_price(product_key, info["price"])
 
     context.user_data["product_info"] = info
@@ -290,18 +376,28 @@ async def handle_product_select(update: Update, context: ContextTypes.DEFAULT_TY
 
     # Check stock
     if info["stock"] == 0:
+        _, _, cid = classify_product(product_key, info)
         await query.edit_message_text(
             f"❌ **{info['name']}** hiện đã hết hàng!\n"
             "Vui lòng quay lại sau.",
-            parse_mode="Markdown"
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("⬅️ Quay lại", callback_data=f"viewcat_{cid}"),
+                 InlineKeyboardButton("🏠 Thoát", callback_data="reload_menu")]
+            ])
         )
         return
 
     if info["stock"] == -1:
+        _, _, cid = classify_product(product_key, info)
         await query.edit_message_text(
             f"🔄 **{info['name']}** đang cập nhật kho.\n"
             "Vui lòng thử lại sau 1-2 phút.",
-            parse_mode="Markdown"
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("⬅️ Quay lại", callback_data=f"viewcat_{cid}"),
+                 InlineKeyboardButton("🏠 Thoát", callback_data="reload_menu")]
+            ])
         )
         return
 
@@ -310,7 +406,8 @@ async def handle_product_select(update: Update, context: ContextTypes.DEFAULT_TY
     qty_buttons = []
     row = []
     for i in range(1, max_qty + 1):
-        row.append(InlineKeyboardButton(str(i), callback_data=f"qty_{i}"))
+        # Lưu ID sản phẩm vào callback_data để tránh lỗi phiên khi bot restart
+        row.append(InlineKeyboardButton(str(i), callback_data=f"qty_{i}_{product_key}"))
         if len(row) == 5:
             qty_buttons.append(row)
             row = []
@@ -326,14 +423,32 @@ async def handle_product_select(update: Update, context: ContextTypes.DEFAULT_TY
     # Nếu là slot_gpt_team, thông báo cần email
     note = ""
     if product_key == "slot_gpt_team":
-        note = "\n\n⚠️ _Sản phẩm này cần cung cấp email sau khi thanh toán_"
+        note = "\n⚠️ _Sản phẩm này cần cung cấp email sau khi thanh toán_"
 
+    # Hiển thị mô tả: ưu tiên custom > API description > tự tạo từ tên SP
+    desc = db.get_custom_description(product_key)
+    if not desc:
+        # Thử lấy từ API nếu có trường description
+        desc = info.get("description") or info.get("desc")
+    if not desc:
+        # Tự tạo mô tả mặc định dựa vào tên/key sản phẩm
+        desc = _generate_default_description(product_key, info)
+    
+    desc_block = ""
+    if desc:
+        # Nếu desc đã có emoji (auto-generated), không thêm 📝
+        if desc.startswith(("⏱", "🛡", "👤", "👥", "🎰", "⚡", "👨")):
+            desc_block = f"\n{desc}\n"
+        else:
+            desc_block = f"\n📝 {desc}\n"
+    
     await query.edit_message_text(
         f"📦 **{info['name']}**\n"
+        f"━━━━━━━━━━━━━━━━━━\n"
         f"💰 Giá: **{format_money(sell_price)}** / cái\n"
         f"📊 Kho: **{info['stock']}** còn lại\n"
-        f"{note}\n\n"
-        f"Chọn số lượng muốn mua:",
+        f"{desc_block}{note}\n"
+        f"👇 Chọn số lượng muốn mua:",
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup(qty_buttons)
     )
@@ -344,14 +459,45 @@ async def handle_qty_select(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
 
-    qty = int(query.data.replace("qty_", ""))
-    product_key = context.user_data.get("selected_product")
-    sell_price = context.user_data.get("sell_price", 0)
-    info = context.user_data.get("product_info", {})
-
+    # Format mới: qty_SỐ_LƯỢNG_MÃ_SẢN_PHẨM
+    parts = query.data.split("_")
+    qty = int(parts[1])
+    product_key = "_".join(parts[2:]) if len(parts) > 2 else context.user_data.get("selected_product")
+    
     if not product_key:
-        await query.edit_message_text("❌ Lỗi phiên. Vui lòng /menu lại.")
+        await query.edit_message_text("❌ Lỗi phiên (Sản phẩm bị thất lạc). Vui lòng /menu lại.")
         return
+
+    # LUÔN lấy lại thông tin sản phẩm mới nhất để đảm bảo giá đồng nhất
+    products, _ = get_all_products_merged()
+    if not products or product_key not in products:
+        await query.edit_message_text("❌ Lỗi: Sản phẩm không còn tồn tại. Vui lòng /menu lại.")
+        return
+    
+    # Clone info để không mutate cache
+    info = dict(products[product_key])
+    custom_name = db.get_custom_name(product_key)
+    if custom_name:
+        info["name"] = custom_name
+    
+    # Luôn tính giá bán từ nguồn chính xác nhất (custom_prices hoặc markup)
+    sell_price = get_sell_price(product_key, info['price'])
+
+    # Kiểm tra tồn kho trước khi tạo đơn
+    if info["stock"] <= 0:
+        _, _, cid = classify_product(product_key, info)
+        await query.edit_message_text(
+            f"❌ **{info['name']}** hiện đã hết hàng!\nVui lòng quay lại sau.",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("⬅️ Quay lại", callback_data=f"viewcat_{cid}"),
+                 InlineKeyboardButton("🏠 Thoát", callback_data="reload_menu")]
+            ])
+        )
+        return
+
+    if qty > info["stock"]:
+        qty = info["stock"]  # Giới hạn số lượng theo kho thực tế
 
     total = sell_price * qty
     order_code = generate_order_code()
@@ -393,6 +539,7 @@ async def handle_qty_select(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"━━━━━━━━━━━━━━━━━━\n"
         f"📦 {info.get('name', product_key)}\n"
         f"🔢 Số lượng: **{qty}**\n"
+        f"💰 Đơn giá: **{format_money(sell_price)}**\n"
         f"💰 Tổng: **{format_money(total)}**\n\n"
         f"🏦 **CHUYỂN KHOẢN:**\n"
         f"Ngân hàng: **{BANK_NAME}**\n"
@@ -704,6 +851,7 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
         product_key = context.user_data["awaiting_price_for"]
         if text.lower() == "reset":
             db.remove_custom_price(product_key)
+            invalidate_cache()  # Xóa cache để cập nhật giá mới
             del context.user_data["awaiting_price_for"]
             await update.message.reply_text(f"✅ Đã reset giá `{product_key}` về markup mặc định.", parse_mode="Markdown")
             return
@@ -711,6 +859,7 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             new_price = int(text.replace(",", "").replace(".", ""))
             db.set_custom_price(product_key, new_price)
+            invalidate_cache()  # Xóa cache để cập nhật giá mới
             del context.user_data["awaiting_price_for"]
             await update.message.reply_text(f"✅ Đã cập nhật giá bán mới cho `{product_key}` là **{format_money(new_price)}**", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Quay lại cài đặt", callback_data=f"admin_price_{product_key}"), InlineKeyboardButton("🏠 Thoát", callback_data="admin_home")]]))
         except ValueError:
@@ -725,6 +874,7 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 prod_id, name, price = parts
                 prod_id = prod_id.lower().replace(" ", "")
                 db.add_custom_product(prod_id, name, int(price))
+                invalidate_cache()  # Xóa cache để cập nhật sản phẩm mới
                 await update.message.reply_text(f"✅ Đã thêm sản phẩm `{prod_id}`. Hãy vào Quản lý sản phẩm để đổi danh mục và cập nhật kho cho nó!", parse_mode="Markdown")
             else:
                 await update.message.reply_text("❌ Sai cú pháp. Mẫu: `ytb_1m | Youtube Premium 1T | 35000`", parse_mode="Markdown")
@@ -737,11 +887,13 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
         del context.user_data["awaiting_stock_for"]
         if text.lower() == "reset":
             db.set_custom_stock(key, None)
+            invalidate_cache()  # Xóa cache để cập nhật kho
             await update.message.reply_text(f"✅ Đã để hệ thống tự động tải kho cho `{key}`.", parse_mode="Markdown")
         else:
             try:
                 ns = int(text)
                 db.set_custom_stock(key, ns)
+                invalidate_cache()  # Xóa cache để cập nhật kho
                 await update.message.reply_text(f"✅ Đã set tồn kho cho `{key}` là: {ns}", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Quay lại cài đặt", callback_data=f"admin_price_{key}"), InlineKeyboardButton("🏠 Thoát", callback_data="admin_home")]]))
             except ValueError:
                 await update.message.reply_text("❌ Số lượng tồn kho phải là số.")
@@ -792,6 +944,7 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
             percent = int(text)
             if percent < 0 or percent > 500: raise ValueError
             db.set_setting("default_markup_percent", percent)
+            invalidate_cache()  # Xóa cache để tính lại giá tất cả sản phẩm
             del context.user_data["awaiting_markup"]
             await update.message.reply_text(f"✅ Đã cập nhật Markup mặc định thành **{percent}%**", parse_mode="Markdown")
         except ValueError:
