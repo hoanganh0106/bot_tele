@@ -890,13 +890,19 @@ async def handle_admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
         for key, info in products.items():
             _, _, c_id = classify_product(key, info)
             if c_id == cat_id:
-                sell_price = get_sell_price(key, info['price'])
-                buttons.append([InlineKeyboardButton(f"{info['name']} - {format_money(sell_price)}", callback_data=f"admin_price_{key}")])
+                price_str = format_money(get_sell_price(key, info['price']))
+                dname = db.get_custom_name(key) or info['name']
+                stock = info.get('stock', 0)
+                if stock > 0: stock_icon = f"✅ Còn: {stock}"
+                elif stock == -1: stock_icon = f"🔄 Load"
+                else: stock_icon = f"❌ Hết"
+                
+                buttons.append([InlineKeyboardButton(f"[{stock_icon}] {dname} ({price_str})", callback_data=f"admin_price_{key}")])
                    
         buttons.append([InlineKeyboardButton("⬅️ Quay lại", callback_data="admin_products")])
         
         await query.edit_message_text(
-            f"🛒 **SỬA GIÁ BÁN**\n━━━━━━━━━━━━━━━━━━",
+            f"🛒 **CHỌN SẢN PHẨM ĐỂ SỬA**\n━━━━━━━━━━━━━━━━━━",
             parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup(buttons)
         )
@@ -914,9 +920,16 @@ async def handle_admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
         sell_price = get_sell_price(key, info["price"] if info else 0)
         
+        stock_status = "Không rõ"
+        if info:
+            stock = info.get("stock", 0)
+            status_txt = f"Còn hàng ({stock})" if stock > 0 else ("Hết hàng" if stock == 0 else "Đang cập nhật kho")
+            stock_status = f"✅ {status_txt}" if stock > 0 else f"❌ {status_txt}"
+        
         text = (
             f"⚙️ **Cài đặt Sản Phẩm**\n"
             f"ID: `{key}`\n"
+            f"Trạng thái kho: **{stock_status}**\n"
             f"Tên hiển thị: **{current_name}**\n"
             f"Danh mục: {current_icon} {current_cat}\n"
             f"Giá bán hiện tại: {format_money(sell_price)}\n\n"
