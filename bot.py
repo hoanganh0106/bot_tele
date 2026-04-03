@@ -708,6 +708,41 @@ async def process_paid_order(context, order_code: str, payment_source: str = "se
         return True
 
     # Mua hàng từ API đối tác
+    # Validate product_key còn tồn tại trên API không
+    products, _ = get_all_products_merged(force_refresh=True)
+    is_custom_local = False
+    if products and product_key in products:
+        is_custom_local = products[product_key].get("is_custom_local", False)
+    
+    if not is_custom_local and (not products or product_key not in products):
+        # Sản phẩm đối tác đã bị xóa/đổi key → không gọi buy
+        order["status"] = "failed"
+        order["error"] = f"Sản phẩm '{product_key}' không còn trên API đối tác (có thể đối tác đã đổi key)"
+        order["paid_at"] = datetime.now().isoformat()
+        db.save_order(order_code, order)
+
+        try:
+            await context.bot.send_message(
+                chat_id=user_id,
+                text=(
+                    f"❌ Đơn **#{order_code}** thanh toán thành công nhưng sản phẩm hiện không khả dụng!\n"
+                    f"Sản phẩm `{product_key}` đã bị đối tác thay đổi.\n\n"
+                    f"Admin sẽ xử lý hoàn tiền cho bạn sớm nhất."
+                ),
+                parse_mode="Markdown"
+            )
+        except Exception:
+            pass
+
+        await _notify_all_admins(context,
+            f"🚨 **SẢN PHẨM KHÔNG TỒN TẠI — CẦN HOÀN TIỀN**\n"
+            f"Mã: `{order_code}`\n"
+            f"Khách: {order.get('username', '?')} (ID: {user_id})\n"
+            f"Sản phẩm: `{product_key}` — ĐÃ BỊ ĐỐI TÁC XÓA/ĐỔI KEY\n"
+            f"💰 Khách đã thanh toán {format_money(order['total'])} — cần hoàn tiền!"
+        )
+        return False
+
     try:
         emails = order.get("emails")
         result = api.buy(product_key, qty, emails=emails if emails else None)
@@ -1442,10 +1477,17 @@ def main():
     # Text input handler (for slot_gpt_team and admin inputs)
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_input))
 
+    # Lấy event loop TRƯỚC KHI start Flask thread
+    # app.run_polling() sẽ tạo/dùng loop này
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+
     # Start SePay webhook server in background thread
+    # TRUYỀN event loop từ main thread để Flask thread schedule coroutine đúng chỗ
     webhook_thread = Thread(
         target=start_webhook_server,
         args=(app, WEBHOOK_PORT),
+        kwargs={"bot_loop": loop},
         daemon=True
     )
     webhook_thread.start()

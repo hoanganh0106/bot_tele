@@ -2,7 +2,7 @@
 Flask server nhận webhook từ SePay.
 Chạy trong thread riêng, giao tiếp với Telegram bot qua asyncio.
 
-Tối ưu: fix event loop handling, DRY admin notification helpers.
+Fix: event loop phải được truyền từ bot main thread, không lấy từ Flask thread.
 """
 
 import os
@@ -22,7 +22,7 @@ SEPAY_API_KEY = os.getenv("SEPAY_API_KEY", "")
 
 db = Database("data/bot_data.json")
 
-# Reference đến Telegram app và event loop (set khi start)
+# Reference đến Telegram app và event loop (PHẢI set từ main thread)
 telegram_app = None
 _bot_loop = None
 
@@ -119,18 +119,54 @@ def create_flask_app():
 def _schedule_coroutine(coro):
     """Schedule coroutine vào event loop của bot một cách an toàn."""
     if not _bot_loop or not telegram_app:
-        logger.error("Bot event loop not initialized")
+        logger.error("Bot event loop not initialized — webhook sẽ KHÔNG xử lý được!")
+        return
+    if _bot_loop.is_closed():
+        logger.error("Bot event loop đã closed — không thể schedule coroutine!")
         return
     try:
-        asyncio.run_coroutine_threadsafe(coro, _bot_loop)
+        future = asyncio.run_coroutine_threadsafe(coro, _bot_loop)
+        # Log kết quả sau 30s để phát hiện lỗi
+        def _check_result(f):
+            try:
+                f.result(timeout=0)
+            except Exception as e:
+                logger.error(f"Scheduled coroutine failed: {e}")
+        future.add_done_callback(_check_result)
     except Exception as e:
         logger.error(f"Failed to schedule coroutine: {e}")
 
 
+MAX_BUY_RETRIES = 2
+
 async def _process_order(order_code: str):
-    """Trigger xử lý đơn hàng."""
-    from bot import process_paid_order
-    await process_paid_order(telegram_app, order_code, "sepay")
+    """Trigger xử lý đơn hàng, retry nếu API đối tác lỗi tạm."""
+    from bot import process_paid_order, api, db as bot_db
+
+    for attempt in range(1, MAX_BUY_RETRIES + 1):
+        result = await process_paid_order(telegram_app, order_code, "sepay")
+        if result:
+            return  # Thành công
+
+        # Kiểm tra order còn ở trạng thái failed không (có thể retry)
+        order = bot_db.get_order(order_code)
+        if not order:
+            return
+
+        error = order.get("error", "")
+        # Chỉ retry lỗi tạm thời (timeout, connection, 500+)
+        retryable = any(kw in error.lower() for kw in [
+            "timeout", "không kết nối", "không phản hồi", "connection"
+        ])
+        if not retryable or attempt >= MAX_BUY_RETRIES:
+            logger.warning(f"Order {order_code}: giving up after {attempt} attempt(s): {error}")
+            return
+
+        # Reset status về pending để retry
+        logger.info(f"Order {order_code}: retrying ({attempt}/{MAX_BUY_RETRIES})...")
+        order["status"] = "pending"
+        bot_db.save_order(order_code, order)
+        await asyncio.sleep(3)  # Đợi 3s trước khi retry
 
 
 async def _notify_admin(text: str):
@@ -145,17 +181,23 @@ async def _notify_admin(text: str):
             pass
 
 
-def start_webhook_server(tg_app, port: int):
-    """Start Flask webhook server (gọi từ thread riêng)."""
+def start_webhook_server(tg_app, port: int, bot_loop=None):
+    """Start Flask webhook server (gọi từ thread riêng).
+    
+    Args:
+        tg_app: Telegram Application instance
+        port: Port cho Flask server
+        bot_loop: Event loop của bot (PHẢI truyền từ main thread)
+    """
     global telegram_app, _bot_loop
     telegram_app = tg_app
+    _bot_loop = bot_loop
 
-    # Lưu reference đến event loop đang chạy bot
-    try:
-        _bot_loop = asyncio.get_event_loop()
-    except RuntimeError:
-        _bot_loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(_bot_loop)
+    if not _bot_loop:
+        logger.error(
+            "⚠️ CRITICAL: bot_loop không được truyền vào start_webhook_server! "
+            "Webhook sẽ KHÔNG xử lý được đơn hàng."
+        )
 
     flask_app = create_flask_app()
 
