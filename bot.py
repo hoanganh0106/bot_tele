@@ -1072,6 +1072,13 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     f"   Sản phẩm: {order.get('product_name', '?')} x{order.get('qty', 1)}\n"
                     f"   Thời gian: {order.get('created_at', '?')[:16]}\n"
                 )
+                
+                items = order.get("items", [])
+                if items:
+                    msg += "   🔑 **Tài khoản đã giao:**\n"
+                    for item in items:
+                        msg += f"   `{item}`\n"
+                msg += "\n"
 
         await update.message.reply_text(msg, parse_mode="Markdown")
         return
