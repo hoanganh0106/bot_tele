@@ -275,6 +275,10 @@ class Database:
         with self.lock:
             return list(self._read().get("custom_accounts_inventory", {}).get(product_key, []))
 
+    def has_custom_accounts_enabled(self, product_key: str) -> bool:
+        with self.lock:
+            return product_key in self._read().get("custom_accounts_inventory", {})
+
     def add_custom_accounts(self, product_key: str, accounts: list[str]) -> int:
         """Thêm tài khoản vào kho và trả về số lượng hiện tại."""
         with self.lock:
@@ -282,6 +286,11 @@ class Database:
             inv = data.setdefault("custom_accounts_inventory", {})
             current_list = inv.setdefault(product_key, [])
             current_list.extend(accounts)
+            
+            # Xóa tồn kho thủ công cũ nếu có để tránh sản phẩm bị biến hóa qua lại
+            if "custom_stocks" in data and product_key in data["custom_stocks"]:
+                del data["custom_stocks"][product_key]
+                
             self._write(data)
             return len(current_list)
 

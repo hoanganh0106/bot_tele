@@ -202,10 +202,10 @@ def get_all_products_merged(force_refresh: bool = False) -> tuple[dict, int]:
         
     custom_stocks = db.get_custom_stocks()
     for k, v in products.items():
-        # Ưu tiên lấy tồn kho từ custom_accounts_inventory nếu có
-        accs = db.get_custom_accounts(k)
-        if accs and len(accs) > 0:
-            products[k]["stock"] = len(accs)
+        # Nếu sản phẩm đã được đăng ký đổ tài khoản vào kho tự động
+        if db.has_custom_accounts_enabled(k):
+            products[k]["stock"] = len(db.get_custom_accounts(k))
+        # Còn không thì ưu tiên lấy tồn kho thủ công (nếu có)
         elif k in custom_stocks:
             products[k]["stock"] = custom_stocks[k]
             
@@ -534,8 +534,7 @@ async def handle_qty_select(update: Update, context: ContextTypes.DEFAULT_TYPE):
         order["needs_email"] = True
         order["emails"] = []
     elif info.get("is_custom_local", False):
-        accs = db.get_custom_accounts(product_key)
-        if accs and len(accs) > 0:
+        if db.has_custom_accounts_enabled(product_key):
             order["needs_email"] = False
             order["is_auto_delivered"] = True
         else:
@@ -1057,6 +1056,7 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 try:
                     ns = int(text)
                     db.set_custom_stock(key, ns)
+                    db.clear_custom_accounts(key)
                     invalidate_cache()  # Xóa cache để cập nhật kho
                     await update.message.reply_text(
                         f"✅ Đã set tồn kho MẶC ĐỊNH cho `{key}` là: {ns}\n(Hàng sẽ được duyệt tay).",
