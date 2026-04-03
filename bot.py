@@ -956,7 +956,7 @@ async def render_admin_product_detail(update, context, key):
         [InlineKeyboardButton("⬅️ Quay lại", callback_data="admin_products")]
     ]
     await query.edit_message_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(buttons))
-\nasync def handle_admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def handle_admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Xử lý click trong Admin Dashboard."""
     query = update.callback_query
     if not is_admin(query.from_user.id):
