@@ -183,7 +183,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("🛒 MENU SẢN PHẨM", callback_data="reload_menu")],
         [
             InlineKeyboardButton("📋 Lịch sử mua hàng", callback_data="btn_myorders"),
-            InlineKeyboardButton("📞 Liên hệ Admin", url="https://t.me/thangnguyen_real")
+            InlineKeyboardButton("📞 Liên hệ Admin", url="https://t.me/hoanganh1162")
         ]
     ]
     
@@ -223,7 +223,7 @@ async def cmd_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     # Thêm nút cố định
     buttons.append([
-        InlineKeyboardButton("📞 Liên hệ Admin", url="https://t.me/thangnguyen_real"),
+        InlineKeyboardButton("📞 Liên hệ Admin", url="https://t.me/hoanganh1162"),
         InlineKeyboardButton("🔄 Cập nhật sản phẩm", callback_data="reload_menu")
     ])
 
