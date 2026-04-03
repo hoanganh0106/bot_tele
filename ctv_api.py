@@ -29,7 +29,16 @@ class CTVApi:
             )
             data = r.json()
             if data.get("success"):
-                return data["products"], data.get("balance", 0)
+                products = data["products"]
+                
+                # --- INJECT FAKE PRODUCT CHO ADMIN TEST ---
+                products["test_product"] = {
+                    "name": "🔥 TEST SEPAY - 5K VNĐ",
+                    "price": 5000,
+                    "stock": 999
+                }
+                
+                return products, data.get("balance", 0)
             else:
                 logger.error(f"API stock error: {data.get('error')}")
                 return None, 0
@@ -64,6 +73,15 @@ class CTVApi:
         Returns: dict với success, items, total_charged, etc.
         """
         try:
+            # --- INTERCEPT FAKE PRODUCT BUY ---
+            if product_key == "test_product":
+                return {
+                    "success": True,
+                    "items": [f"TEST_ACCOUNT_{i}@gmail.com|pass123|Ảo" for i in range(qty)],
+                    "total_charged": 5000 * qty,
+                    "api_order_code": f"FAKE_ORDER_{qty}"
+                }
+
             body = {
                 "product_key": product_key,
                 "qty": qty
