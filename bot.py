@@ -930,6 +930,18 @@ async def handle_admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
              reply_markup=InlineKeyboardMarkup(buttons)
         )
         
+    elif data == "admin_add_cat":
+        context.user_data["awaiting_new_cat"] = True
+        await query.edit_message_text(
+            "➕ **Thêm hoặc Sửa danh mục**\n\n"
+            "Vui lòng nhắn tin theo đúng cú pháp sau:\n"
+            "`Mã_id | Tên hiển thị | Emoji`\n\n"
+            "Ví dụ thêm mới: `msoffice | Microsoft Office | 💻`\n"
+            "Ví dụ sửa cũ: Nếu muốn sửa mục Khác (id là khac), nhắn: `khac | Thập Cẩm | 📦`",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Hủy", callback_data="admin_products")]])
+        )
+
     elif data.startswith("admin_viewcat_"):
         cat_id = data.replace("admin_viewcat_", "")
         
@@ -988,7 +1000,7 @@ async def handle_admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         
         buttons = [
-            [InlineKeyboardButton("💰 Sửa Giá thu khách", callback_data=f"admin_do_price_{key}")],
+            [InlineKeyboardButton("💰 Sửa giá", callback_data=f"admin_do_price_{key}")],
             [InlineKeyboardButton("✏️ Đổi tên hiển thị", callback_data=f"admin_do_name_{key}")],
             [InlineKeyboardButton("📜 Sửa nội dung/Mô tả", callback_data=f"admin_do_desc_{key}")],
             [InlineKeyboardButton("🔀 Chuyển danh mục", callback_data=f"admin_do_cat_{key}")],
@@ -1026,6 +1038,7 @@ async def handle_admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 buttons.append(row)
                 row = []
         if row: buttons.append(row)
+        buttons.append([InlineKeyboardButton("➕ Tạo ds danh mục mới", callback_data="admin_add_cat")])
         buttons.append([InlineKeyboardButton("♻️ Reset (Máy tự chọn)", callback_data=f"admin_set_cat_{key}_reset")])
         buttons.append([InlineKeyboardButton("⬅️ Hủy thay đổi", callback_data="admin_products")])
         
