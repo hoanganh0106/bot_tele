@@ -843,7 +843,8 @@ async def handle_category_click(update: Update, context: ContextTypes.DEFAULT_TY
             if stock == 0: status = "❌"
             elif stock == -1: status = "🔄"
             else: status = f"✅{stock}"
-            buttons.append([InlineKeyboardButton(f"{info['name']} | {format_money(sell_price)} | {status}", callback_data=f"prod_{key}")])
+            dname = db.get_custom_name(key) or info['name']
+            buttons.append([InlineKeyboardButton(f"{dname} | {format_money(sell_price)} | {status}", callback_data=f"prod_{key}")])
                
     buttons.append([InlineKeyboardButton("⬅️ Quay lại danh mục", callback_data="back_menu")])
     
