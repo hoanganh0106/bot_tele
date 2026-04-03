@@ -801,6 +801,11 @@ async def process_paid_order(context, order_code: str, payment_source: str = "se
             db.save_order(order_code, order)
             
             emails_text = "\n".join(order.get("emails", []))
+            
+            # Trừ tồn kho hiển thị (để tránh người khác mua quá mức)
+            current_stock = db.get_custom_stocks().get(product_key, 0)
+            if current_stock > 0:
+                db.set_custom_stock(product_key, max(0, current_stock - qty))
     
             # Thông báo Admin
             admin_text = (
@@ -1330,7 +1335,14 @@ async def render_admin_product_detail(update, context, key):
         stock_status = f"✅ {status_txt}" if stock > 0 else f"❌ {status_txt}"
         is_custom_local = info.get("is_custom_local", False)
         
-    source_txt = "🏷️ Hàng tự bán (Kho riêng)" if is_custom_local else "🌐 Hàng đối tác (API gốc)"
+    has_auto_accs = db.has_custom_accounts_enabled(key)
+    source_txt = "🌐 Hàng đối tác (API gốc)"
+    if is_custom_local:
+        if has_auto_accs:
+            source_txt = "⚡ Tự bán (Giao Account tự động)"
+        else:
+            source_txt = "📝 Tự bán (Nhận Info -> Duyệt tay)"
+            
     hide_status = "🟢 Đang hiển thị"
     hide_btn_txt = "🙈 [Giao diện] ẨN SẢN PHẨM"
     if db.is_product_hidden(key):
