@@ -513,11 +513,12 @@ async def handle_qty_select(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "status": "pending",
         "created_at": datetime.now().isoformat(),
         "paid_at": None,
-        "items": []
+        "items": [],
+        "is_custom_local": info.get("is_custom_local", False)
     }
 
-    # Nếu là slot_gpt_team, cần yêu cầu email sau khi thanh toán
-    if product_key == "slot_gpt_team":
+    # Nếu là slot_gpt_team hoặc là hàng tự bán của admin, cần yêu cầu gửi thông tin account
+    if product_key == "slot_gpt_team" or info.get("is_custom_local", False):
         order["needs_email"] = True
         order["emails"] = []
 
@@ -683,8 +684,9 @@ async def process_paid_order(context, order_code: str, payment_source: str = "se
     product_key = order["product_key"]
     qty = order["qty"]
     user_id = order["user_id"]
+    is_custom_local = order.get("is_custom_local", False)
 
-    # Nếu là slot_gpt_team và cần email
+    # Nếu là slot_gpt_team hoặc Hàng tự bán CẦN email
     if order.get("needs_email") and not order.get("emails"):
         order["status"] = "paid_waiting_email"
         order["paid_at"] = datetime.now().isoformat()
@@ -696,8 +698,8 @@ async def process_paid_order(context, order_code: str, payment_source: str = "se
                 chat_id=user_id,
                 text=(
                     f"✅ Đơn **#{order_code}** đã thanh toán thành công!\n\n"
-                    f"📧 Sản phẩm **Slot GPT Team** cần email.\n"
-                    f"Vui lòng gửi **{qty} email** (mỗi email 1 dòng):\n\n"
+                    f"📧 Sản phẩm này yêu cầu bạn cung cấp thông tin/email.\n"
+                    f"Vui lòng nhắn tin gửi **{qty} email** (mỗi email viết trên 1 dòng):\n\n"
                     f"Ví dụ:\n```\nemail1@gmail.com\nemail2@gmail.com\n```"
                 ),
                 parse_mode="Markdown"
@@ -705,6 +707,46 @@ async def process_paid_order(context, order_code: str, payment_source: str = "se
         except Exception as e:
             logger.error(f"Failed to send email request: {e}")
 
+        return True
+
+    # Nếu là SẢN PHẨM KHÔNG QUA API (TỰ BÁN): Xử lý luôn và báo cho Admin thủ công
+    if is_custom_local:
+        order["status"] = "paid"
+        order["paid_at"] = datetime.now().isoformat()
+        order["payment_source"] = payment_source
+        db.save_order(order_code, order)
+        
+        emails_text = "\n".join(order.get("emails", []))
+
+        # Thông báo Admin
+        admin_text = (
+            f"🔔 **[HÀNG TỰ BÁN] CẦN Admin DUYỆT THỦ CÔNG**\n"
+            f"━━━━━━━━━━━━━━━━━━\n"
+            f"📋 Mã: `{order_code}`\n"
+            f"👤 Khách: {order.get('username', '?')} (ID: {user_id})\n"
+            f"📦 {order.get('product_name', '?')} x{qty}\n"
+            f"💰 Thu: {format_money(order['total'])}\n"
+            f"💳 Nguồn: {payment_source}\n"
+            f"📧 **THÔNG TIN KHÁCH GỬI:**\n"
+            f"```\n{emails_text}\n```\n"
+            f"⚡ Hãy chủ động nhắn tin giao tài khoản cho khách (ID: `{user_id}`) nhé!"
+        )
+        await _notify_all_admins(context, admin_text)
+
+        # Thông báo KHÁCH
+        try:
+            await context.bot.send_message(
+                chat_id=user_id,
+                text=(
+                    f"✅ **GỬI THÔNG TIN THÀNH CÔNG!**\n"
+                    f"Đơn hàng **#{order_code}** của bạn đang được chuyển đến hệ thống.\n\n"
+                    f"⏳ Admin đang tiến hành duyệt và xử lý cấp quyền cho bạn.\n"
+                    f"Vui lòng đợi một lát nhé! (Cần hỗ trợ gấp: nhắn mục *Liên Hệ Admin*)"
+                ),
+                parse_mode="Markdown"
+            )
+        except Exception:
+            pass
         return True
 
     # Mua hàng từ API đối tác
@@ -1026,7 +1068,7 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     order["emails"] = emails
     order["status"] = "pending"
     db.save_order(order_code, order)
-    await update.message.reply_text("⏳ Đang xử lý mời email... (có thể mất 1-3 phút)")
+    await update.message.reply_text("⏳ Đang xử lý ghi nhận thông tin...")
     await process_paid_order(context, order_code, order.get("payment_source", "sepay"))
 
     # 5. Tra cứu người dùng
