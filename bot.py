@@ -73,12 +73,17 @@ def format_money(amount: int) -> str:
     return f"{amount:,}".replace(",", ".") + "đ"
 
 
-def get_sell_price(product_key: str, base_price: int) -> int:
+def get_sell_price(product_key: str, base_price: int, is_custom_local: bool = False) -> int:
     """Lấy giá bán (giá gốc + markup admin đã set)."""
     custom = db.get_custom_price(product_key)
     if custom is not None:
         return custom
-    # Mặc định markup 30%
+        
+    # Nếu là hàng tự bán tay, lấy thẳng giá gốc (giá lúc tự thêm), KHÔNG cộng %
+    if is_custom_local:
+        return base_price
+        
+    # Hàng API: Mặc định markup 30% nếu không cấu hình markup khác
     default_markup = db.get_setting("default_markup_percent", 30)
     return int(base_price * (1 + default_markup / 100))
 
@@ -197,7 +202,11 @@ def get_all_products_merged(force_refresh: bool = False) -> tuple[dict, int]:
         
     custom_stocks = db.get_custom_stocks()
     for k, v in products.items():
-        if k in custom_stocks:
+        # Ưu tiên lấy tồn kho từ custom_accounts_inventory nếu có
+        accs = db.get_custom_accounts(k)
+        if accs and len(accs) > 0:
+            products[k]["stock"] = len(accs)
+        elif k in custom_stocks:
             products[k]["stock"] = custom_stocks[k]
             
     _api_cache["data"] = (products, balance)
@@ -236,8 +245,11 @@ def classify_product(key: str, info: dict) -> tuple:
 def build_category_grid(products, callback_prefix, is_admin=False):
     categories = {}
     for key, info in products.items():
-        if not is_admin and db.is_product_hidden(key):
-            continue
+        stock = info.get("stock", 0)
+        
+        if not is_admin:
+            if db.is_product_hidden(key) or stock == 0:
+                continue
             
         cat_name, icon, cat_id = classify_product(key, info)
         if cat_id not in categories:
@@ -367,7 +379,7 @@ async def handle_product_select(update: Update, context: ContextTypes.DEFAULT_TY
         info["name"] = custom_name
     
     # Luôn tính giá bán từ nguồn chính xác nhất
-    sell_price = get_sell_price(product_key, info["price"])
+    sell_price = get_sell_price(product_key, info["price"], info.get("is_custom_local", False))
 
     context.user_data["product_info"] = info
     context.user_data["sell_price"] = sell_price
@@ -479,7 +491,7 @@ async def handle_qty_select(update: Update, context: ContextTypes.DEFAULT_TYPE):
         info["name"] = custom_name
     
     # Luôn tính giá bán từ nguồn chính xác nhất (custom_prices hoặc markup)
-    sell_price = get_sell_price(product_key, info['price'])
+    sell_price = get_sell_price(product_key, info['price'], info.get('is_custom_local', False))
 
     # Kiểm tra tồn kho trước khi tạo đơn
     if info["stock"] <= 0:
@@ -517,10 +529,18 @@ async def handle_qty_select(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "is_custom_local": info.get("is_custom_local", False)
     }
 
-    # Nếu là slot_gpt_team hoặc là hàng tự bán của admin, cần yêu cầu gửi thông tin account
-    if product_key == "slot_gpt_team" or info.get("is_custom_local", False):
+    # Phân loại yêu cầu gửi email hay giao hàng tự động
+    if product_key == "slot_gpt_team":
         order["needs_email"] = True
         order["emails"] = []
+    elif info.get("is_custom_local", False):
+        accs = db.get_custom_accounts(product_key)
+        if accs and len(accs) > 0:
+            order["needs_email"] = False
+            order["is_auto_delivered"] = True
+        else:
+            order["needs_email"] = True
+            order["emails"] = []
 
     db.save_order(order_code, order)
     context.user_data["current_order"] = order_code
@@ -684,9 +704,17 @@ async def process_paid_order(context, order_code: str, payment_source: str = "se
     product_key = order["product_key"]
     qty = order["qty"]
     user_id = order["user_id"]
-    is_custom_local = order.get("is_custom_local", False)
+    
+    # Backward compatibility cho các đơn cũ
+    is_custom_local = order.get("is_custom_local")
+    if is_custom_local is None:
+        products, _ = get_all_products_merged()
+        is_custom_local = False
+        if products and product_key in products:
+            is_custom_local = products[product_key].get("is_custom_local", False)
+        order["is_custom_local"] = is_custom_local
 
-    # Nếu là slot_gpt_team hoặc Hàng tự bán CẦN email
+    # Nếu là slot_gpt_team hoặc Hàng tự bán CẦN cung cấp thông tin
     if order.get("needs_email") and not order.get("emails"):
         order["status"] = "paid_waiting_email"
         order["paid_at"] = datetime.now().isoformat()
@@ -711,27 +739,84 @@ async def process_paid_order(context, order_code: str, payment_source: str = "se
 
     # Nếu là SẢN PHẨM KHÔNG QUA API (TỰ BÁN): Xử lý luôn và báo cho Admin thủ công
     if is_custom_local:
-        order["status"] = "paid"
-        order["paid_at"] = datetime.now().isoformat()
-        order["payment_source"] = payment_source
-        db.save_order(order_code, order)
-        
-        emails_text = "\n".join(order.get("emails", []))
+        if order.get("is_auto_delivered", False):
+            # Lấy list account từ inventory db
+            accounts = db.pop_custom_accounts(product_key, qty)
+            if len(accounts) < qty:
+                # Nếu khách mua lúc vừa hết (tranh chấp), đưa về dạng chờ xử lý tay
+                order["status"] = "paid"  # Đổi lại chờ xử lý
+                order["paid_at"] = datetime.now().isoformat()
+                db.save_order(order_code, order)
+                
+                admin_text = (
+                    f"🚨 **[HÀNG TỰ BÁN] AUTO GIAO HÀNG HẾT KHO**\n"
+                    f"━━━━━━━━━━━━━━━━━━\n"
+                    f"📋 Mã: `{order_code}` | Khách: `{user_id}`\n"
+                    f"📦 Sản phẩm: {order.get('product_name', '?')} x{qty}\n"
+                    f"⚠️ Không đủ tài khoản trong kho để tự động giao!\n"
+                    f"⚡ Hãy ib khách và trả tài khoản tay nhé!"
+                )
+                await _notify_all_admins(context, admin_text)
+                
+                try:
+                    await context.bot.send_message(user_id, f"✅ Đơn **#{order_code}** thanh toán thành công!\n\nTuy nhiên kho hàng tự động vừa hết đột xuất. Vui lòng chờ Admin xử lý giao tài khoản bù cho bạn trong chốc lát nhé!")
+                except Exception: pass
+                
+                return True
 
-        # Thông báo Admin
-        admin_text = (
-            f"🔔 **[HÀNG TỰ BÁN] CẦN Admin DUYỆT THỦ CÔNG**\n"
-            f"━━━━━━━━━━━━━━━━━━\n"
-            f"📋 Mã: `{order_code}`\n"
-            f"👤 Khách: {order.get('username', '?')} (ID: {user_id})\n"
-            f"📦 {order.get('product_name', '?')} x{qty}\n"
-            f"💰 Thu: {format_money(order['total'])}\n"
-            f"💳 Nguồn: {payment_source}\n"
-            f"📧 **THÔNG TIN KHÁCH GỬI:**\n"
-            f"```\n{emails_text}\n```\n"
-            f"⚡ Hãy chủ động nhắn tin giao tài khoản cho khách (ID: `{user_id}`) nhé!"
-        )
-        await _notify_all_admins(context, admin_text)
+            # Giao thành công
+            order["status"] = "paid"
+            order["items"] = accounts
+            order["paid_at"] = datetime.now().isoformat()
+            order["payment_source"] = payment_source
+            db.save_order(order_code, order)
+            
+            items_str = "\n".join([f"✨ `{a}`" for a in accounts])
+            
+            # Gửi cho khách
+            try:
+                await context.bot.send_message(
+                    chat_id=user_id,
+                    text=(f"✅ **ĐƠN HÀNG #{order_code} HOÀN TẤT!**\n\n"
+                          f"🔑 **TÀI KHOẢN CỦA BẠN LÀ:**\n"
+                          f"{items_str}\n\n"
+                          f"Cảm ơn bạn đã mua hàng. Cần hỗ trợ xin liên hệ Admin!"),
+                    parse_mode="Markdown"
+                )
+            except Exception: pass
+            
+            # Báo Admin
+            await _notify_all_admins(context, 
+                f"🔔 **[HÀNG TỰ BÁN] AUTO GIAO HÀNG THÀNH CÔNG**\n"
+                f"Mã: `{order_code}`\n"
+                f"Khách: `{user_id}` | Mua x{qty}\n"
+                f"🔑 Đã tự động xuất {qty} tài khoản từ kho để giao cho khách!"
+            )
+            return True
+            
+        else:
+            # Xử lý TAY (gửi email/info để admin duyệt)
+            order["status"] = "paid"
+            order["paid_at"] = datetime.now().isoformat()
+            order["payment_source"] = payment_source
+            db.save_order(order_code, order)
+            
+            emails_text = "\n".join(order.get("emails", []))
+    
+            # Thông báo Admin
+            admin_text = (
+                f"🔔 **[HÀNG TỰ BÁN] CẦN Admin DUYỆT THỦ CÔNG**\n"
+                f"━━━━━━━━━━━━━━━━━━\n"
+                f"📋 Mã: `{order_code}`\n"
+                f"👤 Khách: {order.get('username', '?')} (ID: {user_id})\n"
+                f"📦 {order.get('product_name', '?')} x{qty}\n"
+                f"💰 Thu: {format_money(order['total'])}\n"
+                f"💳 Nguồn: {payment_source}\n"
+                f"📧 **THÔNG TIN KHÁCH GỬI:**\n"
+                f"```\n{emails_text}\n```\n"
+                f"⚡ Hãy chủ động nhắn tin giao tài khoản cho khách (ID: `{user_id}`) nhé!"
+            )
+            await _notify_all_admins(context, admin_text)
 
         # Thông báo KHÁCH
         try:
@@ -954,16 +1039,32 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
         del context.user_data["awaiting_stock_for"]
         if text.lower() == "reset":
             db.set_custom_stock(key, None)
+            db.clear_custom_accounts(key)
             invalidate_cache()  # Xóa cache để cập nhật kho
-            await update.message.reply_text(f"✅ Đã để hệ thống tự động tải kho cho `{key}`.", parse_mode="Markdown")
+            await update.message.reply_text(f"✅ Đã reset kho về mặc định / xóa sạch tài khoản tự động cho `{key}`.", parse_mode="Markdown")
         else:
-            try:
-                ns = int(text)
-                db.set_custom_stock(key, ns)
-                invalidate_cache()  # Xóa cache để cập nhật kho
-                await update.message.reply_text(f"✅ Đã set tồn kho cho `{key}` là: {ns}", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Quay lại cài đặt", callback_data=f"admin_price_{key}"), InlineKeyboardButton("🏠 Thoát", callback_data="admin_home")]]))
-            except ValueError:
-                await update.message.reply_text("❌ Số lượng tồn kho phải là số.")
+            if "|" in text or "\n" in text:
+                accounts = [line.strip() for line in text.split("\n") if line.strip()]
+                added = db.add_custom_accounts(key, accounts)
+                invalidate_cache()
+                await update.message.reply_text(
+                    f"✅ Đã **THÊM {len(accounts)}** tài khoản vào kho `{key}`.\n"
+                    f"📦 Tổng kho tự động hiện tại: **{added}**",
+                    parse_mode="Markdown",
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Quay lại", callback_data=f"admin_price_{key}"), InlineKeyboardButton("🏠 Thoát", callback_data="admin_home")]])
+                )
+            else:
+                try:
+                    ns = int(text)
+                    db.set_custom_stock(key, ns)
+                    invalidate_cache()  # Xóa cache để cập nhật kho
+                    await update.message.reply_text(
+                        f"✅ Đã set tồn kho MẶC ĐỊNH cho `{key}` là: {ns}\n(Hàng sẽ được duyệt tay).",
+                        parse_mode="Markdown",
+                        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Quay lại cài đặt", callback_data=f"admin_price_{key}"), InlineKeyboardButton("🏠 Thoát", callback_data="admin_home")]])
+                    )
+                except ValueError:
+                    await update.message.reply_text("❌ Nhập số lượng (vd: `10`) HOẶC dán list danh sách tài khoản cần lưu kho chứa dấu `|` hoặc ngắt dòng.")
         return
 
     if context.user_data.get("awaiting_new_cat"):
@@ -1045,27 +1146,35 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
         
     order_code, order = waiting_order
-    emails = [e.strip() for e in text.split("\n") if "@" in e.strip()]
+    text_lines = [e.strip() for e in text.split("\n") if e.strip()]
 
-    if len(emails) != order["qty"]:
-        await update.message.reply_text(
-            f"❌ Cần đúng **{order['qty']}** email, bạn gửi {len(emails)}.\n"
-            f"Vui lòng gửi lại (mỗi email 1 dòng).",
-            parse_mode="Markdown"
-        )
-        return
+    is_custom_local = order.get("is_custom_local", False)
+    
+    # Đối với sản phẩm liên kết API bắt buộc phải là Email chuẩn
+    if not is_custom_local:
+        emails = [e for e in text_lines if "@" in e]
+        if len(emails) != order["qty"]:
+            await update.message.reply_text(
+                f"❌ Cần đúng **{order['qty']}** email, bạn gửi {len(emails)}.\n"
+                f"Vui lòng gửi lại (mỗi email 1 dòng).",
+                parse_mode="Markdown"
+            )
+            return
 
-    email_regex = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
-    invalid = [e for e in emails if not re.match(email_regex, e)]
-    if invalid:
-        await update.message.reply_text(
-            f"❌ Email không hợp lệ: {', '.join(invalid)}\n"
-            f"Vui lòng kiểm tra và gửi lại.",
-            parse_mode="Markdown"
-        )
-        return
+        email_regex = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
+        invalid = [e for e in emails if not re.match(email_regex, e)]
+        if invalid:
+            await update.message.reply_text(
+                f"❌ Email không hợp lệ: {', '.join(invalid)}\n"
+                f"Vui lòng kiểm tra và gửi lại.",
+                parse_mode="Markdown"
+            )
+            return
+        order["emails"] = emails
+    else:
+        # Nếu là hàng tự bán của admin, chấp nhận bất kỳ thông tin gì khách gửi
+        order["emails"] = text_lines
 
-    order["emails"] = emails
     order["status"] = "pending"
     db.save_order(order_code, order)
     await update.message.reply_text("⏳ Đang xử lý ghi nhận thông tin...")
@@ -1180,17 +1289,16 @@ async def handle_category_click(update: Update, context: ContextTypes.DEFAULT_TY
         
     buttons = []
     for key, info in products.items():
-        # KHÔNG hiển thị sản phẩm bị ẩn cho khách
-        if db.is_product_hidden(key):
+        stock = info.get("stock", 0)
+        
+        # KHÔNG hiển thị sản phẩm bị ẩn cho khách, HOẶC đã hết tồn kho
+        if db.is_product_hidden(key) or stock == 0:
             continue
             
         _, _, c_id = classify_product(key, info)
         if c_id == cat_id:
-            sell_price = get_sell_price(key, info['price'])
-            stock = info["stock"]
-            if stock == 0: status = "❌"
-            elif stock == -1: status = "🔄"
-            else: status = f"✅{stock}"
+            sell_price = get_sell_price(key, info['price'], info.get('is_custom_local', False))
+            status = f"✅{stock}"
             dname = db.get_custom_name(key) or info['name']
             buttons.append([InlineKeyboardButton(f"{dname} | {format_money(sell_price)} | {status}", callback_data=f"prod_{key}")])
                
@@ -1212,7 +1320,7 @@ async def render_admin_product_detail(update, context, key):
         
     current_name = db.get_custom_name(key) or (info["name"] if info else key)
     current_cat, current_icon, _ = classify_product(key, info if info else {"name": key})
-    sell_price = get_sell_price(key, info["price"] if info else 0)
+    sell_price = get_sell_price(key, info["price"] if info else 0, info.get("is_custom_local", False) if info else False)
     
     stock_status = "Không rõ"
     is_custom_local = False
@@ -1363,8 +1471,10 @@ async def handle_admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
         key = data.replace("admin_do_stock_", "")
         context.user_data["awaiting_stock_for"] = key
         await query.edit_message_text(
-            f"📦 Vui lòng nhắn tin GIÁ TRỊ TỒN KHO MỚI cho `{key}` (VD: 100).\n"
-            f"Nhắn chữ `reset` để lấy lại số lượng kho của đối tác (nếu có).",
+            f"📦 Vui lòng nhắn tin:\n"
+            f"1️⃣ **SỐ LƯỢNG KHO** (VD: 100) nếu muốn duyệt/trả hàng tay.\n"
+            f"2️⃣ **HOẶC DANH SÁCH TÀI KHOẢN** (mỗi dòng 1 cái, ví dụ: `user|pass`), khách mua bot sẽ **tự động cắt tài khoản trong kho ra trả lập tức**.\n\n"
+            f"Nhắn chữ `reset` để xóa sạch kho tải lên.",
             parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("⬅️ Quay lại", callback_data=f"admin_price_{key}"),
@@ -1409,7 +1519,7 @@ async def handle_admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
         for key, info in products.items():
             _, _, c_id = classify_product(key, info)
             if c_id == cat_id:
-                price_str = format_money(get_sell_price(key, info['price']))
+                price_str = format_money(get_sell_price(key, info['price'], info.get("is_custom_local", False)))
                 dname = db.get_custom_name(key) or info['name']
                 stock = info.get('stock', 0)
                 if stock > 0: stock_icon = f"✅ Còn: {stock}"

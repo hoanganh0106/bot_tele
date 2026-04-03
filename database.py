@@ -22,6 +22,7 @@ _DEFAULT_DATA = {
     "custom_category_defs": {},
     "custom_products": {},
     "custom_stocks": {},
+    "custom_accounts_inventory": {},
     "custom_hiddens": [],
     "settings": {"default_markup_percent": 30},
     "processed_transactions": [],
@@ -268,6 +269,43 @@ class Database:
             else:
                 stocks[product_key] = stock
             self._write(data)
+
+    # === CUSTOM ACCOUNTS INVENTORY ===
+    def get_custom_accounts(self, product_key: str) -> list[str]:
+        with self.lock:
+            return list(self._read().get("custom_accounts_inventory", {}).get(product_key, []))
+
+    def add_custom_accounts(self, product_key: str, accounts: list[str]) -> int:
+        """Thêm tài khoản vào kho và trả về số lượng hiện tại."""
+        with self.lock:
+            data = self._read()
+            inv = data.setdefault("custom_accounts_inventory", {})
+            current_list = inv.setdefault(product_key, [])
+            current_list.extend(accounts)
+            self._write(data)
+            return len(current_list)
+
+    def pop_custom_accounts(self, product_key: str, qty: int) -> list[str]:
+        """Lấy một phần tài khoản ra khỏi kho tự động."""
+        with self.lock:
+            data = self._read()
+            inv = data.setdefault("custom_accounts_inventory", {})
+            current_list = inv.get(product_key, [])
+            if len(current_list) < qty:
+                return []
+            
+            popped = current_list[:qty]
+            inv[product_key] = current_list[qty:]
+            self._write(data)
+            return popped
+            
+    def clear_custom_accounts(self, product_key: str):
+        with self.lock:
+            data = self._read()
+            inv = data.get("custom_accounts_inventory", {})
+            if product_key in inv:
+                del inv[product_key]
+                self._write(data)
 
     # === CUSTOM PRODUCTS ===
     def get_custom_products(self) -> dict:
