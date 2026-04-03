@@ -112,6 +112,23 @@ ALL_CATEGORIES = {
     "khac": ["Khác", "📦"]
 }
 
+
+def get_all_products_merged() -> dict:
+    products, balance = get_all_products_merged()
+    if products is None:
+        products = {}
+        
+    custom_products = db.get_custom_products()
+    for k, v in custom_products.items():
+        products[k] = v
+        
+    custom_stocks = db.get_custom_stocks()
+    for k, v in products.items():
+        if k in custom_stocks:
+            products[k]["stock"] = custom_stocks[k]
+            
+    return products, balance
+
 def get_all_categories_merged() -> dict:
     cats = dict(ALL_CATEGORIES)
     custom_cats = db.get_custom_category_defs()
@@ -223,7 +240,7 @@ async def cmd_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     db.add_user(update.effective_user.id)
     msg = await update.message.reply_text("⏳ Đang tải sản phẩm...")
 
-    products, balance = api.get_stock()
+    products, balance = get_all_products_merged()
     if products is None:
         await msg.edit_text("❌ Không thể tải sản phẩm lúc này. Vui lòng thử lại sau!")
         return
@@ -254,7 +271,7 @@ async def handle_product_select(update: Update, context: ContextTypes.DEFAULT_TY
     context.user_data["selected_product"] = product_key
 
     # Lấy thông tin sản phẩm
-    products, _ = api.get_stock()
+    products, _ = get_all_products_merged()
     if not products or product_key not in products:
         await query.edit_message_text("❌ Sản phẩm không tồn tại hoặc server lỗi!")
         return
@@ -693,6 +710,36 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ Giá không hợp lệ. Vui lòng nhập số (VD: 50000) hoặc chữ `reset`.")
         return
 
+    if context.user_data.get("awaiting_new_prod"):
+        del context.user_data["awaiting_new_prod"]
+        try:
+            parts = [p.strip() for p in text.split("|")]
+            if len(parts) == 3:
+                prod_id, name, price = parts
+                prod_id = prod_id.lower().replace(" ", "")
+                db.add_custom_product(prod_id, name, int(price))
+                await update.message.reply_text(f"✅ Đã thêm sản phẩm `{prod_id}`. Hãy vào Quản lý sản phẩm để đổi danh mục và cập nhật kho cho nó!", parse_mode="Markdown")
+            else:
+                await update.message.reply_text("❌ Sai cú pháp. Mẫu: `ytb_1m | Youtube Premium 1T | 35000`", parse_mode="Markdown")
+        except Exception:
+            await update.message.reply_text("❌ Có lỗi xảy ra.")
+        return
+
+    if context.user_data.get("awaiting_stock_for"):
+        key = context.user_data["awaiting_stock_for"]
+        del context.user_data["awaiting_stock_for"]
+        if text.lower() == "reset":
+            db.set_custom_stock(key, None)
+            await update.message.reply_text(f"✅ Đã để hệ thống tự động tải kho cho `{key}`.", parse_mode="Markdown")
+        else:
+            try:
+                ns = int(text)
+                db.set_custom_stock(key, ns)
+                await update.message.reply_text(f"✅ Đã set tồn kho cho `{key}` là: {ns}", parse_mode="Markdown")
+            except ValueError:
+                await update.message.reply_text("❌ Số lượng tồn kho phải là số.")
+        return
+
     if context.user_data.get("awaiting_new_cat"):
         del context.user_data["awaiting_new_cat"]
         try:
@@ -829,7 +876,7 @@ async def handle_category_click(update: Update, context: ContextTypes.DEFAULT_TY
         return
 
     cat_id = data.replace("viewcat_", "")
-    products, _ = api.get_stock()
+    products, _ = get_all_products_merged()
     if not products:
         await query.edit_message_text("❌ Lỗi tải dữ liệu.")
         return
@@ -911,16 +958,18 @@ async def handle_admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ])
             if len(buttons) >= 8: break
             
+        buttons.append([InlineKeyboardButton("➕ Thêm sản phẩm tự bán", callback_data="admin_add_prod")])
         buttons.append([InlineKeyboardButton("➕ Thêm danh mục mới", callback_data="admin_add_cat")])
         buttons.append([InlineKeyboardButton("⬅️ Quay lại", callback_data="admin_home")])
         await query.edit_message_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(buttons))
         
     elif data == "admin_products":
-        products, _ = api.get_stock()
+        products, _ = get_all_products_merged()
         if not products:
             return await query.edit_message_text("❌ Không lấy được dữ liệu.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Quay lại", callback_data="admin_home")]]))
             
         buttons = build_category_grid(products, "admin_viewcat")
+        buttons.append([InlineKeyboardButton("➕ Thêm sản phẩm tự bán", callback_data="admin_add_prod")])
         buttons.append([InlineKeyboardButton("➕ Thêm danh mục mới", callback_data="admin_add_cat")])
         buttons.append([InlineKeyboardButton("⬅️ Quay lại", callback_data="admin_home")])
         
@@ -945,7 +994,7 @@ async def handle_admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data.startswith("admin_viewcat_"):
         cat_id = data.replace("admin_viewcat_", "")
         
-        products, _ = api.get_stock()
+        products, _ = get_all_products_merged()
         if not products:
             return await query.edit_message_text("❌ Lỗi tải dữ liệu.")
             
@@ -974,7 +1023,7 @@ async def handle_admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
         key = data.replace("admin_price_", "")
         
         info = None
-        products, _ = api.get_stock()
+        products, _ = get_all_products_merged()
         if products and key in products:
             info = products[key]
             
@@ -1000,7 +1049,8 @@ async def handle_admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         
         buttons = [
-            [InlineKeyboardButton("💰 Sửa giá", callback_data=f"admin_do_price_{key}")],
+            [InlineKeyboardButton("💰 Sửa giá", callback_data=f"admin_do_price_{key}"),
+             InlineKeyboardButton("📦 Sửa tồn kho", callback_data=f"admin_do_stock_{key}")],
             [InlineKeyboardButton("✏️ Đổi tên hiển thị", callback_data=f"admin_do_name_{key}")],
             [InlineKeyboardButton("📜 Sửa nội dung/Mô tả", callback_data=f"admin_do_desc_{key}")],
             [InlineKeyboardButton("🔀 Chuyển danh mục", callback_data=f"admin_do_cat_{key}")],

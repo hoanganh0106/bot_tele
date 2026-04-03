@@ -44,6 +44,8 @@ class Database:
                 "custom_categories": {},
                 "custom_descriptions": {},
                 "custom_category_defs": {},
+                "custom_products": {},
+                "custom_stocks": {},
                 "settings": {},
                 "processed_transactions": [],
                 "users": []
@@ -185,6 +187,38 @@ class Database:
             data = self._read()
             if "custom_category_defs" not in data: return
             data["custom_category_defs"].pop(cat_id, None)
+            self._write(data)
+
+    def get_custom_stocks(self) -> dict:
+        with self.lock:
+            data = self._read()
+            return data.get("custom_stocks", {})
+
+    def set_custom_stock(self, product_key: str, stock: int):
+        with self.lock:
+            data = self._read()
+            if "custom_stocks" not in data: data["custom_stocks"] = {}
+            if stock is None:
+                data["custom_stocks"].pop(product_key, None)
+            else:
+                data["custom_stocks"][product_key] = stock
+            self._write(data)
+
+    def get_custom_products(self) -> dict:
+        with self.lock:
+            data = self._read()
+            return data.get("custom_products", {})
+
+    def add_custom_product(self, key: str, name: str, price: int):
+        with self.lock:
+            data = self._read()
+            if "custom_products" not in data: data["custom_products"] = {}
+            data["custom_products"][key] = {
+                "name": name,
+                "price": price,
+                "stock": 0,
+                "is_custom_local": True
+            }
             self._write(data)
 
     # === SETTINGS ===
