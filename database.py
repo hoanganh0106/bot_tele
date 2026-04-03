@@ -102,7 +102,7 @@ class Database:
         """Tìm order theo nội dung chuyển khoản (chứa order_code)."""
         with self.lock:
             for code, order in self._read()["orders"].items():
-                if code in content and order.get("status") == "pending":
+                if code in content:
                     return code, order
             return None, None
 
