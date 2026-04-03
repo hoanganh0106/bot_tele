@@ -317,7 +317,11 @@ async def handle_product_select(update: Update, context: ContextTypes.DEFAULT_TY
     if row:
         qty_buttons.append(row)
 
-    qty_buttons.append([InlineKeyboardButton("⬅️ Quay lại", callback_data="back_menu")])
+    _, _, cid = classify_product(product_key, info)
+    qty_buttons.append([
+        InlineKeyboardButton("⬅️ Quay lại", callback_data=f"viewcat_{cid}"),
+        InlineKeyboardButton("🏠 Thoát", callback_data="reload_menu")
+    ])
 
     # Nếu là slot_gpt_team, thông báo cần email
     note = ""
@@ -708,7 +712,7 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
             new_price = int(text.replace(",", "").replace(".", ""))
             db.set_custom_price(product_key, new_price)
             del context.user_data["awaiting_price_for"]
-            await update.message.reply_text(f"✅ Đã cập nhật giá bán mới cho `{product_key}` là **{format_money(new_price)}**", parse_mode="Markdown")
+            await update.message.reply_text(f"✅ Đã cập nhật giá bán mới cho `{product_key}` là **{format_money(new_price)}**", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Quay lại cài đặt", callback_data=f"admin_price_{product_key}"), InlineKeyboardButton("🏠 Thoát", callback_data="admin_home")]]))
         except ValueError:
             await update.message.reply_text("❌ Giá không hợp lệ. Vui lòng nhập số (VD: 50000) hoặc chữ `reset`.")
         return
@@ -738,7 +742,7 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
             try:
                 ns = int(text)
                 db.set_custom_stock(key, ns)
-                await update.message.reply_text(f"✅ Đã set tồn kho cho `{key}` là: {ns}", parse_mode="Markdown")
+                await update.message.reply_text(f"✅ Đã set tồn kho cho `{key}` là: {ns}", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Quay lại cài đặt", callback_data=f"admin_price_{key}"), InlineKeyboardButton("🏠 Thoát", callback_data="admin_home")]]))
             except ValueError:
                 await update.message.reply_text("❌ Số lượng tồn kho phải là số.")
         return
@@ -766,7 +770,7 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(f"✅ Đã xóa mô tả cho sản phẩm `{key}`.", parse_mode="Markdown")
         else:
             db.set_custom_description(key, text)
-            await update.message.reply_text(f"✅ Đã cập nhật mô tả cho sản phẩm `{key}`.", parse_mode="Markdown")
+            await update.message.reply_text(f"✅ Đã cập nhật mô tả cho sản phẩm `{key}`.", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Quay lại cài đặt", callback_data=f"admin_price_{key}"), InlineKeyboardButton("🏠 Thoát", callback_data="admin_home")]]))
         return
 
     # 1.5 Handle renaming products
@@ -779,7 +783,7 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(f"✅ Đã reset tên sản phẩm `{key}` về gốc.", parse_mode="Markdown")
         else:
             db.set_custom_name(key, text)
-            await update.message.reply_text(f"✅ Đã đổi tên sản phẩm `{key}` thành:\n**{text}**", parse_mode="Markdown")
+            await update.message.reply_text(f"✅ Đã đổi tên sản phẩm `{key}` thành:\n**{text}**", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Quay lại cài đặt", callback_data=f"admin_price_{key}"), InlineKeyboardButton("🏠 Thoát", callback_data="admin_home")]]))
         return
 
     # 2. Check nếu đang chờ setup markup
@@ -946,6 +950,8 @@ async def render_admin_product_detail(update, context, key):
         f"Vui lòng chọn thao tác bên dưới:"
     )
     
+    _, _, cid = classify_product(key, info if info else {"name": key})
+    
     buttons = [
         [InlineKeyboardButton("💰 Sửa giá", callback_data=f"admin_do_price_{key}"),
          InlineKeyboardButton("📦 Sửa tồn kho", callback_data=f"admin_do_stock_{key}")],
@@ -953,7 +959,10 @@ async def render_admin_product_detail(update, context, key):
          InlineKeyboardButton(hide_btn_txt, callback_data=f"admin_toggle_hide_{key}")],
         [InlineKeyboardButton("📜 Sửa nội dung/Mô tả", callback_data=f"admin_do_desc_{key}")],
         [InlineKeyboardButton("🔀 Chuyển danh mục", callback_data=f"admin_do_cat_{key}")],
-        [InlineKeyboardButton("⬅️ Quay lại", callback_data="admin_products")]
+        [
+            InlineKeyboardButton("⬅️ Quay lại", callback_data=f"admin_viewcat_{cid}"),
+            InlineKeyboardButton("🏠 Thoát", callback_data="admin_home")
+        ]
     ]
     await query.edit_message_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(buttons))
 async def handle_admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -995,12 +1004,12 @@ async def handle_admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"💸 Tổng gốc: **{format_money(stats['total_cost'])}**\n"
             f"📈 Lợi nhuận: **{format_money(stats['total_profit'])}**\n"
         )
-        await query.edit_message_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Quay lại", callback_data="admin_home")]]))
+        await query.edit_message_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Thoát (Về đầu)", callback_data="admin_home")]]))
     
     elif data == "admin_pending":
         pending = db.get_pending_orders()
         if not pending:
-            return await query.edit_message_text("✅ Không có đơn hàng nào đang chờ.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Quay lại", callback_data="admin_home")]]))
+            return await query.edit_message_text("✅ Không có đơn hàng nào đang chờ.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Thoát (Về đầu)", callback_data="admin_home")]]))
             
         text = "⏳ **ĐƠN CHỜ THANH TOÁN**\n━━━━━━━━━━━━━━━━━━\n"
         buttons = []
@@ -1020,7 +1029,7 @@ async def handle_admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == "admin_products":
         products, _ = get_all_products_merged()
         if not products:
-            return await query.edit_message_text("❌ Không lấy được dữ liệu.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Quay lại", callback_data="admin_home")]]))
+            return await query.edit_message_text("❌ Không lấy được dữ liệu.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Thoát (Về đầu)", callback_data="admin_home")]]))
             
         buttons = build_category_grid(products, "admin_viewcat", is_admin=True)
         buttons.append([InlineKeyboardButton("➕ Thêm sản phẩm tự bán", callback_data="admin_add_prod")])
@@ -1031,6 +1040,44 @@ async def handle_admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
              "⚙️ **QUẢN LÝ SẢN PHẨM**\nChọn danh mục để quản lý các tính năng (Giá, Tên hàng, Danh mục,...):",
              parse_mode="Markdown",
              reply_markup=InlineKeyboardMarkup(buttons)
+        )
+
+    elif data == "admin_add_prod":
+        context.user_data["awaiting_new_prod"] = True
+        await query.edit_message_text(
+            "➕ **Thêm Sản Phẩm Khác (Tự điền tay)**\n\n"
+            "Vui lòng nhắn tin theo cú pháp:\n"
+            "`Mã_id | Tên | Giá`\n\n"
+            "Ví dụ: `ytb_1m | Youtube Premium 1T | 35000`",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Hủy", callback_data="admin_products")]])
+        )
+
+    elif data.startswith("admin_do_stock_"):
+        key = data.replace("admin_do_stock_", "")
+        context.user_data["awaiting_stock_for"] = key
+        await query.edit_message_text(
+            f"📦 Vui lòng nhắn tin GIÁ TRỊ TỒN KHO MỚI cho `{key}` (VD: 100).\n"
+            f"Nhắn chữ `reset` để lấy lại số lượng kho của đối tác (nếu có).",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("⬅️ Quay lại", callback_data=f"admin_price_{key}"),
+                 InlineKeyboardButton("🏠 Thoát", callback_data="admin_home")]
+            ])
+        )
+
+    elif data.startswith("admin_do_desc_"):
+        key = data.replace("admin_do_desc_", "")
+        context.user_data["awaiting_desc_for"] = key
+        await query.edit_message_text(
+            f"📜 Vui lòng **nhắn tin gửi NỘI DUNG/MÔ TẢ MỚI** cho `{key}`.\n"
+            f"Bao gồm hướng dẫn, ghi chú, v.v.\n\n"
+            f"Nhắn chữ `reset` nếu muốn xóa mô tả.",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("⬅️ Quay lại", callback_data=f"admin_price_{key}"),
+                 InlineKeyboardButton("🏠 Thoát", callback_data="admin_home")]
+            ])
         )
         
     elif data == "admin_add_cat":
@@ -1066,7 +1113,10 @@ async def handle_admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 hidden_icon = "🙈 " if db.is_product_hidden(key) else ""
                 buttons.append([InlineKeyboardButton(f"{hidden_icon}[{stock_icon}] {dname} ({price_str})", callback_data=f"admin_price_{key}")])
                    
-        buttons.append([InlineKeyboardButton("⬅️ Quay lại", callback_data="admin_products")])
+        buttons.append([
+            InlineKeyboardButton("⬅️ Quay lại", callback_data="admin_products"),
+            InlineKeyboardButton("🏠 Thoát", callback_data="admin_home")
+        ])
         
         await query.edit_message_text(
             f"🛒 **CHỌN SẢN PHẨM ĐỂ SỬA**\n━━━━━━━━━━━━━━━━━━",
@@ -1085,7 +1135,10 @@ async def handle_admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"📝 Vui lòng **nhắn tin gửi GIÁ BÁN MỚI** (VND) cho `{key}` (VD: 50000).\n\n"
             f"Nhắn chữ `reset` nếu muốn xóa giá cài tay (đưa về tự động cộng Markup).",
             parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Hủy thay đổi", callback_data="admin_products")]])
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("⬅️ Quay lại", callback_data=f"admin_price_{key}"),
+                 InlineKeyboardButton("🏠 Thoát", callback_data="admin_home")]
+            ])
         )
 
     elif data.startswith("admin_toggle_hide_"):
@@ -1101,7 +1154,10 @@ async def handle_admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"✏️ Vui lòng **nhắn tin gửi TÊN MỚI** cho `{key}`.\n\n"
             f"Nhắn chữ `reset` nếu muốn khôi phục tên gốc của server.",
             parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Hủy thay đổi", callback_data="admin_products")]])
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("⬅️ Quay lại", callback_data=f"admin_price_{key}"),
+                 InlineKeyboardButton("🏠 Thoát", callback_data="admin_home")]
+            ])
         )
 
     elif data.startswith("admin_do_cat_"):
@@ -1116,7 +1172,10 @@ async def handle_admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if row: buttons.append(row)
         buttons.append([InlineKeyboardButton("➕ Tạo ds danh mục mới", callback_data="admin_add_cat")])
         buttons.append([InlineKeyboardButton("♻️ Reset (Máy tự chọn)", callback_data=f"admin_set_cat_{key}_reset")])
-        buttons.append([InlineKeyboardButton("⬅️ Hủy thay đổi", callback_data="admin_products")])
+        buttons.append([
+            InlineKeyboardButton("⬅️ Quay lại", callback_data=f"admin_price_{key}"),
+            InlineKeyboardButton("🏠 Thoát", callback_data="admin_home")
+        ])
         
         await query.edit_message_text(f"🔀 Chọn danh mục mới cho `{key}`:", reply_markup=InlineKeyboardMarkup(buttons))
         
@@ -1133,7 +1192,10 @@ async def handle_admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
             db.set_custom_category(key, cid)
             msg = f"✅ Đã chuyển sản phẩm sang danh mục {get_all_categories_merged()[cid][1]} {get_all_categories_merged()[cid][0]}."
             
-        await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Quay lại quản lý", callback_data="admin_products")]]))
+        await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("⬅️ Quay lại", callback_data=f"admin_price_{key}"),
+             InlineKeyboardButton("🏠 Thoát", callback_data="admin_home")]
+        ]))
 
 
     elif data == "admin_markup":
