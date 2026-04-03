@@ -1538,8 +1538,16 @@ async def handle_admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 elif stock == -1: stock_icon = f"🔄 Load"
                 else: stock_icon = f"❌ Hết"
                 
+                is_local = info.get("is_custom_local", False)
+                if not is_local:
+                    type_icon = "🌐"
+                elif db.has_custom_accounts_enabled(key):
+                    type_icon = "⚡"
+                else:
+                    type_icon = "📝"
+                    
                 hidden_icon = "🙈 " if db.is_product_hidden(key) else ""
-                buttons.append([InlineKeyboardButton(f"{hidden_icon}[{stock_icon}] {dname} ({price_str})", callback_data=f"admin_price_{key}")])
+                buttons.append([InlineKeyboardButton(f"{hidden_icon}{type_icon} [{stock_icon}] {dname} ({price_str})", callback_data=f"admin_price_{key}")])
                    
         buttons.append([
             InlineKeyboardButton("⬅️ Quay lại", callback_data="admin_products"),
@@ -1547,7 +1555,12 @@ async def handle_admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ])
         
         await query.edit_message_text(
-            f"🛒 **CHỌN SẢN PHẨM ĐỂ SỬA**\n━━━━━━━━━━━━━━━━━━",
+            f"🛒 **CHỌN SẢN PHẨM ĐỂ SỬA**\n"
+            f"━━━━━━━━━━━━━━━━━━\n"
+            f"💡 _Chú thích phân loại:_\n"
+            f"🌐 `Hàng đối tác API`\n"
+            f"⚡ `Tự bán (Auto Account)`\n"
+            f"📝 `Tự bán (Nhập mail / Duyệt tay)`",
             parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup(buttons)
         )
