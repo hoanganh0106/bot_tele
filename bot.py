@@ -1029,12 +1029,60 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("⏳ Đang xử lý mời email... (có thể mất 1-3 phút)")
     await process_paid_order(context, order_code, order.get("payment_source", "sepay"))
 
+    # 5. Tra cứu người dùng
+    if context.user_data.get("awaiting_user_lookup"):
+        del context.user_data["awaiting_user_lookup"]
+        target_id, target_username, user_orders = db.find_user_orders_by_query(text)
+        
+        if target_id is None:
+            await update.message.reply_text(
+                f"❌ Không tìm thấy thông tin khách hàng nào khớp với `{text}`.\n"
+                f"Vui lòng kiểm tra lại Username hoặc ID.",
+                parse_mode="Markdown"
+            )
+            return
+
+        recent = sorted(user_orders.items(), key=lambda x: x[1].get("created_at", ""), reverse=True)[:10]
+        total_spent = sum(o.get("total", 0) for o in user_orders.values() if o.get("status") == "paid")
+        
+        msg = (
+            f"🔍 **THÔNG TIN KHÁCH HÀNG**\n"
+            f"━━━━━━━━━━━━━━━━━━\n"
+            f"👤 ID: `{target_id}`\n"
+            f"👤 Username: {target_username if target_username else 'Không có'}\n"
+            f"💳 Đã chi (đơn thành công): **{format_money(total_spent)}**\n"
+            f"📦 Tổng số đơn: **{len(user_orders)}**\n\n"
+            f"📋 **10 ĐƠN GẦN NHẤT:**\n"
+        )
+        
+        if not recent:
+            msg += "_Chưa có đơn hàng nào_\n"
+        else:
+            for code, order in recent:
+                status_icon = {
+                    "pending": "⏳",
+                    "paid": "✅",
+                    "cancelled": "❌",
+                    "cancelled_timeout": "⏰",
+                    "failed": "💔"
+                }.get(order["status"], "❓")
+                
+                msg += (
+                    f"{status_icon} `{code}` - {format_money(order.get('total', 0))}\n"
+                    f"   Sản phẩm: {order.get('product_name', '?')} x{order.get('qty', 1)}\n"
+                    f"   Thời gian: {order.get('created_at', '?')[:16]}\n"
+                )
+
+        await update.message.reply_text(msg, parse_mode="Markdown")
+        return
+
 def _build_admin_dashboard():
     """Trả về (text, buttons) cho admin dashboard."""
     text = "🛠 **ADMIN DASHBOARD**\nChọn chức năng quản lý bên dưới:"
     buttons = [
         [InlineKeyboardButton("📊 Thống kê doanh thu", callback_data="admin_stats")],
         [InlineKeyboardButton("👥 Thống kê người dùng", callback_data="admin_users")],
+        [InlineKeyboardButton("🔍 Tra cứu khách hàng", callback_data="admin_user_lookup")],
         [InlineKeyboardButton("⚙️ Quản lý sản phẩm", callback_data="admin_products")],
         [InlineKeyboardButton("⚙️ Set Markup mặc định", callback_data="admin_markup")],
         [InlineKeyboardButton("📢 Gửi thông báo (Broadcast)", callback_data="admin_broadcast")],
@@ -1177,6 +1225,7 @@ async def handle_admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.pop("awaiting_price_for", None)
     context.user_data.pop("awaiting_markup", None)
     context.user_data.pop("awaiting_broadcast", None)
+    context.user_data.pop("awaiting_user_lookup", None)
 
     if data == "admin_stats":
         stats = db.get_stats()
@@ -1193,6 +1242,16 @@ async def handle_admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"📈 Lợi nhuận: **{format_money(stats['total_profit'])}**\n"
         )
         await query.edit_message_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Thoát (Về đầu)", callback_data="admin_home")]]))
+
+    elif data == "admin_user_lookup":
+        context.user_data["awaiting_user_lookup"] = True
+        await query.edit_message_text(
+            "🔍 **TRA CỨU KHÁCH HÀNG**\n\n"
+            "Vui lòng **nhắn tin ID khách hàng hoặc Username** (có hoặc không có @) vào đây để tra cứu lịch sử mua hàng, trạng thái đơn và tổng chi tiêu.\n\n"
+            "⚠️ _Hoặc bấm 'Hủy' để thoát._",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Hủy", callback_data="admin_home")]])
+        )
 
     elif data == "admin_users":
         users = db.get_all_users()

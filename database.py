@@ -114,6 +114,40 @@ class Database:
                     return code, order
             return None
 
+    def find_user_orders_by_query(self, query: str) -> tuple[int|None, str, dict]:
+        """Tìm user_id, username và các đơn hàng liên quan từ query (ID hoặc Username)."""
+        with self.lock:
+            orders = self._read()["orders"]
+            target_id = None
+            target_username = ""
+            user_orders = {}
+
+            query_lower = str(query).lower().replace("@", "")
+
+            # Bước 1: Tìm user_id và username
+            for code, order in orders.items():
+                uid = order.get("user_id")
+                uname = order.get("username", "")
+                
+                # Trùng ID chính xác
+                if str(uid) == query_lower:
+                    target_id = uid
+                    target_username = uname
+                    break
+                # Trùng Username
+                if uname and uname.lower().replace("@", "") == query_lower:
+                    target_id = uid
+                    target_username = uname
+                    break
+            
+            # Bước 2: Gom đơn của user đó
+            if target_id is not None:
+                for code, order in orders.items():
+                    if order.get("user_id") == target_id:
+                        user_orders[code] = order
+            
+            return target_id, target_username, user_orders
+
     # === HIDDEN PRODUCTS ===
     def get_hidden_products(self) -> list:
         with self.lock:
