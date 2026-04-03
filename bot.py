@@ -126,11 +126,9 @@ def _generate_default_description(product_key: str, info: dict) -> str:
     if "kbh" in key or "kbh" in name or "không bh" in name:
         parts.append("🛡 Bảo hành: Không")
     elif "bh" in key or "bảo hành" in name or "bh " in name:
-        # Tìm thời gian bảo hành
-        import re as _re
-        bh_match = _re.search(r'bh\s*(\d+\s*[hH]|trọn đời|vĩnh viễn)', name)
+        bh_match = re.search(r'bh\s*(\d+\s*[hH]|trọn đời|vĩnh viễn)', name)
         if not bh_match:
-            bh_match = _re.search(r'bh\s*(\d+\s*[hH])', key)
+            bh_match = re.search(r'bh\s*(\d+\s*[hH])', key)
         if bh_match:
             parts.append(f"🛡 Bảo hành: {bh_match.group(1)}")
         else:
@@ -615,18 +613,25 @@ async def handle_cancel_order(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 
 async def handle_back_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Quay lại menu chính — hiển thị lại danh mục."""
     query = update.callback_query
     await query.answer()
-    await query.delete_message()
-    # Gửi menu mới
-    fake_update = Update(
-        update_id=update.update_id,
-        message=query.message  # Trick: dùng message từ callback
-    )
-    # Thay vì hack, gửi tin nhắn mới
-    await context.bot.send_message(
-        chat_id=query.from_user.id,
-        text="Gõ /menu để xem lại sản phẩm."
+    # Hiển thị lại menu trực tiếp trên message hiện tại
+    products, _ = get_all_products_merged()
+    if not products:
+        await query.edit_message_text("❌ Không thể tải sản phẩm. Gõ /menu để thử lại.")
+        return
+    buttons = build_category_grid(products, "viewcat", is_admin=False)
+    buttons.append([
+        InlineKeyboardButton("📞 Liên hệ Admin", url="https://t.me/hoanganh1162"),
+        InlineKeyboardButton("🔄 Cập nhật sản phẩm", callback_data="reload_menu")
+    ])
+    await query.edit_message_text(
+        "🛒 **MENU SẢN PHẨM**\n"
+        "━━━━━━━━━━━━━━━━━━\n"
+        "Chọn danh mục sản phẩm bạn muốn xem:",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup(buttons)
     )
 
 
@@ -737,26 +742,19 @@ async def process_paid_order(context, order_code: str, payment_source: str = "se
             except Exception as e:
                 logger.error(f"Failed to send items to user: {e}")
 
-            # Thông báo admin
-            for admin_id in ADMIN_IDS:
-                try:
-                    profit = order["total"] - order.get("cost", 0)
-                    await context.bot.send_message(
-                        chat_id=admin_id,
-                        text=(
-                            f"🔔 **ĐƠN HÀNG MỚI THÀNH CÔNG**\n"
-                            f"━━━━━━━━━━━━━━━━━━\n"
-                            f"📋 Mã: `{order_code}`\n"
-                            f"👤 Khách: {order.get('username', '?')} (ID: {user_id})\n"
-                            f"📦 {order.get('product_name', '?')} x{qty}\n"
-                            f"💰 Thu: {format_money(order['total'])} | Gốc: {format_money(order.get('cost', 0))}\n"
-                            f"📈 Lãi: **{format_money(profit)}**\n"
-                            f"💳 Nguồn: {payment_source}"
-                        ),
-                        parse_mode="Markdown"
-                    )
-                except Exception:
-                    pass
+            # Thông báo admin (gửi parallel)
+            profit = order["total"] - order.get("cost", 0)
+            admin_text = (
+                f"🔔 **ĐƠN HÀNG MỚI THÀNH CÔNG**\n"
+                f"━━━━━━━━━━━━━━━━━━\n"
+                f"📋 Mã: `{order_code}`\n"
+                f"👤 Khách: {order.get('username', '?')} (ID: {user_id})\n"
+                f"📦 {order.get('product_name', '?')} x{qty}\n"
+                f"💰 Thu: {format_money(order['total'])} | Gốc: {format_money(order.get('cost', 0))}\n"
+                f"📈 Lãi: **{format_money(profit)}**\n"
+                f"💳 Nguồn: {payment_source}"
+            )
+            await _notify_all_admins(context, admin_text)
 
             return True
         else:
@@ -779,23 +777,15 @@ async def process_paid_order(context, order_code: str, payment_source: str = "se
             except Exception:
                 pass
 
-            # Thông báo admin
-            for admin_id in ADMIN_IDS:
-                try:
-                    await context.bot.send_message(
-                        chat_id=admin_id,
-                        text=(
-                            f"🚨 **ĐƠN LỖI — CẦN XỬ LÝ**\n"
-                            f"Mã: `{order_code}`\n"
-                            f"Khách: {order.get('username', '?')} (ID: {user_id})\n"
-                            f"Sản phẩm: {order.get('product_name', '?')} x{qty}\n"
-                            f"Lỗi API: {error_msg}\n"
-                            f"💰 Khách đã thanh toán {format_money(order['total'])} — cần hoàn tiền!"
-                        ),
-                        parse_mode="Markdown"
-                    )
-                except Exception:
-                    pass
+            # Thông báo admin (gửi parallel)
+            await _notify_all_admins(context,
+                f"🚨 **ĐƠN LỖI — CẦN XỬ LÝ**\n"
+                f"Mã: `{order_code}`\n"
+                f"Khách: {order.get('username', '?')} (ID: {user_id})\n"
+                f"Sản phẩm: {order.get('product_name', '?')} x{qty}\n"
+                f"Lỗi API: {error_msg}\n"
+                f"💰 Khách đã thanh toán {format_money(order['total'])} — cần hoàn tiền!"
+            )
 
             return False
 
@@ -1004,18 +994,34 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("⏳ Đang xử lý mời email... (có thể mất 1-3 phút)")
     await process_paid_order(context, order_code, order.get("payment_source", "sepay"))
 
-async def cmd_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Trang Dashboard quản lý dành cho Admin."""
-    if not is_admin(update.effective_user.id):
-        return await update.message.reply_text("⛔ Tính năng chỉ dành cho Admin.")
-    
+def _build_admin_dashboard():
+    """Trả về (text, buttons) cho admin dashboard."""
     text = "🛠 **ADMIN DASHBOARD**\nChọn chức năng quản lý bên dưới:"
     buttons = [
         [InlineKeyboardButton("📊 Thống kê doanh thu", callback_data="admin_stats")],
+        [InlineKeyboardButton("👥 Thống kê người dùng", callback_data="admin_users")],
         [InlineKeyboardButton("⚙️ Quản lý sản phẩm", callback_data="admin_products")],
         [InlineKeyboardButton("⚙️ Set Markup mặc định", callback_data="admin_markup")],
         [InlineKeyboardButton("📢 Gửi thông báo (Broadcast)", callback_data="admin_broadcast")],
     ]
+    return text, buttons
+
+
+async def _notify_all_admins(context, text: str):
+    """Gửi thông báo cho tất cả admin đồng thời."""
+    async def _send(admin_id):
+        try:
+            await context.bot.send_message(chat_id=admin_id, text=text, parse_mode="Markdown")
+        except Exception:
+            pass
+    await asyncio.gather(*[_send(aid) for aid in ADMIN_IDS])
+
+
+async def cmd_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Trang Dashboard quản lý dành cho Admin."""
+    if not is_admin(update.effective_user.id):
+        return await update.message.reply_text("⛔ Tính năng chỉ dành cho Admin.")
+    text, buttons = _build_admin_dashboard()
     await update.message.reply_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(buttons))
 
 
@@ -1128,13 +1134,7 @@ async def handle_admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = query.data
 
     if data == "admin_home":
-        text = "🛠 **ADMIN DASHBOARD**\nChọn chức năng quản lý bên dưới:"
-        buttons = [
-            [InlineKeyboardButton("📊 Thống kê doanh thu", callback_data="admin_stats")],
-            [InlineKeyboardButton("⚙️ Quản lý sản phẩm", callback_data="admin_products")],
-            [InlineKeyboardButton("⚙️ Set Markup mặc định", callback_data="admin_markup")],
-            [InlineKeyboardButton("📢 Gửi thông báo (Broadcast)", callback_data="admin_broadcast")],
-        ]
+        text, buttons = _build_admin_dashboard()
         await query.edit_message_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(buttons))
         return
 
@@ -1158,7 +1158,17 @@ async def handle_admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"📈 Lợi nhuận: **{format_money(stats['total_profit'])}**\n"
         )
         await query.edit_message_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Thoát (Về đầu)", callback_data="admin_home")]]))
-    
+
+    elif data == "admin_users":
+        users = db.get_all_users()
+        total_users = len(users)
+        text = (
+            "👥 **THỐNG KÊ NGƯỜI DÙNG**\n"
+            "━━━━━━━━━━━━━━━━━━\n\n"
+            f"📱 Tổng người đã dùng bot: **{total_users}** người\n"
+        )
+        await query.edit_message_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Thoát (Về đầu)", callback_data="admin_home")]]))
+
     elif data == "admin_pending":
         pending = db.get_pending_orders()
         if not pending:
