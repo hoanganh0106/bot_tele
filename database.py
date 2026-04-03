@@ -100,9 +100,10 @@ class Database:
 
     def find_order_by_content(self, content: str) -> tuple:
         """Tìm order theo nội dung chuyển khoản (chứa order_code)."""
+        clean_content = content.replace(" ", "").replace("-", "").replace("\n", "").upper()
         with self.lock:
             for code, order in self._read()["orders"].items():
-                if code in content:
+                if code in clean_content:
                     return code, order
             return None, None
 

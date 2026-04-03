@@ -70,11 +70,14 @@ def create_flask_app():
             logger.info(f"Transaction {transaction_id} already processed")
             return jsonify({"success": True, "message": "Already processed"}), 200
 
+        # Xóa các khoảng trắng, gạch ngang, ngắt dòng do ngân hàng/sms tự chèn vào
+        clean_content = content.upper().replace(" ", "").replace("-", "").replace("\n", "")
+        
         # Tìm order code trong nội dung chuyển khoản
-        order_code, order = shared_db.find_order_by_content(content.upper())
+        order_code, order = shared_db.find_order_by_content(clean_content)
 
         if not order_code:
-            match = re.search(r"BOT\d{10}[A-Z0-9]{6}", content.upper())
+            match = re.search(r"BOT\d{10}[A-Z0-9]{6}", clean_content)
             if match:
                 order_code, order = shared_db.find_order_by_content(match.group())
 
