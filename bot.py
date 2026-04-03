@@ -1014,7 +1014,8 @@ async def handle_admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 elif stock == -1: stock_icon = f"🔄 Load"
                 else: stock_icon = f"❌ Hết"
                 
-                buttons.append([InlineKeyboardButton(f"[{stock_icon}] {dname} ({price_str})", callback_data=f"admin_price_{key}")])
+                hidden_icon = "🙈 " if db.is_product_hidden(key) else ""
+                buttons.append([InlineKeyboardButton(f"{hidden_icon}[{stock_icon}] {dname} ({price_str})", callback_data=f"admin_price_{key}")])
                    
         buttons.append([InlineKeyboardButton("⬅️ Quay lại", callback_data="admin_products")])
         
