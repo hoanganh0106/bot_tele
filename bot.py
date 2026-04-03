@@ -99,7 +99,26 @@ def generate_qr_url(amount: int, content: str) -> str:
 
 
 
+ALL_CATEGORIES = {
+    "gpt": ("ChatGPT", "🤖"),
+    "grok": ("Grok", "🔮"),
+    "capcut": ("CapCut", "🎬"),
+    "gemini": ("Gemini", "✨"),
+    "meitu": ("Meitu", "📸"),
+    "netflix": ("Netflix / YT", "🍿"),
+    "discord": ("Discord", "💬"),
+    "vpn": ("VPN", "🛡️"),
+    "spotify": ("Spotify", "🎵"),
+    "khac": ("Khác", "📦")
+}
+
 def classify_product(key: str, info: dict) -> tuple:
+    # Get custom category first
+    custom_cat = db.get_custom_category(key)
+    if custom_cat and custom_cat in ALL_CATEGORIES:
+        name, icon = ALL_CATEGORIES[custom_cat]
+        return name, icon, custom_cat
+
     k = key.lower()
     n = info["name"].lower()
     if "gpt" in k or "gpt" in n or "openai" in n: return "ChatGPT", "🤖", "gpt"
@@ -232,6 +251,9 @@ async def handle_product_select(update: Update, context: ContextTypes.DEFAULT_TY
         return
 
     info = products[product_key]
+    custom_name = db.get_custom_name(product_key)
+    if custom_name:
+        info["name"] = custom_name
     sell_price = get_sell_price(product_key, info["price"])
 
     context.user_data["product_info"] = info
@@ -881,13 +903,84 @@ async def handle_admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
     elif data.startswith("admin_price_"):
         key = data.replace("admin_price_", "")
+        
+        info = None
+        products, _ = api.get_stock()
+        if products and key in products:
+            info = products[key]
+            
+        current_name = db.get_custom_name(key) or (info["name"] if info else key)
+        current_cat, current_icon, _ = classify_product(key, info if info else {"name": key})
+            
+        sell_price = get_sell_price(key, info["price"] if info else 0)
+        
+        text = (
+            f"⚙️ **Cài đặt Sản Phẩm**\n"
+            f"ID: `{key}`\n"
+            f"Tên hiển thị: **{current_name}**\n"
+            f"Danh mục: {current_icon} {current_cat}\n"
+            f"Giá bán hiện tại: {format_money(sell_price)}\n\n"
+            f"Vui lòng chọn thao tác bên dưới:"
+        )
+        
+        buttons = [
+            [InlineKeyboardButton("💰 Sửa Giá thu khách", callback_data=f"admin_do_price_{key}")],
+            [InlineKeyboardButton("✏️ Đổi tên hiển thị", callback_data=f"admin_do_name_{key}")],
+            [InlineKeyboardButton("🔀 Chuyển danh mục", callback_data=f"admin_do_cat_{key}")],
+            [InlineKeyboardButton("⬅️ Quay lại", callback_data="admin_products")]
+        ]
+        await query.edit_message_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(buttons))
+        
+    elif data.startswith("admin_do_price_"):
+        key = data.replace("admin_do_price_", "")
         context.user_data["awaiting_price_for"] = key
         await query.edit_message_text(
-            f"📝 Vui lòng **nhắn tin gửi giá bán mới** (VND) cho `{key}` (gửi trực tiếp vào chat, ví dụ 50000).\n\n"
-            f"Nhắn chữ `reset` nếu muốn xóa giá cài tay (đưa về markup chung).",
+            f"📝 Vui lòng **nhắn tin gửi GIÁ BÁN MỚI** (VND) cho `{key}` (VD: 50000).\n\n"
+            f"Nhắn chữ `reset` nếu muốn xóa giá cài tay (đưa về tự động cộng Markup).",
             parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Hủy thay đổi", callback_data="admin_products")]])
         )
+
+    elif data.startswith("admin_do_name_"):
+        key = data.replace("admin_do_name_", "")
+        context.user_data["awaiting_name_for"] = key
+        await query.edit_message_text(
+            f"✏️ Vui lòng **nhắn tin gửi TÊN MỚI** cho `{key}`.\n\n"
+            f"Nhắn chữ `reset` nếu muốn khôi phục tên gốc của server.",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Hủy thay đổi", callback_data="admin_products")]])
+        )
+
+    elif data.startswith("admin_do_cat_"):
+        key = data.replace("admin_do_cat_", "")
+        buttons = []
+        row = []
+        for cid, (cname, cicon) in ALL_CATEGORIES.items():
+            row.append(InlineKeyboardButton(f"{cicon} {cname}", callback_data=f"admin_set_cat_{key}_{cid}"))
+            if len(row) == 2:
+                buttons.append(row)
+                row = []
+        if row: buttons.append(row)
+        buttons.append([InlineKeyboardButton("♻️ Reset (Máy tự chọn)", callback_data=f"admin_set_cat_{key}_reset")])
+        buttons.append([InlineKeyboardButton("⬅️ Hủy thay đổi", callback_data="admin_products")])
+        
+        await query.edit_message_text(f"🔀 Chọn danh mục mới cho `{key}`:", reply_markup=InlineKeyboardMarkup(buttons))
+        
+    elif data.startswith("admin_set_cat_"):
+        # Format: admin_set_cat_KEY_CATID
+        parts = data[14:].split("_")
+        cid = parts[-1]
+        key = "_".join(parts[:-1])
+        
+        if cid == "reset":
+            db.set_custom_category(key, None)
+            msg = "✅ Đã xóa chỉ định danh mục tay, kích hoạt tự động."
+        else:
+            db.set_custom_category(key, cid)
+            msg = f"✅ Đã chuyển sản phẩm sang danh mục {ALL_CATEGORIES[cid][1]} {ALL_CATEGORIES[cid][0]}."
+            
+        await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Quay lại quản lý", callback_data="admin_products")]]))
+
 
     elif data == "admin_markup":
         context.user_data["awaiting_markup"] = True

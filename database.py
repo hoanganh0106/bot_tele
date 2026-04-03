@@ -40,6 +40,8 @@ class Database:
             return {
                 "orders": {},
                 "custom_prices": {},
+                "custom_names": {},
+                "custom_categories": {},
                 "settings": {},
                 "processed_transactions": [],
                 "users": []
@@ -118,6 +120,36 @@ class Database:
             if product_key in data.get("custom_prices", {}):
                 del data["custom_prices"][product_key]
                 self._write(data)
+
+    def get_custom_name(self, product_key: str) -> str | None:
+        with self.lock:
+            data = self._read()
+            return data.get("custom_names", {}).get(product_key)
+
+    def set_custom_name(self, product_key: str, name: str):
+        with self.lock:
+            data = self._read()
+            if "custom_names" not in data: data["custom_names"] = {}
+            if name is None:
+                data["custom_names"].pop(product_key, None)
+            else:
+                data["custom_names"][product_key] = name
+            self._write(data)
+
+    def get_custom_category(self, product_key: str) -> str | None:
+        with self.lock:
+            data = self._read()
+            return data.get("custom_categories", {}).get(product_key)
+
+    def set_custom_category(self, product_key: str, cat_id: str):
+        with self.lock:
+            data = self._read()
+            if "custom_categories" not in data: data["custom_categories"] = {}
+            if cat_id is None:
+                data["custom_categories"].pop(product_key, None)
+            else:
+                data["custom_categories"][product_key] = cat_id
+            self._write(data)
 
     # === SETTINGS ===
     def get_setting(self, key: str, default=None):
