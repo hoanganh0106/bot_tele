@@ -113,8 +113,8 @@ ALL_CATEGORIES = {
 }
 
 
-def get_all_products_merged() -> dict:
-    products, balance = get_all_products_merged()
+def get_all_products_merged() -> tuple[dict, int]:
+    products, balance = api.get_stock()
     if products is None:
         products = {}
         
@@ -852,7 +852,6 @@ async def cmd_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = "🛠 **ADMIN DASHBOARD**\nChọn chức năng quản lý bên dưới:"
     buttons = [
         [InlineKeyboardButton("📊 Thống kê doanh thu", callback_data="admin_stats")],
-        [InlineKeyboardButton("🛒 Đơn chờ duyệt", callback_data="admin_pending")],
         [InlineKeyboardButton("⚙️ Quản lý sản phẩm", callback_data="admin_products")],
         [InlineKeyboardButton("⚙️ Set Markup mặc định", callback_data="admin_markup")],
         [InlineKeyboardButton("📢 Gửi thông báo (Broadcast)", callback_data="admin_broadcast")],
@@ -914,7 +913,6 @@ async def handle_admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text = "🛠 **ADMIN DASHBOARD**\nChọn chức năng quản lý bên dưới:"
         buttons = [
             [InlineKeyboardButton("📊 Thống kê doanh thu", callback_data="admin_stats")],
-            [InlineKeyboardButton("🛒 Đơn chờ duyệt", callback_data="admin_pending")],
             [InlineKeyboardButton("⚙️ Quản lý sản phẩm", callback_data="admin_products")],
             [InlineKeyboardButton("⚙️ Set Markup mặc định", callback_data="admin_markup")],
             [InlineKeyboardButton("📢 Gửi thông báo (Broadcast)", callback_data="admin_broadcast")],
