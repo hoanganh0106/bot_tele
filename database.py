@@ -42,6 +42,8 @@ class Database:
                 "custom_prices": {},
                 "custom_names": {},
                 "custom_categories": {},
+                "custom_descriptions": {},
+                "custom_category_defs": {},
                 "settings": {},
                 "processed_transactions": [],
                 "users": []
@@ -149,6 +151,40 @@ class Database:
                 data["custom_categories"].pop(product_key, None)
             else:
                 data["custom_categories"][product_key] = cat_id
+            self._write(data)
+
+    def get_custom_description(self, product_key: str) -> str | None:
+        with self.lock:
+            data = self._read()
+            return data.get("custom_descriptions", {}).get(product_key)
+
+    def set_custom_description(self, product_key: str, desc: str):
+        with self.lock:
+            data = self._read()
+            if "custom_descriptions" not in data: data["custom_descriptions"] = {}
+            if desc is None:
+                data["custom_descriptions"].pop(product_key, None)
+            else:
+                data["custom_descriptions"][product_key] = desc
+            self._write(data)
+
+    def get_custom_category_defs(self) -> dict:
+        with self.lock:
+            data = self._read()
+            return data.get("custom_category_defs", {})
+
+    def add_custom_category_def(self, cat_id: str, name: str, icon: str):
+        with self.lock:
+            data = self._read()
+            if "custom_category_defs" not in data: data["custom_category_defs"] = {}
+            data["custom_category_defs"][cat_id] = [name, icon]
+            self._write(data)
+
+    def remove_custom_category_def(self, cat_id: str):
+        with self.lock:
+            data = self._read()
+            if "custom_category_defs" not in data: return
+            data["custom_category_defs"].pop(cat_id, None)
             self._write(data)
 
     # === SETTINGS ===

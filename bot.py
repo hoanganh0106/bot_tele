@@ -100,23 +100,32 @@ def generate_qr_url(amount: int, content: str) -> str:
 
 
 ALL_CATEGORIES = {
-    "gpt": ("ChatGPT", "🤖"),
-    "grok": ("Grok", "🔮"),
-    "capcut": ("CapCut", "🎬"),
-    "gemini": ("Gemini", "✨"),
-    "meitu": ("Meitu", "📸"),
-    "netflix": ("Netflix / YT", "🍿"),
-    "discord": ("Discord", "💬"),
-    "vpn": ("VPN", "🛡️"),
-    "spotify": ("Spotify", "🎵"),
-    "khac": ("Khác", "📦")
+    "gpt": ["ChatGPT", "🤖"],
+    "grok": ["Grok", "🔮"],
+    "capcut": ["CapCut", "🎬"],
+    "gemini": ["Gemini", "✨"],
+    "meitu": ["Meitu", "📸"],
+    "netflix": ["Netflix / YT", "🍿"],
+    "discord": ["Discord", "💬"],
+    "vpn": ["VPN", "🛡️"],
+    "spotify": ["Spotify", "🎵"],
+    "khac": ["Khác", "📦"]
 }
 
+def get_all_categories_merged() -> dict:
+    cats = dict(ALL_CATEGORIES)
+    custom_cats = db.get_custom_category_defs()
+    for cat_id, val in custom_cats.items():
+        cats[cat_id] = val
+    return cats
+
 def classify_product(key: str, info: dict) -> tuple:
+    merged_cats = get_all_categories_merged()
+    
     # Get custom category first
     custom_cat = db.get_custom_category(key)
-    if custom_cat and custom_cat in ALL_CATEGORIES:
-        name, icon = ALL_CATEGORIES[custom_cat]
+    if custom_cat and custom_cat in merged_cats:
+        name, icon = merged_cats[custom_cat]
         return name, icon, custom_cat
 
     k = key.lower()
@@ -684,6 +693,45 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ Giá không hợp lệ. Vui lòng nhập số (VD: 50000) hoặc chữ `reset`.")
         return
 
+    if context.user_data.get("awaiting_new_cat"):
+        del context.user_data["awaiting_new_cat"]
+        try:
+            parts = [p.strip() for p in text.split("|")]
+            if len(parts) == 3:
+                cat_id, name, icon = parts
+                cat_id = cat_id.lower().replace(" ", "")
+                db.add_custom_category_def(cat_id, name, icon)
+                await update.message.reply_text(f"✅ Đã thêm danh mục: {icon} {name}")
+            else:
+                await update.message.reply_text("❌ Sai cú pháp. Vui lòng thử lại theo mẫu: `msoffice | Microsoft Office | 💻`", parse_mode="Markdown")
+        except Exception:
+            await update.message.reply_text("❌ Có lỗi xảy ra.")
+        return
+
+    if context.user_data.get("awaiting_desc_for"):
+        key = context.user_data["awaiting_desc_for"]
+        del context.user_data["awaiting_desc_for"]
+        if text.lower() == "reset":
+            db.set_custom_description(key, None)
+            await update.message.reply_text(f"✅ Đã xóa mô tả cho sản phẩm `{key}`.", parse_mode="Markdown")
+        else:
+            db.set_custom_description(key, text)
+            await update.message.reply_text(f"✅ Đã cập nhật mô tả cho sản phẩm `{key}`.", parse_mode="Markdown")
+        return
+
+    # 1.5 Handle renaming products
+    if context.user_data.get("awaiting_name_for"):
+        key = context.user_data["awaiting_name_for"]
+        del context.user_data["awaiting_name_for"]
+        
+        if text.lower() == "reset":
+            db.set_custom_name(key, None)
+            await update.message.reply_text(f"✅ Đã reset tên sản phẩm `{key}` về gốc.", parse_mode="Markdown")
+        else:
+            db.set_custom_name(key, text)
+            await update.message.reply_text(f"✅ Đã đổi tên sản phẩm `{key}` thành:\n**{text}**", parse_mode="Markdown")
+        return
+
     # 2. Check nếu đang chờ setup markup
     if context.user_data.get("awaiting_markup"):
         try:
@@ -758,7 +806,7 @@ async def cmd_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     buttons = [
         [InlineKeyboardButton("📊 Thống kê doanh thu", callback_data="admin_stats")],
         [InlineKeyboardButton("🛒 Đơn chờ duyệt", callback_data="admin_pending")],
-        [InlineKeyboardButton("💰 Quản lý giá bán", callback_data="admin_products")],
+        [InlineKeyboardButton("⚙️ Quản lý sản phẩm", callback_data="admin_products")],
         [InlineKeyboardButton("⚙️ Set Markup mặc định", callback_data="admin_markup")],
         [InlineKeyboardButton("📢 Gửi thông báo (Broadcast)", callback_data="admin_broadcast")],
     ]
@@ -819,7 +867,7 @@ async def handle_admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
         buttons = [
             [InlineKeyboardButton("📊 Thống kê doanh thu", callback_data="admin_stats")],
             [InlineKeyboardButton("🛒 Đơn chờ duyệt", callback_data="admin_pending")],
-            [InlineKeyboardButton("💰 Quản lý giá bán", callback_data="admin_products")],
+            [InlineKeyboardButton("⚙️ Quản lý sản phẩm", callback_data="admin_products")],
             [InlineKeyboardButton("⚙️ Set Markup mặc định", callback_data="admin_markup")],
             [InlineKeyboardButton("📢 Gửi thông báo (Broadcast)", callback_data="admin_broadcast")],
         ]
@@ -862,6 +910,7 @@ async def handle_admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ])
             if len(buttons) >= 8: break
             
+        buttons.append([InlineKeyboardButton("➕ Thêm danh mục mới", callback_data="admin_add_cat")])
         buttons.append([InlineKeyboardButton("⬅️ Quay lại", callback_data="admin_home")])
         await query.edit_message_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(buttons))
         
@@ -871,6 +920,7 @@ async def handle_admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return await query.edit_message_text("❌ Không lấy được dữ liệu.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Quay lại", callback_data="admin_home")]]))
             
         buttons = build_category_grid(products, "admin_viewcat")
+        buttons.append([InlineKeyboardButton("➕ Thêm danh mục mới", callback_data="admin_add_cat")])
         buttons.append([InlineKeyboardButton("⬅️ Quay lại", callback_data="admin_home")])
         
         await query.edit_message_text(
@@ -939,6 +989,7 @@ async def handle_admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
         buttons = [
             [InlineKeyboardButton("💰 Sửa Giá thu khách", callback_data=f"admin_do_price_{key}")],
             [InlineKeyboardButton("✏️ Đổi tên hiển thị", callback_data=f"admin_do_name_{key}")],
+            [InlineKeyboardButton("📜 Sửa nội dung/Mô tả", callback_data=f"admin_do_desc_{key}")],
             [InlineKeyboardButton("🔀 Chuyển danh mục", callback_data=f"admin_do_cat_{key}")],
             [InlineKeyboardButton("⬅️ Quay lại", callback_data="admin_products")]
         ]
@@ -968,7 +1019,7 @@ async def handle_admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
         key = data.replace("admin_do_cat_", "")
         buttons = []
         row = []
-        for cid, (cname, cicon) in ALL_CATEGORIES.items():
+        for cid, (cname, cicon) in get_all_categories_merged().items():
             row.append(InlineKeyboardButton(f"{cicon} {cname}", callback_data=f"admin_set_cat_{key}_{cid}"))
             if len(row) == 2:
                 buttons.append(row)
@@ -990,7 +1041,7 @@ async def handle_admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
             msg = "✅ Đã xóa chỉ định danh mục tay, kích hoạt tự động."
         else:
             db.set_custom_category(key, cid)
-            msg = f"✅ Đã chuyển sản phẩm sang danh mục {ALL_CATEGORIES[cid][1]} {ALL_CATEGORIES[cid][0]}."
+            msg = f"✅ Đã chuyển sản phẩm sang danh mục {get_all_categories_merged()[cid][1]} {get_all_categories_merged()[cid][0]}."
             
         await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Quay lại quản lý", callback_data="admin_products")]]))
 
