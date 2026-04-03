@@ -20,7 +20,8 @@ logger = logging.getLogger(__name__)
 
 SEPAY_API_KEY = os.getenv("SEPAY_API_KEY", "")
 
-db = Database("data/bot_data.json")
+# Sử dụng chung DB từ bot (main thread) truyền sang để đồng bộ cache, tránh việc tạo 2 instance độc lập
+shared_db = None
 
 # Reference đến Telegram app và event loop (PHẢI set từ main thread)
 telegram_app = None
@@ -65,17 +66,17 @@ def create_flask_app():
             return jsonify({"success": True, "message": "Ignored (not incoming)"}), 200
 
         # Chống trùng lặp
-        if transaction_id and db.is_transaction_processed(transaction_id):
+        if transaction_id and shared_db.is_transaction_processed(transaction_id):
             logger.info(f"Transaction {transaction_id} already processed")
             return jsonify({"success": True, "message": "Already processed"}), 200
 
         # Tìm order code trong nội dung chuyển khoản
-        order_code, order = db.find_order_by_content(content.upper())
+        order_code, order = shared_db.find_order_by_content(content.upper())
 
         if not order_code:
             match = re.search(r"BOT\d{10}[A-Z0-9]{6}", content.upper())
             if match:
-                order_code, order = db.find_order_by_content(match.group())
+                order_code, order = shared_db.find_order_by_content(match.group())
 
         if not order_code:
             logger.info(f"No matching order for content: {content}")
@@ -102,7 +103,7 @@ def create_flask_app():
 
         # Đánh dấu đã xử lý
         if transaction_id:
-            db.mark_transaction_processed(transaction_id)
+            shared_db.mark_transaction_processed(transaction_id)
 
         # Xử lý thanh toán + gửi hàng
         _schedule_coroutine(_process_order(order_code))
@@ -181,17 +182,19 @@ async def _notify_admin(text: str):
             pass
 
 
-def start_webhook_server(tg_app, port: int, bot_loop=None):
+def start_webhook_server(tg_app, port: int, bot_loop=None, bot_db=None):
     """Start Flask webhook server (gọi từ thread riêng).
     
     Args:
         tg_app: Telegram Application instance
         port: Port cho Flask server
-        bot_loop: Event loop của bot (PHẢI truyền từ main thread)
+        bot_loop: Event loop của bot
+        bot_db: Database instance từ bot.py để chia sẻ chung cache in-memory
     """
-    global telegram_app, _bot_loop
+    global telegram_app, _bot_loop, shared_db
     telegram_app = tg_app
     _bot_loop = bot_loop
+    shared_db = bot_db
 
     if not _bot_loop:
         logger.error(

@@ -1546,7 +1546,7 @@ def main():
     webhook_thread = Thread(
         target=start_webhook_server,
         args=(app, WEBHOOK_PORT),
-        kwargs={"bot_loop": loop},
+        kwargs={"bot_loop": loop, "bot_db": db},
         daemon=True
     )
     webhook_thread.start()
