@@ -114,62 +114,6 @@ def generate_qr_url(amount: int, content: str) -> str:
     )
 
 
-def _generate_default_description(product_key: str, info: dict) -> str:
-    """Tự tạo mô tả mặc định dựa vào tên/key sản phẩm."""
-    name = info.get("name", product_key).lower()
-    key = product_key.lower()
-    
-    parts = []
-    
-    # Phát hiện thời hạn
-    if "1thang" in key or "1 tháng" in name or "1t" in key:
-        parts.append("⏱ Thời hạn: 1 tháng")
-    elif "3thang" in key or "3 tháng" in name or "3t" in key:
-        parts.append("⏱ Thời hạn: 3 tháng")
-    elif "6thang" in key or "6 tháng" in name or "6t" in key:
-        parts.append("⏱ Thời hạn: 6 tháng")
-    elif "1nam" in key or "1 năm" in name or "12thang" in key:
-        parts.append("⏱ Thời hạn: 1 năm")
-    elif "1m" in key:
-        parts.append("⏱ Thời hạn: 1 tháng")
-    elif "3m" in key:
-        parts.append("⏱ Thời hạn: 3 tháng")
-    elif "6m" in key:
-        parts.append("⏱ Thời hạn: 6 tháng")
-    elif "12m" in key or "1y" in key:
-        parts.append("⏱ Thời hạn: 1 năm")
-    
-    # Phát hiện bảo hành
-    if "kbh" in key or "kbh" in name or "không bh" in name:
-        parts.append("🛡 Bảo hành: Không")
-    elif "bh" in key or "bảo hành" in name or "bh " in name:
-        bh_match = re.search(r'bh\s*(\d+\s*[hH]|trọn đời|vĩnh viễn)', name)
-        if not bh_match:
-            bh_match = re.search(r'bh\s*(\d+\s*[hH])', key)
-        if bh_match:
-            parts.append(f"🛡 Bảo hành: {bh_match.group(1)}")
-        else:
-            parts.append("🛡 Có bảo hành")
-    
-    # Loại tài khoản
-    if "cá nhân" in name or "canhan" in key or "personal" in name:
-        parts.append("👤 Loại: Tài khoản cá nhân")
-    elif "team" in name or "team" in key:
-        parts.append("👥 Loại: Tài khoản team/nhóm")
-    elif "gia đình" in name or "family" in name:
-        parts.append("👨‍👩‍👧‍👦 Loại: Gói gia đình")
-    
-    # Nếu có slot
-    if "slot" in key or "slot" in name:
-        parts.append("🎰 Hình thức: Slot (mời vào nhóm)")
-    
-    # Tự động nhận
-    if "test" not in key:
-        parts.append("⚡ Nhận tài khoản tự động sau thanh toán")
-    
-    if parts:
-        return "\n".join(parts)
-    return ""
 
 
 
@@ -447,22 +391,18 @@ async def handle_product_select(update: Update, context: ContextTypes.DEFAULT_TY
     if product_key == "slot_gpt_team":
         note = "\n⚠️ _Sản phẩm này cần cung cấp email sau khi thanh toán_"
 
-    # Hiển thị mô tả: ưu tiên custom > API description > tự tạo từ tên SP
+    # Hiển thị mô tả: chỉ custom hoặc API, KHÔNG tự sinh
     desc = db.get_custom_description(product_key)
     if not desc:
-        # Thử lấy từ API nếu có trường description
         desc = info.get("description") or info.get("desc")
-    if not desc:
-        # Tự tạo mô tả mặc định dựa vào tên/key sản phẩm
-        desc = _generate_default_description(product_key, info)
     
     desc_block = ""
     if desc:
-        # Nếu desc đã có emoji (auto-generated), không thêm 📝
-        if desc.startswith(("⏱", "🛡", "👤", "👥", "🎰", "⚡", "👨")):
-            desc_block = f"\n{desc}\n"
-        else:
-            desc_block = f"\n📝 {desc}\n"
+        desc_block = f"\n📝 {desc}\n"
+    
+    # Chỉ hiển thị "Nhận tự động" nếu sản phẩm THẬT SỰ có kho auto-delivery
+    if db.has_custom_accounts_enabled(product_key):
+        desc_block += "\n⚡ Nhận tự động sau thanh toán\n"
     
     await query.edit_message_text(
         f"📦 **{info['name']}**\n"
@@ -1588,7 +1528,7 @@ async def handle_admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
         key = data.replace("admin_do_desc_", "")
         context.user_data["awaiting_desc_for"] = key
         
-        # Lấy mô tả hiện tại: custom > API > auto-generated
+        # Lấy mô tả hiện tại: custom > API
         current_desc = db.get_custom_description(key)
         desc_source = "📝 Mô tả tùy chỉnh"
         if not current_desc:
@@ -1596,9 +1536,6 @@ async def handle_admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
             info_tmp = products_tmp.get(key, {}) if products_tmp else {}
             current_desc = info_tmp.get("description") or info_tmp.get("desc")
             desc_source = "🌐 Mô tả từ API"
-            if not current_desc:
-                current_desc = _generate_default_description(key, info_tmp if info_tmp else {"name": key})
-                desc_source = "🤖 Mô tả tự tạo"
         
         if current_desc:
             desc_block = (
