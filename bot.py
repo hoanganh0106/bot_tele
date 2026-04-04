@@ -1038,38 +1038,45 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ Có lỗi xảy ra.")
         return
 
-    if context.user_data.get("awaiting_stock_for"):
-        key = context.user_data["awaiting_stock_for"]
-        del context.user_data["awaiting_stock_for"]
-        if text.lower() == "reset":
-            db.set_custom_stock(key, None)
-            db.clear_custom_accounts(key)
-            invalidate_cache()  # Xóa cache để cập nhật kho
-            await update.message.reply_text(f"✅ Đã reset kho về mặc định / xóa sạch tài khoản tự động cho `{key}`.", parse_mode="Markdown")
-        else:
-            if "|" in text or "\n" in text:
-                accounts = [line.strip() for line in text.split("\n") if line.strip()]
-                added = db.add_custom_accounts(key, accounts)
-                invalidate_cache()
-                await update.message.reply_text(
-                    f"✅ Đã **THÊM {len(accounts)}** tài khoản vào kho `{key}`.\n"
-                    f"📦 Tổng kho tự động hiện tại: **{added}**",
-                    parse_mode="Markdown",
-                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Quay lại", callback_data=f"admin_price_{key}"), InlineKeyboardButton("🏠 Thoát", callback_data="admin_home")]])
-                )
-            else:
-                try:
-                    ns = int(text)
-                    db.set_custom_stock(key, ns)
-                    db.clear_custom_accounts(key)
-                    invalidate_cache()  # Xóa cache để cập nhật kho
-                    await update.message.reply_text(
-                        f"✅ Đã set tồn kho MẶC ĐỊNH cho `{key}` là: {ns}\n(Hàng sẽ được duyệt tay).",
-                        parse_mode="Markdown",
-                        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Quay lại cài đặt", callback_data=f"admin_price_{key}"), InlineKeyboardButton("🏠 Thoát", callback_data="admin_home")]])
-                    )
-                except ValueError:
-                    await update.message.reply_text("❌ Nhập số lượng (vd: `10`) HOẶC dán list danh sách tài khoản cần lưu kho chứa dấu `|` hoặc ngắt dòng.")
+    # Chế độ thêm sản phẩm vào kho tự động (mỗi dòng = 1 item, bất kể format)
+    if context.user_data.get("awaiting_stock_items_for"):
+        key = context.user_data["awaiting_stock_items_for"]
+        del context.user_data["awaiting_stock_items_for"]
+        items = [line.strip() for line in text.split("\n") if line.strip()]
+        if not items:
+            await update.message.reply_text("❌ Không có sản phẩm nào được nhận. Vui lòng gửi mỗi dòng 1 sản phẩm.")
+            return
+        added = db.add_custom_accounts(key, items)
+        invalidate_cache()
+        await update.message.reply_text(
+            f"✅ Đã **THÊM {len(items)}** sản phẩm vào kho `{key}`.\n"
+            f"📦 Tổng kho tự động hiện tại: **{added}**\n\n"
+            f"_Khi khách mua, bot sẽ tự động cắt sản phẩm trong kho ra trả._",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("📥 Thêm tiếp", callback_data=f"admin_stock_add_items_{key}")],
+                [InlineKeyboardButton("⬅️ Quay lại", callback_data=f"admin_price_{key}"), InlineKeyboardButton("🏠 Thoát", callback_data="admin_home")]
+            ])
+        )
+        return
+
+    # Chế độ set số lượng liên hệ trực tiếp
+    if context.user_data.get("awaiting_stock_manual_for"):
+        key = context.user_data["awaiting_stock_manual_for"]
+        del context.user_data["awaiting_stock_manual_for"]
+        try:
+            ns = int(text.replace(",", "").replace(".", ""))
+            db.set_custom_stock(key, ns)
+            db.clear_custom_accounts(key)  # Xóa kho tự động nếu có
+            invalidate_cache()
+            await update.message.reply_text(
+                f"✅ Đã set tồn kho cho `{key}` là: **{ns}**\n"
+                f"_Khách mua sẽ cần liên hệ Admin để nhận hàng._",
+                parse_mode="Markdown",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Quay lại cài đặt", callback_data=f"admin_price_{key}"), InlineKeyboardButton("🏠 Thoát", callback_data="admin_home")]])
+            )
+        except ValueError:
+            await update.message.reply_text("❌ Vui lòng nhập một số nguyên (VD: `10`).\nThử lại hoặc bấm nút Quay lại.", parse_mode="Markdown")
         return
 
     if context.user_data.get("awaiting_new_cat"):
@@ -1339,9 +1346,9 @@ async def render_admin_product_detail(update, context, key):
     source_txt = "🌐 Hàng đối tác (API gốc)"
     if is_custom_local:
         if has_auto_accs:
-            source_txt = "⚡ Tự bán (Giao Account tự động)"
+            source_txt = "⚡ Tự bán (Tự động giao từ kho)"
         else:
-            source_txt = "📝 Tự bán (Nhận Info -> Duyệt tay)"
+            source_txt = "📝 Tự bán (Liên hệ trực tiếp)"
             
     hide_status = "🟢 Đang hiển thị"
     hide_btn_txt = "🙈 [Giao diện] ẨN SẢN PHẨM"
@@ -1399,6 +1406,8 @@ async def handle_admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.pop("awaiting_markup", None)
     context.user_data.pop("awaiting_broadcast", None)
     context.user_data.pop("awaiting_user_lookup", None)
+    context.user_data.pop("awaiting_stock_items_for", None)
+    context.user_data.pop("awaiting_stock_manual_for", None)
 
     if data == "admin_stats":
         stats = db.get_stats()
@@ -1485,12 +1494,76 @@ async def handle_admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif data.startswith("admin_do_stock_"):
         key = data.replace("admin_do_stock_", "")
-        context.user_data["awaiting_stock_for"] = key
+        
+        # Hiển thị thông tin kho hiện tại
+        has_auto = db.has_custom_accounts_enabled(key)
+        auto_count = len(db.get_custom_accounts(key)) if has_auto else 0
+        manual_stock = db.get_custom_stocks().get(key)
+        
+        stock_info = ""
+        if has_auto:
+            stock_info = f"\n📦 Kho tự động hiện tại: **{auto_count}** sản phẩm"
+        elif manual_stock is not None:
+            stock_info = f"\n📦 Số lượng liên hệ trực tiếp: **{manual_stock}**"
+        
         await query.edit_message_text(
-            f"📦 Vui lòng nhắn tin:\n"
-            f"1️⃣ **SỐ LƯỢNG KHO** (VD: 100) nếu muốn duyệt/trả hàng tay.\n"
-            f"2️⃣ **HOẶC DANH SÁCH TÀI KHOẢN** (mỗi dòng 1 cái, ví dụ: `user|pass`), khách mua bot sẽ **tự động cắt tài khoản trong kho ra trả lập tức**.\n\n"
-            f"Nhắn chữ `reset` để xóa sạch kho tải lên.",
+            f"📦 **QUẢN LÝ KHO — `{key}`**\n"
+            f"━━━━━━━━━━━━━━━━━━{stock_info}\n\n"
+            f"Chọn cách quản lý kho:\n\n"
+            f"📥 **Thêm sản phẩm vào kho** — Paste danh sách (code, link, account...) mỗi dòng 1 cái. Khách mua bot tự cắt giao ngay.\n\n"
+            f"🔢 **Số lượng liên hệ trực tiếp** — Chỉ đặt số lượng hiển thị, khách mua sẽ liên hệ Admin nhận hàng.",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("📥 Thêm sản phẩm vào kho", callback_data=f"admin_stock_add_items_{key}")],
+                [InlineKeyboardButton("🔢 Số lượng liên hệ trực tiếp", callback_data=f"admin_stock_manual_{key}")],
+                [InlineKeyboardButton("🗑️ Xóa sạch kho", callback_data=f"admin_stock_reset_{key}")],
+                [InlineKeyboardButton("⬅️ Quay lại", callback_data=f"admin_price_{key}"),
+                 InlineKeyboardButton("🏠 Thoát", callback_data="admin_home")]
+            ])
+        )
+
+    elif data.startswith("admin_stock_add_items_"):
+        key = data.replace("admin_stock_add_items_", "")
+        context.user_data["awaiting_stock_items_for"] = key
+        await query.edit_message_text(
+            f"📥 **THÊM SẢN PHẨM VÀO KHO — `{key}`**\n"
+            f"━━━━━━━━━━━━━━━━━━\n\n"
+            f"Vui lòng **paste danh sách sản phẩm** vào đây.\n"
+            f"Mỗi dòng = 1 sản phẩm (code, link, tài khoản, bất kỳ cái gì).\n\n"
+            f"Ví dụ:\n"
+            f"```\nhttps://example.com/key1\nABC-DEF-GHI-123\nuser@mail.com|pass123\n```\n\n"
+            f"_Bot sẽ tự cắt từng sản phẩm giao cho khách khi có đơn._",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("⬅️ Quay lại", callback_data=f"admin_do_stock_{key}"),
+                 InlineKeyboardButton("🏠 Thoát", callback_data="admin_home")]
+            ])
+        )
+
+    elif data.startswith("admin_stock_manual_"):
+        key = data.replace("admin_stock_manual_", "")
+        context.user_data["awaiting_stock_manual_for"] = key
+        await query.edit_message_text(
+            f"🔢 **SỐ LƯỢNG LIÊN HỆ TRỰC TIẾP — `{key}`**\n"
+            f"━━━━━━━━━━━━━━━━━━\n\n"
+            f"Nhập số lượng hiển thị cho khách.\n"
+            f"Khi khách mua, họ sẽ cần liên hệ Admin để nhận hàng.\n\n"
+            f"VD: nhắn `10` để đặt tồn kho là 10.",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("⬅️ Quay lại", callback_data=f"admin_do_stock_{key}"),
+                 InlineKeyboardButton("🏠 Thoát", callback_data="admin_home")]
+            ])
+        )
+
+    elif data.startswith("admin_stock_reset_"):
+        key = data.replace("admin_stock_reset_", "")
+        db.set_custom_stock(key, None)
+        db.clear_custom_accounts(key)
+        invalidate_cache()
+        await query.edit_message_text(
+            f"✅ Đã xóa sạch kho cho `{key}`.\n"
+            f"Sản phẩm sẽ hiển thị lại tồn kho mặc định từ API (nếu có).",
             parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("⬅️ Quay lại", callback_data=f"admin_price_{key}"),
@@ -1563,8 +1636,8 @@ async def handle_admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"━━━━━━━━━━━━━━━━━━\n"
             f"💡 _Chú thích phân loại:_\n"
             f"🌐 `Hàng đối tác API`\n"
-            f"⚡ `Tự bán (Auto Account)`\n"
-            f"📝 `Tự bán (Nhập mail / Duyệt tay)`",
+            f"⚡ `Tự bán (Tự động giao từ kho)`\n"
+            f"📝 `Tự bán (Liên hệ trực tiếp)`",
             parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup(buttons)
         )
@@ -1689,7 +1762,7 @@ async def handle_noop(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # SETUP & RUN
 # ============================================
 async def post_init(application):
-    """Set bot commands."""
+    """Set bot commands + start webhook server với ĐÚNG event loop."""
     commands = [
         BotCommand("start", "Bắt đầu"),
         BotCommand("menu", "Xem sản phẩm & mua hàng"),
@@ -1697,6 +1770,20 @@ async def post_init(application):
         BotCommand("help", "Hướng dẫn sử dụng"),
     ]
     await application.bot.set_my_commands(commands)
+
+    # START webhook server TẠI ĐÂY — vì post_init chạy trong event loop THẬT của bot
+    # Đây là cách DUY NHẤT đảm bảo Flask thread có đúng event loop để schedule coroutine
+    live_loop = asyncio.get_running_loop()
+    logger.info(f"post_init: Captured LIVE event loop: {id(live_loop)}")
+
+    webhook_thread = Thread(
+        target=start_webhook_server,
+        args=(application, WEBHOOK_PORT),
+        kwargs={"bot_loop": live_loop, "bot_db": db},
+        daemon=True
+    )
+    webhook_thread.start()
+    logger.info(f"SePay webhook server started on port {WEBHOOK_PORT}")
 
 
 def main():
@@ -1739,21 +1826,8 @@ def main():
     # Text input handler (for slot_gpt_team and admin inputs)
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_input))
 
-    # Lấy event loop TRƯỚC KHI start Flask thread
-    # app.run_polling() sẽ tạo/dùng loop này
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-
-    # Start SePay webhook server in background thread
-    # TRUYỀN event loop từ main thread để Flask thread schedule coroutine đúng chỗ
-    webhook_thread = Thread(
-        target=start_webhook_server,
-        args=(app, WEBHOOK_PORT),
-        kwargs={"bot_loop": loop, "bot_db": db},
-        daemon=True
-    )
-    webhook_thread.start()
-    logger.info(f"SePay webhook server started on port {WEBHOOK_PORT}")
+    # Webhook server giờ được start từ post_init (chạy trong event loop thật của bot)
+    # KHÔNG tạo event loop riêng ở đây nữa — run_polling sẽ tạo loop riêng
 
     # Run bot
     logger.info("🤖 Bot started!")

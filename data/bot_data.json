@@ -23,7 +23,7 @@
       "qty": 1,
       "sell_price": 10000,
       "total": 10000,
-      "status": "pending",
+      "status": "cancelled_timeout",
       "created_at": "2026-04-03T11:17:36.197610",
       "paid_at": null,
       "items": []
