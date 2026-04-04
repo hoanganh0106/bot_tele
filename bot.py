@@ -92,6 +92,18 @@ def generate_order_code() -> str:
     return f"BOT{int(time.time())}{uuid.uuid4().hex[:6].upper()}"
 
 
+def format_user_link(username: str = None, user_id: int = None) -> str:
+    """Tạo link clickable đến user Telegram.
+    Ưu tiên @username (click được), fallback về tg://user?id (deep link).
+    """
+    if username and username != '?':
+        clean = username.lstrip('@')
+        return f"[@{clean}](https://t.me/{clean})"
+    if user_id:
+        return f"[User {user_id}](tg://user?id={user_id})"
+    return "Không rõ"
+
+
 def generate_qr_url(amount: int, content: str) -> str:
     """Tạo QR VietQR."""
     return (
@@ -750,7 +762,8 @@ async def process_paid_order(context, order_code: str, payment_source: str = "se
                 admin_text = (
                     f"🚨 **[HÀNG TỰ BÁN] AUTO GIAO HÀNG HẾT KHO**\n"
                     f"━━━━━━━━━━━━━━━━━━\n"
-                    f"📋 Mã: `{order_code}` | Khách: `{user_id}`\n"
+                    f"📋 Mã: `{order_code}`\n"
+                    f"👤 Khách: {format_user_link(order.get('username'), user_id)}\n"
                     f"📦 Sản phẩm: {order.get('product_name', '?')} x{qty}\n"
                     f"⚠️ Không đủ tài khoản trong kho để tự động giao!\n"
                     f"⚡ Hãy ib khách và trả tài khoản tay nhé!"
@@ -788,7 +801,7 @@ async def process_paid_order(context, order_code: str, payment_source: str = "se
             await _notify_all_admins(context, 
                 f"🔔 **[HÀNG TỰ BÁN] AUTO GIAO HÀNG THÀNH CÔNG**\n"
                 f"Mã: `{order_code}`\n"
-                f"Khách: `{user_id}` | Mua x{qty}\n"
+                f"👤 Khách: {format_user_link(order.get('username'), user_id)} | Mua x{qty}\n"
                 f"🔑 Đã tự động xuất {qty} tài khoản từ kho để giao cho khách!"
             )
             return True
@@ -812,13 +825,13 @@ async def process_paid_order(context, order_code: str, payment_source: str = "se
                 f"🔔 **[HÀNG TỰ BÁN] CẦN Admin DUYỆT THỦ CÔNG**\n"
                 f"━━━━━━━━━━━━━━━━━━\n"
                 f"📋 Mã: `{order_code}`\n"
-                f"👤 Khách: {order.get('username', '?')} (ID: {user_id})\n"
+                f"👤 Khách: {format_user_link(order.get('username'), user_id)}\n"
                 f"📦 {order.get('product_name', '?')} x{qty}\n"
                 f"💰 Thu: {format_money(order['total'])}\n"
                 f"💳 Nguồn: {payment_source}\n"
                 f"📧 **THÔNG TIN KHÁCH GỬI:**\n"
                 f"```\n{emails_text}\n```\n"
-                f"⚡ Hãy chủ động nhắn tin giao tài khoản cho khách (ID: `{user_id}`) nhé!"
+                f"⚡ Hãy chủ động nhắn tin giao tài khoản cho khách nhé!"
             )
             await _notify_all_admins(context, admin_text)
 
@@ -868,7 +881,7 @@ async def process_paid_order(context, order_code: str, payment_source: str = "se
         await _notify_all_admins(context,
             f"🚨 **SẢN PHẨM KHÔNG TỒN TẠI — CẦN HOÀN TIỀN**\n"
             f"Mã: `{order_code}`\n"
-            f"Khách: {order.get('username', '?')} (ID: {user_id})\n"
+            f"👤 Khách: {format_user_link(order.get('username'), user_id)}\n"
             f"Sản phẩm: `{product_key}` — ĐÃ BỊ ĐỐI TÁC XÓA/ĐỔI KEY\n"
             f"💰 Khách đã thanh toán {format_money(order['total'])} — cần hoàn tiền!"
         )
@@ -914,7 +927,7 @@ async def process_paid_order(context, order_code: str, payment_source: str = "se
                 f"🔔 **ĐƠN HÀNG MỚI THÀNH CÔNG**\n"
                 f"━━━━━━━━━━━━━━━━━━\n"
                 f"📋 Mã: `{order_code}`\n"
-                f"👤 Khách: {order.get('username', '?')} (ID: {user_id})\n"
+                f"👤 Khách: {format_user_link(order.get('username'), user_id)}\n"
                 f"📦 {order.get('product_name', '?')} x{qty}\n"
                 f"💰 Thu: {format_money(order['total'])} | Gốc: {format_money(order.get('cost', 0))}\n"
                 f"📈 Lãi: **{format_money(profit)}**\n"
@@ -947,7 +960,7 @@ async def process_paid_order(context, order_code: str, payment_source: str = "se
             await _notify_all_admins(context,
                 f"🚨 **ĐƠN LỖI — CẦN XỬ LÝ**\n"
                 f"Mã: `{order_code}`\n"
-                f"Khách: {order.get('username', '?')} (ID: {user_id})\n"
+                f"👤 Khách: {format_user_link(order.get('username'), user_id)}\n"
                 f"Sản phẩm: {order.get('product_name', '?')} x{qty}\n"
                 f"Lỗi API: {error_msg}\n"
                 f"💰 Khách đã thanh toán {format_money(order['total'])} — cần hoàn tiền!"
