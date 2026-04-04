@@ -1587,8 +1587,33 @@ async def handle_admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data.startswith("admin_do_desc_"):
         key = data.replace("admin_do_desc_", "")
         context.user_data["awaiting_desc_for"] = key
+        
+        # Lấy mô tả hiện tại: custom > API > auto-generated
+        current_desc = db.get_custom_description(key)
+        desc_source = "📝 Mô tả tùy chỉnh"
+        if not current_desc:
+            products_tmp, _ = get_all_products_merged()
+            info_tmp = products_tmp.get(key, {}) if products_tmp else {}
+            current_desc = info_tmp.get("description") or info_tmp.get("desc")
+            desc_source = "🌐 Mô tả từ API"
+            if not current_desc:
+                current_desc = _generate_default_description(key, info_tmp if info_tmp else {"name": key})
+                desc_source = "🤖 Mô tả tự tạo"
+        
+        if current_desc:
+            desc_block = (
+                f"\n{desc_source}:\n"
+                f"━━━━━━━━━━━━━━━━━━\n"
+                f"{current_desc}\n"
+                f"━━━━━━━━━━━━━━━━━━\n"
+            )
+        else:
+            desc_block = "\n⚠️ _Chưa có mô tả nào_\n"
+        
         await query.edit_message_text(
-            f"📜 Vui lòng **nhắn tin gửi NỘI DUNG/MÔ TẢ MỚI** cho `{key}`.\n"
+            f"📜 **SỬA MÔ TẢ — `{key}`**\n"
+            f"{desc_block}\n"
+            f"Vui lòng **nhắn tin gửi NỘI DUNG/MÔ TẢ MỚI**.\n"
             f"Bao gồm hướng dẫn, ghi chú, v.v.\n\n"
             f"Nhắn chữ `reset` nếu muốn xóa mô tả.",
             parse_mode="Markdown",
