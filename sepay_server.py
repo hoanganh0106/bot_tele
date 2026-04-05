@@ -58,7 +58,7 @@ def create_flask_app():
 
         logger.info(
             f"SePay webhook: id={transaction_id}, type={transfer_type}, "
-            f"amount={transfer_amount}, content={content}"
+            f"amount={transfer_amount} (type={type(transfer_amount).__name__}), content='{content}'"
         )
 
         # Chỉ xử lý tiền vào
@@ -73,12 +73,18 @@ def create_flask_app():
         # Xóa các khoảng trắng, gạch ngang, ngắt dòng do ngân hàng/sms tự chèn vào
         clean_content = content.upper().replace(" ", "").replace("-", "").replace("\n", "")
         
+        # Debug: log tất cả pending orders để so sánh
+        pending = shared_db.get_pending_orders()
+        logger.info(f"DEBUG: clean_content='{clean_content}', pending_orders={list(pending.keys())}")
+        
         # Tìm order code trong nội dung chuyển khoản
         order_code, order = shared_db.find_order_by_content(clean_content)
+        logger.info(f"DEBUG: find_order_by_content result: order_code={order_code}, status={order.get('status') if order else 'N/A'}")
 
         if not order_code:
             match = re.search(r"BOT\d{10}[A-Z0-9]{6}", clean_content)
             if match:
+                logger.info(f"DEBUG: regex matched '{match.group()}', trying find again...")
                 order_code, order = shared_db.find_order_by_content(match.group())
 
         if not order_code:
@@ -107,14 +113,17 @@ def create_flask_app():
             ))
             return jsonify({"success": True, "message": "Order already processed"}), 200
 
-        # Kiểm tra số tiền
-        expected = order.get("total", 0)
-        if transfer_amount < expected:
-            logger.warning(f"Amount mismatch: received {transfer_amount}, expected {expected} for {order_code}")
+        # Kiểm tra số tiền — ép kiểu int để tránh lỗi so sánh string vs int
+        expected = int(order.get("total", 0))
+        received = int(transfer_amount) if transfer_amount else 0
+        logger.info(f"DEBUG: Amount check — received={received}, expected={expected}")
+        
+        if received < expected:
+            logger.warning(f"Amount mismatch: received {received}, expected {expected} for {order_code}")
             _schedule_coroutine(_notify_admin(
                 f"⚠️ **THIẾU TIỀN — ĐƠN {order_code}**\n"
-                f"Nhận: {transfer_amount:,}đ | Cần: {expected:,}đ\n"
-                f"Chênh lệch: {expected - transfer_amount:,}đ"
+                f"Nhận: {received:,}đ | Cần: {expected:,}đ\n"
+                f"Chênh lệch: {expected - received:,}đ"
             ))
             return jsonify({"success": True, "message": "Insufficient amount"}), 200
 
@@ -123,6 +132,7 @@ def create_flask_app():
             shared_db.mark_transaction_processed(transaction_id)
 
         # Xử lý thanh toán + gửi hàng
+        logger.info(f"✅ Processing order {order_code} — payment confirmed!")
         _schedule_coroutine(_process_order(order_code))
 
         return jsonify({"success": True}), 200
@@ -130,6 +140,25 @@ def create_flask_app():
     @app.route("/health", methods=["GET"])
     def health():
         return jsonify({"status": "ok", "service": "ctv-bot-webhook"}), 200
+
+    @app.route("/test", methods=["GET", "POST"])
+    def test_webhook():
+        """Endpoint để kiểm tra webhook có hoạt động không."""
+        pending = {}
+        if shared_db:
+            pending = shared_db.get_pending_orders()
+        
+        loop_ok = _bot_loop is not None and not _bot_loop.is_closed()
+        
+        return jsonify({
+            "status": "ok",
+            "webhook_ready": bool(shared_db and telegram_app and loop_ok),
+            "bot_loop_alive": loop_ok,
+            "shared_db_loaded": shared_db is not None,
+            "telegram_app_loaded": telegram_app is not None,
+            "pending_orders_count": len(pending),
+            "pending_order_codes": list(pending.keys())
+        }), 200
 
     return app
 
@@ -228,3 +257,4 @@ def start_webhook_server(tg_app, port: int, bot_loop=None, bot_db=None):
         debug=False,
         use_reloader=False
     )
+

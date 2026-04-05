@@ -99,10 +99,22 @@ class Database:
             }
 
     def find_order_by_content(self, content: str) -> tuple:
-        """Tìm order theo nội dung chuyển khoản (chứa order_code)."""
+        """Tìm order theo nội dung chuyển khoản (chứa order_code).
+        Ưu tiên: pending/failed > cancelled_timeout (có thể hồi phục) > các trạng thái khác.
+        """
         clean_content = content.replace(" ", "").replace("-", "").replace("\n", "").upper()
         with self.lock:
-            for code, order in self._read()["orders"].items():
+            orders = self._read()["orders"]
+            # Ưu tiên 1: đơn đang chờ xử lý (pending/failed)
+            for code, order in orders.items():
+                if code in clean_content and order.get("status") in ("pending", "failed"):
+                    return code, order
+            # Ưu tiên 2: đơn bị tự hủy timeout (có thể hồi phục khi tiền vào)
+            for code, order in orders.items():
+                if code in clean_content and order.get("status") == "cancelled_timeout":
+                    return code, order
+            # Fallback: trả về đơn bất kỳ khớp mã (để webhook xử lý logic "đã xử lý rồi")
+            for code, order in orders.items():
                 if code in clean_content:
                     return code, order
             return None, None
