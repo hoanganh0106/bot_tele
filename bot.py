@@ -642,17 +642,28 @@ async def cmd_myorders(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ADMIN COMMANDS
 # ============================================
 async def process_paid_order(context, order_code: str, payment_source: str = "sepay"):
-    """Xử lý đơn hàng đã thanh toán."""
-    # Atomic: claim đơn (pending → processing) để auto-cancel không ghi đè
-    order = db.claim_order_for_payment(order_code)
+    """Xử lý đơn hàng đã thanh toán.
+    Order có thể ở trạng thái:
+    - 'processing': đã được webhook claim (flow tự động)
+    - 'pending': admin duyệt tay (chưa claim)
+    """
+    order = db.get_order(order_code)
     if not order:
-        # Đơn không tồn tại hoặc đã được xử lý/hủy bởi thread khác
-        existing = db.get_order(order_code)
-        if existing:
-            logger.info(f"Order {order_code} already processed: {existing.get('status')}")
-        else:
-            logger.warning(f"Order {order_code} not found")
+        logger.warning(f"Order {order_code} not found")
         return False
+
+    # Chấp nhận cả "pending" (admin manual) và "processing" (webhook claimed)
+    if order["status"] not in ("pending", "processing"):
+        logger.info(f"Order {order_code} already processed: {order['status']}")
+        return False
+    
+    # Nếu là admin duyệt tay (status vẫn pending), claim luôn
+    if order["status"] == "pending":
+        claimed = db.claim_order_for_payment(order_code)
+        if not claimed:
+            logger.info(f"Order {order_code} was taken by another thread")
+            return False
+        order = claimed  # Dùng bản copy từ claim
 
     product_key = order["product_key"]
     qty = order["qty"]
@@ -912,6 +923,11 @@ async def process_paid_order(context, order_code: str, payment_source: str = "se
 
     except Exception as e:
         logger.error(f"Error processing order {order_code}: {e}")
+        # CRITICAL: Đảm bảo order KHÔNG bao giờ kẹt ở "processing"
+        order["status"] = "failed"
+        order["error"] = f"Exception: {str(e)}"
+        order["paid_at"] = datetime.now().isoformat()
+        db.save_order(order_code, order)
         return False
 
 

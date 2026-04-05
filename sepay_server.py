@@ -99,7 +99,7 @@ def create_flask_app():
             ))
             return jsonify({"success": True, "message": "No matching order"}), 200
 
-        # Nếu order ĐÃ được xử lý rồi (paid, cancelled, cancelled_timeout, failed...)
+        # Nếu order ĐÃ được xử lý rồi (paid, cancelled, cancelled_timeout, processing...)
         order_status = order.get("status")
         if order_status not in ("pending", "failed"):
             logger.info(f"Received money for already processed order: {order_code}")
@@ -128,12 +128,26 @@ def create_flask_app():
             ))
             return jsonify({"success": True, "message": "Insufficient amount"}), 200
 
+        # CRITICAL: Claim đơn NGAY TẠI ĐÂY (trong Flask thread) để auto-cancel
+        # không thể hủy đơn trong khoảng thời gian chờ async processing
+        claimed = shared_db.claim_order_for_payment(order_code)
+        if not claimed:
+            # Đơn đã bị auto-cancel hoặc thread khác xử lý trong tích tắc vừa rồi
+            logger.warning(f"Failed to claim order {order_code} — already taken or cancelled")
+            _schedule_coroutine(_notify_admin(
+                f"⚠️ **KHÔNG CLAIM ĐƯỢC ĐƠN**\n"
+                f"📋 Mã: `{order_code}`\n"
+                f"💰 Tiền vào: {transfer_amount:,}đ\n"
+                f"_Đơn có thể vừa bị hủy timeout cùng lúc tiền về. Kiểm tra và hoàn tiền nếu cần._"
+            ))
+            return jsonify({"success": True, "message": "Order claim failed"}), 200
+
         # Đánh dấu đã xử lý
         if transaction_id:
             shared_db.mark_transaction_processed(transaction_id)
 
-        # Xử lý thanh toán + gửi hàng
-        logger.info(f"✅ Processing order {order_code} — payment confirmed!")
+        # Xử lý thanh toán + gửi hàng (order đã ở trạng thái "processing", an toàn)
+        logger.info(f"✅ Processing order {order_code} — payment confirmed & claimed!")
         _schedule_coroutine(_process_order(order_code))
 
         return jsonify({"success": True}), 200
@@ -208,11 +222,16 @@ async def _process_order(order_code: str):
         ])
         if not retryable or attempt >= MAX_BUY_RETRIES:
             logger.warning(f"Order {order_code}: giving up after {attempt} attempt(s): {error}")
+            # Đảm bảo order không kẹt ở "processing"
+            if order.get("status") == "processing":
+                order["status"] = "failed"
+                order["error"] = error or "Không xử lý được sau khi retry"
+                bot_db.save_order(order_code, order)
             return
 
-        # Reset status về pending để retry
+        # Reset status về processing để retry (KHÔNG dùng pending vì auto-cancel sẽ hủy)
         logger.info(f"Order {order_code}: retrying ({attempt}/{MAX_BUY_RETRIES})...")
-        order["status"] = "pending"
+        order["status"] = "processing"
         bot_db.save_order(order_code, order)
         await asyncio.sleep(3)  # Đợi 3s trước khi retry
 
