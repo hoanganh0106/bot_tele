@@ -643,27 +643,16 @@ async def cmd_myorders(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ============================================
 async def process_paid_order(context, order_code: str, payment_source: str = "sepay"):
     """Xử lý đơn hàng đã thanh toán.
-    Order có thể ở trạng thái:
-    - 'processing': đã được webhook claim (flow tự động)
-    - 'pending': admin duyệt tay (chưa claim)
+    Dùng atomic complete_order_payment để tránh race condition.
     """
     order = db.get_order(order_code)
     if not order:
         logger.warning(f"Order {order_code} not found")
         return False
 
-    # Chấp nhận cả "pending" (admin manual) và "processing" (webhook claimed)
-    if order["status"] not in ("pending", "processing"):
+    if order["status"] not in ("pending", "failed"):
         logger.info(f"Order {order_code} already processed: {order['status']}")
         return False
-    
-    # Nếu là admin duyệt tay (status vẫn pending), claim luôn
-    if order["status"] == "pending":
-        claimed = db.claim_order_for_payment(order_code)
-        if not claimed:
-            logger.info(f"Order {order_code} was taken by another thread")
-            return False
-        order = claimed  # Dùng bản copy từ claim
 
     product_key = order["product_key"]
     qty = order["qty"]
@@ -676,14 +665,18 @@ async def process_paid_order(context, order_code: str, payment_source: str = "se
         is_custom_local = False
         if products and product_key in products:
             is_custom_local = products[product_key].get("is_custom_local", False)
-        order["is_custom_local"] = is_custom_local
 
     # Nếu là slot_gpt_team hoặc Hàng tự bán CẦN cung cấp thông tin
     if order.get("needs_email") and not order.get("emails"):
-        order["status"] = "paid_waiting_email"
-        order["paid_at"] = datetime.now().isoformat()
-        order["payment_source"] = payment_source
-        db.save_order(order_code, order)
+        result = db.complete_order_payment(order_code, {
+            "status": "paid_waiting_email",
+            "paid_at": datetime.now().isoformat(),
+            "payment_source": payment_source,
+            "is_custom_local": is_custom_local
+        })
+        if not result:
+            logger.info(f"Order {order_code} was taken by another thread")
+            return False
 
         try:
             await context.bot.send_message(
@@ -708,9 +701,13 @@ async def process_paid_order(context, order_code: str, payment_source: str = "se
             accounts = db.pop_custom_accounts(product_key, qty)
             if len(accounts) < qty:
                 # Nếu khách mua lúc vừa hết (tranh chấp), đưa về dạng chờ xử lý tay
-                order["status"] = "paid"  # Đổi lại chờ xử lý
-                order["paid_at"] = datetime.now().isoformat()
-                db.save_order(order_code, order)
+                result = db.complete_order_payment(order_code, {
+                    "status": "paid",
+                    "paid_at": datetime.now().isoformat(),
+                    "payment_source": payment_source
+                })
+                if not result:
+                    return False
                 
                 admin_text = (
                     f"🚨 **[HÀNG TỰ BÁN] AUTO GIAO HÀNG HẾT KHO**\n"
@@ -729,12 +726,15 @@ async def process_paid_order(context, order_code: str, payment_source: str = "se
                 
                 return True
 
-            # Giao thành công
-            order["status"] = "paid"
-            order["items"] = accounts
-            order["paid_at"] = datetime.now().isoformat()
-            order["payment_source"] = payment_source
-            db.save_order(order_code, order)
+            # Giao thành công — atomic set paid + items
+            result = db.complete_order_payment(order_code, {
+                "status": "paid",
+                "items": accounts,
+                "paid_at": datetime.now().isoformat(),
+                "payment_source": payment_source
+            })
+            if not result:
+                return False
             
             items_str = "\n".join([f"✨ `{a}`" for a in accounts])
             
@@ -761,10 +761,13 @@ async def process_paid_order(context, order_code: str, payment_source: str = "se
             
         else:
             # Xử lý TAY (gửi email/info để admin duyệt)
-            order["status"] = "paid"
-            order["paid_at"] = datetime.now().isoformat()
-            order["payment_source"] = payment_source
-            db.save_order(order_code, order)
+            result = db.complete_order_payment(order_code, {
+                "status": "paid",
+                "paid_at": datetime.now().isoformat(),
+                "payment_source": payment_source
+            })
+            if not result:
+                return False
             
             emails_text = "\n".join(order.get("emails", []))
             
@@ -807,16 +810,17 @@ async def process_paid_order(context, order_code: str, payment_source: str = "se
     # Mua hàng từ API đối tác
     # Validate product_key còn tồn tại trên API không
     products, _ = get_all_products_merged(force_refresh=True)
-    is_custom_local = False
+    api_custom_local = False
     if products and product_key in products:
-        is_custom_local = products[product_key].get("is_custom_local", False)
+        api_custom_local = products[product_key].get("is_custom_local", False)
     
-    if not is_custom_local and (not products or product_key not in products):
+    if not api_custom_local and (not products or product_key not in products):
         # Sản phẩm đối tác đã bị xóa/đổi key → không gọi buy
-        order["status"] = "failed"
-        order["error"] = f"Sản phẩm '{product_key}' không còn trên API đối tác (có thể đối tác đã đổi key)"
-        order["paid_at"] = datetime.now().isoformat()
-        db.save_order(order_code, order)
+        db.complete_order_payment(order_code, {
+            "status": "failed",
+            "error": f"Sản phẩm '{product_key}' không còn trên API đối tác",
+            "paid_at": datetime.now().isoformat()
+        })
 
         try:
             await context.bot.send_message(
@@ -846,13 +850,18 @@ async def process_paid_order(context, order_code: str, payment_source: str = "se
 
         if result.get("success"):
             items = result["items"]
-            order["status"] = "paid"
-            order["paid_at"] = datetime.now().isoformat()
-            order["payment_source"] = payment_source
-            order["items"] = items
-            order["api_order_code"] = result.get("order_code", "")
-            order["cost"] = result.get("total_charged", 0)
-            db.save_order(order_code, order)
+            # Atomic: pending → paid + lưu kết quả API
+            saved = db.complete_order_payment(order_code, {
+                "status": "paid",
+                "paid_at": datetime.now().isoformat(),
+                "payment_source": payment_source,
+                "items": items,
+                "api_order_code": result.get("order_code", ""),
+                "cost": result.get("total_charged", 0)
+            })
+            if not saved:
+                logger.warning(f"Order {order_code} was taken by another thread after API buy")
+                return False
 
             # Format items cho khách
             items_text = "\n".join([f"```\n{item}\n```" for item in items])
@@ -874,15 +883,15 @@ async def process_paid_order(context, order_code: str, payment_source: str = "se
             except Exception as e:
                 logger.error(f"Failed to send items to user: {e}")
 
-            # Thông báo admin (gửi parallel)
-            profit = order["total"] - order.get("cost", 0)
+            # Thông báo admin
+            profit = order["total"] - result.get("total_charged", 0)
             admin_text = (
                 f"🔔 **ĐƠN HÀNG MỚI THÀNH CÔNG**\n"
                 f"━━━━━━━━━━━━━━━━━━\n"
                 f"📋 Mã: `{order_code}`\n"
                 f"👤 Khách: {format_user_link(order.get('username'), user_id)}\n"
                 f"📦 {order.get('product_name', '?')} x{qty}\n"
-                f"💰 Thu: {format_money(order['total'])} | Gốc: {format_money(order.get('cost', 0))}\n"
+                f"💰 Thu: {format_money(order['total'])} | Gốc: {format_money(result.get('total_charged', 0))}\n"
                 f"📈 Lãi: **{format_money(profit)}**\n"
                 f"💳 Nguồn: {payment_source}"
             )
@@ -891,10 +900,11 @@ async def process_paid_order(context, order_code: str, payment_source: str = "se
             return True
         else:
             error_msg = result.get("error", "Lỗi không xác định")
-            order["status"] = "failed"
-            order["error"] = error_msg
-            order["paid_at"] = datetime.now().isoformat()
-            db.save_order(order_code, order)
+            db.complete_order_payment(order_code, {
+                "status": "failed",
+                "error": error_msg,
+                "paid_at": datetime.now().isoformat()
+            })
 
             try:
                 await context.bot.send_message(
@@ -909,7 +919,6 @@ async def process_paid_order(context, order_code: str, payment_source: str = "se
             except Exception:
                 pass
 
-            # Thông báo admin (gửi parallel)
             await _notify_all_admins(context,
                 f"🚨 **ĐƠN LỖI — CẦN XỬ LÝ**\n"
                 f"Mã: `{order_code}`\n"
@@ -923,11 +932,11 @@ async def process_paid_order(context, order_code: str, payment_source: str = "se
 
     except Exception as e:
         logger.error(f"Error processing order {order_code}: {e}")
-        # CRITICAL: Đảm bảo order KHÔNG bao giờ kẹt ở "processing"
-        order["status"] = "failed"
-        order["error"] = f"Exception: {str(e)}"
-        order["paid_at"] = datetime.now().isoformat()
-        db.save_order(order_code, order)
+        db.complete_order_payment(order_code, {
+            "status": "failed",
+            "error": f"Exception: {str(e)}",
+            "paid_at": datetime.now().isoformat()
+        })
         return False
 
 
@@ -1802,8 +1811,126 @@ async def _periodic_order_cleanup(application):
             logger.error(f"Periodic cleanup error: {e}")
 
 
+async def _payment_processor(application):
+    """Poll DB mỗi 5 giây, xử lý giao dịch mới từ SePay.
+    
+    CRITICAL: Không bao giờ chết — tự restart nếu crash.
+    """
+    logger.info("💳 Payment processor started — polling every 5s")
+    while True:
+        try:
+            await asyncio.sleep(5)
+            payments = db.get_unprocessed_payments()
+            if payments:
+                logger.info(f"💳 Found {len(payments)} unprocessed payment(s)")
+            for payment in payments:
+                tid = payment.get("id", "?")
+                try:
+                    await _handle_payment(application, payment)
+                except Exception as e:
+                    logger.error(f"Error handling payment {tid}: {e}", exc_info=True)
+                    # Mark processed để không bị retry vô tận nếu payment data bị lỗi
+                    db.mark_payment_processed(tid)
+                    try:
+                        await _notify_all_admins(application,
+                            f"🚨 **LỖI XỬ LÝ THANH TOÁN**\n"
+                            f"Transaction: `{tid}`\n"
+                            f"Lỗi: {str(e)[:200]}\n"
+                            f"⚠️ Cần kiểm tra thủ công!"
+                        )
+                    except Exception:
+                        pass
+        except Exception as e:
+            logger.error(f"💥 Payment processor crashed, restarting in 10s: {e}", exc_info=True)
+            await asyncio.sleep(10)  # Chờ 10s rồi restart
+
+
+async def _handle_payment(application, payment: dict):
+    """Xử lý 1 giao dịch incoming — match với đơn hàng và duyệt.
+    
+    QUAN TRỌNG: mark_payment_processed được gọi CUỐI CÙNG,
+    sau khi đã xử lý xong. Nếu crash giữa chừng, payment
+    sẽ được retry ở lần poll tiếp theo.
+    """
+    transaction_id = payment.get("id")
+    transfer_amount = int(payment.get("transferAmount", 0)) if payment.get("transferAmount") else 0
+    content = payment.get("content", "")
+    reference_code = payment.get("referenceCode", "")
+
+    # Dedup: skip nếu đã xử lý rồi (phòng trường hợp race condition)
+    if db.is_transaction_processed(transaction_id):
+        logger.info(f"Payment {transaction_id} already processed (dedup), marking done")
+        db.mark_payment_processed(transaction_id)
+        return
+
+    logger.info(f"Processing payment: id={transaction_id}, amount={transfer_amount}, content='{content}'")
+
+    # Làm sạch nội dung CK
+    clean_content = content.upper().replace(" ", "").replace("-", "").replace("\n", "")
+
+    # Tìm đơn hàng khớp
+    order_code, order = db.find_order_by_content(clean_content)
+
+    if not order_code:
+        match = re.search(r"BOT\d{10}[A-Z0-9]{6}", clean_content)
+        if match:
+            order_code, order = db.find_order_by_content(match.group())
+
+    if not order_code:
+        logger.info(f"No matching order for content: {content}")
+        db.mark_payment_processed(transaction_id)
+        await _notify_all_admins(application,
+            f"⚠️ **TIỀN VÀO KHÔNG KHỚP ĐƠN**\n"
+            f"━━━━━━━━━━━━━━━━━━\n"
+            f"💰 Số tiền: {transfer_amount:,}đ\n"
+            f"📝 Nội dung: {content}\n"
+            f"🔗 Ref: {reference_code}\n\n"
+            f"_Có thể khách ghi sai nội dung CK_"
+        )
+        return
+
+    # Kiểm tra trạng thái đơn
+    if order.get("status") not in ("pending", "failed"):
+        logger.info(f"Payment for already-processed order {order_code} (status={order.get('status')})")
+        db.mark_payment_processed(transaction_id)
+        db.mark_transaction_processed(transaction_id)
+        await _notify_all_admins(application,
+            f"⚠️ **TIỀN VÀO CHO ĐƠN ĐÃ XỬ LÝ**\n"
+            f"📋 Mã: `{order_code}` | Status: {order.get('status')}\n"
+            f"💰 {transfer_amount:,}đ | Nội dung: {content}"
+        )
+        return
+
+    # Kiểm tra số tiền
+    expected = int(order.get("total", 0))
+    if transfer_amount < expected:
+        logger.warning(f"Amount mismatch for {order_code}: got {transfer_amount}, need {expected}")
+        db.mark_payment_processed(transaction_id)
+        db.mark_transaction_processed(transaction_id)
+        await _notify_all_admins(application,
+            f"⚠️ **THIẾU TIỀN — ĐƠN {order_code}**\n"
+            f"Nhận: {transfer_amount:,}đ | Cần: {expected:,}đ\n"
+            f"Chênh lệch: {expected - transfer_amount:,}đ"
+        )
+        return
+
+    # ✅ Thanh toán hợp lệ — xử lý đơn
+    logger.info(f"✅ Payment matched order {order_code} — processing!")
+    
+    result = await process_paid_order(application, order_code, "sepay")
+    
+    # CUỐI CÙNG mới mark processed — nếu crash trước đây, payment sẽ được retry
+    db.mark_payment_processed(transaction_id)
+    db.mark_transaction_processed(transaction_id)
+    
+    if result:
+        logger.info(f"✅ Order {order_code} completed successfully!")
+    else:
+        logger.warning(f"❌ Order {order_code} processing returned False")
+
+
 async def post_init(application):
-    """Set bot commands + start webhook server với ĐÚNG event loop."""
+    """Set bot commands + start webhook server + payment processor."""
     commands = [
         BotCommand("start", "Bắt đầu"),
         BotCommand("menu", "Xem sản phẩm & mua hàng"),
@@ -1812,21 +1939,23 @@ async def post_init(application):
     ]
     await application.bot.set_my_commands(commands)
 
-    # Dọn dẹp đơn pending cũ từ lần chạy trước (task auto-cancel bị mất khi restart)
+    # Recover đơn kẹt ở 'processing' từ crash cũ
+    db.recover_stuck_orders()
+
+    # Dọn dẹp đơn pending cũ từ lần chạy trước
     await _cleanup_stale_orders(application)
-    
-    # Job định kỳ hủy đơn quá hạn (backup cho asyncio.create_task bị mất khi restart)
+
+    # Job định kỳ hủy đơn quá hạn
     asyncio.create_task(_periodic_order_cleanup(application))
 
-    # START webhook server TẠI ĐÂY — vì post_init chạy trong event loop THẬT của bot
-    # Đây là cách DUY NHẤT đảm bảo Flask thread có đúng event loop để schedule coroutine
-    live_loop = asyncio.get_running_loop()
-    logger.info(f"post_init: Captured LIVE event loop: {id(live_loop)}")
+    # 💳 Payment processor — poll DB mỗi 5 giây để xử lý thanh toán
+    asyncio.create_task(_payment_processor(application))
 
+    # Webhook server — CHỈ lưu giao dịch vào DB, không cần event loop hay telegram app
     webhook_thread = Thread(
         target=start_webhook_server,
-        args=(application, WEBHOOK_PORT),
-        kwargs={"bot_loop": live_loop, "bot_db": db},
+        args=(WEBHOOK_PORT,),
+        kwargs={"bot_db": db},
         daemon=True
     )
     webhook_thread.start()
@@ -1870,11 +1999,8 @@ def main():
     app.add_handler(CallbackQueryHandler(handle_admin_cb, pattern="^admin_"))
     app.add_handler(CallbackQueryHandler(handle_category_click, pattern="^viewcat_|^reload_menu$|^btn_myorders$"))
 
-    # Text input handler (for slot_gpt_team and admin inputs)
+    # Text input handler
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_input))
-
-    # Webhook server giờ được start từ post_init (chạy trong event loop thật của bot)
-    # KHÔNG tạo event loop riêng ở đây nữa — run_polling sẽ tạo loop riêng
 
     # Run bot
     logger.info("🤖 Bot started!")
@@ -1883,3 +2009,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

@@ -26,6 +26,7 @@ _DEFAULT_DATA = {
     "custom_hiddens": [],
     "settings": {"default_markup_percent": 30},
     "processed_transactions": [],
+    "incoming_payments": [],
     "users": []
 }
 
@@ -112,19 +113,36 @@ class Database:
             self._write(data)
             return True
 
-    def claim_order_for_payment(self, order_code: str) -> dict | None:
-        """Atomic: chuyển đơn từ 'pending' sang 'processing' để webhook xử lý.
-        Trả về order dict nếu claim thành công, None nếu đơn không còn pending.
-        Đảm bảo auto-cancel KHÔNG THỂ ghi đè đơn đang được webhook xử lý.
+    def complete_order_payment(self, order_code: str, updates: dict) -> dict | None:
+        """Atomic: chuyển đơn từ 'pending' sang trạng thái mới + lưu dữ liệu.
+        Trả về order dict nếu thành công, None nếu đơn không còn pending.
+        
+        Đây là operation duy nhất để xác nhận thanh toán — đảm bảo
+        auto-cancel KHÔNG THỂ ghi đè đơn đã được thanh toán.
         """
         with self.lock:
             data = self._read()
             order = data["orders"].get(order_code)
-            if not order or order.get("status") != "pending":
+            if not order or order.get("status") not in ("pending", "failed"):
                 return None
-            order["status"] = "processing"
+            # Apply tất cả updates (status, paid_at, items, etc.) trong 1 lock
+            order.update(updates)
             self._write(data)
             return dict(order)  # Trả bản sao an toàn
+
+    def recover_stuck_orders(self) -> int:
+        """Chuyển đơn kẹt 'processing' về 'pending' (phòng crash cũ)."""
+        with self.lock:
+            data = self._read()
+            count = 0
+            for code, order in data["orders"].items():
+                if order.get("status") == "processing":
+                    order["status"] = "pending"
+                    count += 1
+            if count:
+                self._write(data)
+                logger.info(f"Recovered {count} stuck 'processing' orders back to 'pending'")
+            return count
 
     def find_order_by_content(self, content: str) -> tuple:
         """Tìm order theo nội dung chuyển khoản (chứa order_code).
@@ -419,6 +437,44 @@ class Database:
                 if len(txns) > 1000:
                     data["processed_transactions"] = txns[-1000:]
                 self._write(data)
+
+    # === INCOMING PAYMENTS (webhook store-then-poll) ===
+    def store_incoming_payment(self, payment: dict) -> bool:
+        """Lưu giao dịch từ webhook. Returns False nếu trùng."""
+        with self.lock:
+            data = self._read()
+            payments = data.setdefault("incoming_payments", [])
+            tid = str(payment.get("id", ""))
+            if tid:
+                for existing in payments:
+                    if str(existing.get("id", "")) == tid:
+                        return False
+            payments.append(payment)
+            self._write(data)
+            return True
+
+    def get_unprocessed_payments(self) -> list:
+        """Lấy tất cả giao dịch chưa xử lý."""
+        with self.lock:
+            return [
+                dict(p) for p in self._read().get("incoming_payments", [])
+                if not p.get("processed", False)
+            ]
+
+    def mark_payment_processed(self, transaction_id):
+        """Đánh dấu giao dịch đã xử lý."""
+        with self.lock:
+            data = self._read()
+            tid = str(transaction_id)
+            for payment in data.get("incoming_payments", []):
+                if str(payment.get("id", "")) == tid:
+                    payment["processed"] = True
+                    break
+            # Giữ tối đa 500 giao dịch gần nhất
+            payments = data.get("incoming_payments", [])
+            if len(payments) > 500:
+                data["incoming_payments"] = payments[-500:]
+            self._write(data)
 
     # === STATS ===
     def get_stats(self) -> dict:
