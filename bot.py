@@ -519,7 +519,7 @@ async def handle_qty_select(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Nội dung: `{order_code}`\n\n"
         f"📱 Quét QR bên dưới để thanh toán nhanh:\n"
         f"[QR Thanh toán]({qr_url})\n\n"
-        f"⏰ Đơn hàng tự hủy sau **15 phút**\n"
+        f"⏰ Đơn hàng tự hủy sau **5 phút**\n"
         f"✅ Thanh toán sẽ được xác nhận **TỰ ĐỘNG**"
     )
 
@@ -530,8 +530,8 @@ async def handle_qty_select(update: Update, context: ContextTypes.DEFAULT_TYPE):
         disable_web_page_preview=False
     )
 
-    # Auto cancel sau 15 phút
-    asyncio.create_task(auto_cancel_order(context, order_code, query.from_user.id, 900))
+    # Auto cancel sau 5 phút
+    asyncio.create_task(auto_cancel_order(context, order_code, query.from_user.id, ORDER_TIMEOUT_SECONDS))
 
 
 async def auto_cancel_order(context, order_code, user_id, delay):
@@ -1736,6 +1736,53 @@ async def handle_noop(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ============================================
 # SETUP & RUN
 # ============================================
+ORDER_TIMEOUT_SECONDS = 300  # 5 phút
+
+
+async def _cleanup_stale_orders(application):
+    """Hủy đơn pending quá hạn (chạy 1 lần khi khởi động + định kỳ)."""
+    now = datetime.now()
+    pending = db.get_pending_orders()
+    cancelled_count = 0
+    
+    for code, order in pending.items():
+        created_str = order.get("created_at", "")
+        if not created_str:
+            continue
+        try:
+            created = datetime.fromisoformat(created_str)
+        except (ValueError, TypeError):
+            continue
+        
+        elapsed = (now - created).total_seconds()
+        if elapsed > ORDER_TIMEOUT_SECONDS:
+            order["status"] = "cancelled_timeout"
+            db.save_order(code, order)
+            cancelled_count += 1
+            
+            try:
+                await application.bot.send_message(
+                    chat_id=order["user_id"],
+                    text=f"⏰ Đơn hàng **#{code}** đã tự động hủy do quá thời gian thanh toán.",
+                    parse_mode="Markdown"
+                )
+            except Exception:
+                pass
+    
+    if cancelled_count:
+        logger.info(f"Cleanup: cancelled {cancelled_count} stale pending orders")
+
+
+async def _periodic_order_cleanup(application):
+    """Job chạy mỗi 5 phút để hủy đơn pending quá hạn (phòng trường hợp bot restart mất task)."""
+    while True:
+        await asyncio.sleep(300)  # 5 phút
+        try:
+            await _cleanup_stale_orders(application)
+        except Exception as e:
+            logger.error(f"Periodic cleanup error: {e}")
+
+
 async def post_init(application):
     """Set bot commands + start webhook server với ĐÚNG event loop."""
     commands = [
@@ -1745,6 +1792,12 @@ async def post_init(application):
         BotCommand("help", "Hướng dẫn sử dụng"),
     ]
     await application.bot.set_my_commands(commands)
+
+    # Dọn dẹp đơn pending cũ từ lần chạy trước (task auto-cancel bị mất khi restart)
+    await _cleanup_stale_orders(application)
+    
+    # Job định kỳ hủy đơn quá hạn (backup cho asyncio.create_task bị mất khi restart)
+    asyncio.create_task(_periodic_order_cleanup(application))
 
     # START webhook server TẠI ĐÂY — vì post_init chạy trong event loop THẬT của bot
     # Đây là cách DUY NHẤT đảm bảo Flask thread có đúng event loop để schedule coroutine
