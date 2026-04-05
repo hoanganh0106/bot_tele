@@ -98,6 +98,34 @@ class Database:
                 if order.get("status") == "pending"
             }
 
+    def cancel_order_if_pending(self, order_code: str) -> bool:
+        """Atomic: hủy đơn CHỈ KHI status vẫn là 'pending'.
+        Trả về True nếu đã hủy, False nếu đơn đã được xử lý bởi thread khác.
+        Giải quyết race condition giữa webhook (paid) và auto-cancel (timeout).
+        """
+        with self.lock:
+            data = self._read()
+            order = data["orders"].get(order_code)
+            if not order or order.get("status") != "pending":
+                return False
+            order["status"] = "cancelled_timeout"
+            self._write(data)
+            return True
+
+    def claim_order_for_payment(self, order_code: str) -> dict | None:
+        """Atomic: chuyển đơn từ 'pending' sang 'processing' để webhook xử lý.
+        Trả về order dict nếu claim thành công, None nếu đơn không còn pending.
+        Đảm bảo auto-cancel KHÔNG THỂ ghi đè đơn đang được webhook xử lý.
+        """
+        with self.lock:
+            data = self._read()
+            order = data["orders"].get(order_code)
+            if not order or order.get("status") != "pending":
+                return None
+            order["status"] = "processing"
+            self._write(data)
+            return dict(order)  # Trả bản sao an toàn
+
     def find_order_by_content(self, content: str) -> tuple:
         """Tìm order theo nội dung chuyển khoản (chứa order_code).
         Ưu tiên: pending/failed > cancelled_timeout (có thể hồi phục) > các trạng thái khác.

@@ -537,10 +537,10 @@ async def handle_qty_select(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def auto_cancel_order(context, order_code, user_id, delay):
     """Tự hủy đơn sau thời gian chờ."""
     await asyncio.sleep(delay)
-    order = db.get_order(order_code)
-    if order and order["status"] == "pending":
-        order["status"] = "cancelled_timeout"
-        db.save_order(order_code, order)
+    # CRITICAL: Dùng cancel_order_if_pending (atomic) để tránh race condition
+    # với webhook đang xử lý thanh toán cùng lúc
+    cancelled = db.cancel_order_if_pending(order_code)
+    if cancelled:
         try:
             await context.bot.send_message(
                 chat_id=user_id,
@@ -643,13 +643,15 @@ async def cmd_myorders(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ============================================
 async def process_paid_order(context, order_code: str, payment_source: str = "sepay"):
     """Xử lý đơn hàng đã thanh toán."""
-    order = db.get_order(order_code)
+    # Atomic: claim đơn (pending → processing) để auto-cancel không ghi đè
+    order = db.claim_order_for_payment(order_code)
     if not order:
-        logger.warning(f"Order {order_code} not found")
-        return False
-
-    if order["status"] != "pending":
-        logger.info(f"Order {order_code} already processed: {order['status']}")
+        # Đơn không tồn tại hoặc đã được xử lý/hủy bởi thread khác
+        existing = db.get_order(order_code)
+        if existing:
+            logger.info(f"Order {order_code} already processed: {existing.get('status')}")
+        else:
+            logger.warning(f"Order {order_code} not found")
         return False
 
     product_key = order["product_key"]
@@ -1756,18 +1758,19 @@ async def _cleanup_stale_orders(application):
         
         elapsed = (now - created).total_seconds()
         if elapsed > ORDER_TIMEOUT_SECONDS:
-            order["status"] = "cancelled_timeout"
-            db.save_order(code, order)
-            cancelled_count += 1
-            
-            try:
-                await application.bot.send_message(
-                    chat_id=order["user_id"],
-                    text=f"⏰ Đơn hàng **#{code}** đã tự động hủy do quá thời gian thanh toán.",
-                    parse_mode="Markdown"
-                )
-            except Exception:
-                pass
+            # CRITICAL: Dùng cancel_order_if_pending (atomic) để tránh
+            # ghi đè đơn đã được webhook xử lý (paid) trong lúc cleanup
+            cancelled = db.cancel_order_if_pending(code)
+            if cancelled:
+                cancelled_count += 1
+                try:
+                    await application.bot.send_message(
+                        chat_id=order["user_id"],
+                        text=f"⏰ Đơn hàng **#{code}** đã tự động hủy do quá thời gian thanh toán.",
+                        parse_mode="Markdown"
+                    )
+                except Exception:
+                    pass
     
     if cancelled_count:
         logger.info(f"Cleanup: cancelled {cancelled_count} stale pending orders")

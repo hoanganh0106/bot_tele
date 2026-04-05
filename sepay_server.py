@@ -99,14 +99,15 @@ def create_flask_app():
             ))
             return jsonify({"success": True, "message": "No matching order"}), 200
 
-        # Nếu order ĐÃ được xử lý rồi (paid, cancelled, failed...)
-        if order.get("status") not in ("pending", "failed"):
+        # Nếu order ĐÃ được xử lý rồi (paid, cancelled, cancelled_timeout, failed...)
+        order_status = order.get("status")
+        if order_status not in ("pending", "failed"):
             logger.info(f"Received money for already processed order: {order_code}")
             _schedule_coroutine(_notify_admin(
                 f"⚠️ **TIỀN VÀO CHO ĐƠN ĐÃ XỬ LÝ**\n"
                 f"━━━━━━━━━━━━━━━━━━\n"
                 f"📋 Mã đơn: `{order_code}`\n"
-                f"🚥 Trạng thái hiện tại: {order.get('status')}\n"
+                f"🚥 Trạng thái hiện tại: {order_status}\n"
                 f"💰 Tiền mới vào: {transfer_amount:,}đ\n"
                 f"📝 Nội dung: {content}\n\n"
                 f"_Có thể khách lỡ tay chuyển 2 lần hoặc bạn đã bấm duyệt tay trước đó._"
