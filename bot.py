@@ -25,7 +25,7 @@ from telegram.ext import (
     ContextTypes, MessageHandler, filters, ConversationHandler
 )
 
-from ctv_api import CTVApi
+from ctv_api import CTVApi, CrmTeacherApi
 from database import Database
 from sepay_server import start_webhook_server
 
@@ -38,6 +38,9 @@ BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 ADMIN_IDS = [int(x.strip()) for x in os.getenv("ADMIN_TELEGRAM_IDS", "").split(",") if x.strip().isdigit()]
 CTV_API_URL = os.getenv("CTV_API_URL", "http://103.69.87.202:5000")
 CTV_API_KEY = os.getenv("CTV_API_KEY", "")
+
+CRMTEACHER_API_URL = os.getenv("CRMTEACHER_API_URL", "https://api.bottele.crmteacher.org/openapi/v1")
+CRMTEACHER_API_KEY = os.getenv("CRMTEACHER_API_KEY", "rsk_live_5KpJDlb9H5m43GLyNOB2M45O3Ipp0rz2EaY7kZRq2q5wLLr9")
 WEBHOOK_PORT = int(os.getenv("WEBHOOK_PORT", "8443"))
 BANK_NAME = os.getenv("BANK_NAME", "Vietcombank")
 BANK_ACCOUNT_NUMBER = os.getenv("BANK_ACCOUNT_NUMBER", "")
@@ -53,6 +56,7 @@ logger = logging.getLogger(__name__)
 
 # Init
 api = CTVApi(CTV_API_URL, CTV_API_KEY)
+crm_api = CrmTeacherApi(CRMTEACHER_API_URL, CRMTEACHER_API_KEY)
 db = Database("data/bot_data.json")
 
 # Conversation states
@@ -152,6 +156,11 @@ def get_all_products_merged(force_refresh: bool = False) -> tuple[dict, int]:
     if products is None:
         products = {}
         
+    crm_products, crm_balance = crm_api.get_stock()
+    if crm_products:
+        products.update(crm_products)
+        balance += crm_balance
+        
     custom_products = db.get_custom_products()
     for k, v in custom_products.items():
         products[k] = dict(v) # Clone
@@ -179,6 +188,10 @@ def get_all_categories_merged() -> dict:
 def classify_product(key: str, info: dict) -> tuple:
     merged_cats = get_all_categories_merged()
     
+    # Tách riêng sản phẩm từ hệ thống 2 (CRM)
+    if info.get("api_source") == "CRM":
+        return "Đối Tác 2", "🚀", "crm_partner"
+
     # Get custom category first
     custom_cat = db.get_custom_category(key)
     if custom_cat and custom_cat in merged_cats:
@@ -755,7 +768,8 @@ async def process_paid_order(context, order_code: str, payment_source: str = "se
                 f"🔔 **[HÀNG TỰ BÁN] AUTO GIAO HÀNG THÀNH CÔNG**\n"
                 f"Mã: `{order_code}`\n"
                 f"👤 Khách: {format_user_link(order.get('username'), user_id)} | Mua x{qty}\n"
-                f"🔑 Đã tự động xuất {qty} tài khoản từ kho để giao cho khách!"
+                f"🔑 Đã tự động xuất {qty} tài khoản từ kho để giao cho khách:\n"
+                f"{items_str}"
             )
             return True
             
@@ -846,10 +860,20 @@ async def process_paid_order(context, order_code: str, payment_source: str = "se
 
     try:
         emails = order.get("emails")
-        result = api.buy(product_key, qty, emails=emails if emails else None)
+        
+        # Kiểm tra xem sản phẩm thuộc API nào
+        source = products[product_key].get("api_source", "CTV")
+        if source == "CRM":
+            result = crm_api.buy(product_key, qty, emails=emails if emails else None, order_code=order_code)
+        else:
+            result = api.buy(product_key, qty, emails=emails if emails else None)
 
         if result.get("success"):
-            items = result["items"]
+            items = result.get("items", [])
+            # Trường hợp CRM API trả về data khác chút
+            if source == "CRM" and "data" in result and "items" in result["data"]:
+                items = result["data"]["items"]
+
             # Atomic: pending → paid + lưu kết quả API
             saved = db.complete_order_payment(order_code, {
                 "status": "paid",
@@ -1292,7 +1316,14 @@ async def handle_category_click(update: Update, context: ContextTypes.DEFAULT_TY
             sell_price = get_sell_price(key, info['price'], info.get('is_custom_local', False))
             status = f"✅{stock}"
             dname = db.get_custom_name(key) or info['name']
-            buttons.append([InlineKeyboardButton(f"{dname} | {format_money(sell_price)} | {status}", callback_data=f"prod_{key}")])
+            
+            # Phân biệt nguồn API (Chỉ cho Admin)
+            api_tag = ""
+            if is_admin(update.effective_user.id):
+                api_source = info.get("api_source", "CTV")
+                api_tag = f"[{api_source}] " if not info.get("is_custom_local") else "[TỰ BÁN] "
+            
+            buttons.append([InlineKeyboardButton(f"{api_tag}{dname} | {format_money(sell_price)} | {status}", callback_data=f"prod_{key}")])
                
     buttons.append([InlineKeyboardButton("⬅️ Quay lại danh mục", callback_data="back_menu")])
     
@@ -1324,6 +1355,11 @@ async def render_admin_product_detail(update, context, key):
         
     has_auto_accs = db.has_custom_accounts_enabled(key)
     source_txt = "🌐 Hàng đối tác (API gốc)"
+    if info and info.get("api_source") == "CRM":
+        source_txt = "🌐 Hàng đối tác (CRMTeacher)"
+    elif info and info.get("api_source") == "CTV":
+        source_txt = "🌐 Hàng đối tác (CTV Gốc)"
+
     if is_custom_local:
         if has_auto_accs:
             source_txt = "⚡ Tự bán (Tự động giao từ kho)"
@@ -1344,6 +1380,7 @@ async def render_admin_product_detail(update, context, key):
         f"Số lượng kho: **{stock_status}**\n"
         f"Tên hiển thị: **{current_name}**\n"
         f"Danh mục: {current_icon} {current_cat}\n"
+        f"Giá gốc (từ đối tác): {format_money(info['price'] if info else 0)}\n"
         f"Giá bán hiện tại: {format_money(sell_price)}\n\n"
         f"Vui lòng chọn thao tác bên dưới:"
     )

@@ -45,12 +45,17 @@ class CTVApi:
             data = r.json()
             if data.get("success"):
                 products = data["products"]
+                
+                # Gắn tag API
+                for k, v in products.items():
+                    v["api_source"] = "CTV"
 
                 if ENABLE_TEST_PRODUCT:
                     products["test_product"] = {
                         "name": "🔥 TEST SEPAY - 5K VNĐ",
                         "price": 5000,
-                        "stock": 999
+                        "stock": 999,
+                        "api_source": "CTV"
                     }
 
                 return products, data.get("balance", 0)
@@ -125,3 +130,140 @@ class CTVApi:
             return {"success": False, "error": "Server trả về dữ liệu không hợp lệ"}
         except Exception as e:
             return {"success": False, "error": str(e)}
+
+class CrmTeacherApi:
+    def __init__(self, base_url: str, api_key: str):
+        self.base_url = base_url.rstrip("/")
+        self.api_key = api_key
+
+        self.session = requests.Session()
+        self.session.headers.update({
+            "X-API-Key": api_key,
+            "Content-Type": "application/json"
+        })
+        retry_strategy = Retry(
+            total=3,
+            backoff_factor=0.5,
+            status_forcelist=[500, 502, 503, 504],
+            allowed_methods=["GET"]
+        )
+        adapter = HTTPAdapter(max_retries=retry_strategy, pool_connections=5, pool_maxsize=10)
+        self.session.mount("http://", adapter)
+        self.session.mount("https://", adapter)
+
+    def get_stock(self):
+        try:
+            r = self.session.get(f"{self.base_url}/products", timeout=10)
+            data = r.json()
+            if isinstance(data, dict) and data.get("success"):
+                products = data.get("products", {})
+                for k, v in products.items():
+                    v["api_source"] = "CRM"
+                return products, data.get("balance", 0)
+            # Nếu trả về list/array sản phẩm (trường hợp API /products thuần tuý không có json node success)
+            elif isinstance(data, list):
+                products = {}
+                for p in data:
+                    # Chuyển đổi định dạng tuỳ thuộc API, giả sử id là key
+                    k = str(p.get("id", p.get("key", "unknown")))
+                    products[k] = {
+                        "name": p.get("name", "Unknown"),
+                        "price": p.get("price", 0),
+                        "stock": p.get("stock", 0),
+                        "api_source": "CRM"
+                    }
+                return products, 0
+            else:
+                return {}, 0
+        except Exception as e:
+            logger.error(f"CRMTeacher API stock error: {e}")
+            return {}, 0
+
+    def get_balance(self):
+        try:
+            r = self.session.get(f"{self.base_url}/balance", timeout=10)
+            data = r.json()
+            if isinstance(data, dict):
+                return data.get("balance", 0)
+            return 0
+        except Exception as e:
+            return 0
+
+    def buy(self, product_key: str, qty: int, emails: list = None, order_code: str = None):
+        try:
+            body = {"product_id": product_key, "qty": qty}
+            if emails:
+                body["emails"] = emails
+            if order_code:
+                body["order_code"] = order_code
+
+            r = self.session.post(
+                f"{self.base_url}/orders",
+                json=body,
+                timeout=30
+            )
+
+            if r.status_code == 401 or r.status_code == 403:
+                return {"success": False, "error": "Lỗi xác thực API CRMTeacher"}
+            
+            data = r.json()
+            return data
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+class CrmTeacherApi:
+    def __init__(self, base_url: str, api_key: str):
+        self.base_url = base_url.rstrip("/")
+        self.api_key = api_key
+
+        self.session = requests.Session()
+        self.session.headers.update({
+            "X-API-Key": api_key,
+            "Content-Type": "application/json"
+        })
+        retry_strategy = Retry(
+            total=3,
+            backoff_factor=0.5,
+            status_forcelist=[500, 502, 503, 504],
+            allowed_methods=["GET"]
+        )
+        adapter = HTTPAdapter(max_retries=retry_strategy, pool_connections=5, pool_maxsize=10)
+        self.session.mount("http://", adapter)
+        self.session.mount("https://", adapter)
+
+    def get_stock(self):
+        try:
+            r = self.session.get(f"{self.base_url}/products", timeout=10)
+            if r.status_code == 200:
+                data = r.json()
+                if data.get("success"):
+                    return data.get("products", {}), data.get("balance", 0)
+            return {}, 0
+        except Exception as e:
+            logger.error(f"[CRM API] get_stock error: {e}")
+            return {}, 0
+
+    def get_balance(self):
+        try:
+            r = self.session.get(f"{self.base_url}/profile", timeout=10)
+            if r.status_code == 200:
+                data = r.json()
+                if data.get("success"):
+                    return data.get("profile", {}).get("balance", 0)
+            return 0
+        except Exception as e:
+            logger.error(f"[CRM API] get_balance error: {e}")
+            return 0
+
+    def buy(self, product_key: str, qty: int = 1):
+        try:
+            r = self.session.post(f"{self.base_url}/order", json={
+                "service": product_key,
+                "amount": qty
+            }, timeout=30)
+            data = r.json()
+            if r.status_code == 200 and data.get("success"):
+                return {"success": True, "items": data.get("items", []), "message": data.get("message", "Muathành công")}
+            return {"success": False, "error": data.get("message", "Lỗi CRM API")}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
