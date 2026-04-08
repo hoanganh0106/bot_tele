@@ -131,7 +131,7 @@ ALL_CATEGORIES = {
     "discord": ["Discord", "💬"],
     "vpn": ["VPN", "🛡️"],
     "spotify": ["Spotify", "🎵"],
-    "khac": ["Khác", "📦"]
+    "crm_partner": ["Đối Tác 2", "🚀"],
 }
 
 
