@@ -2471,19 +2471,21 @@ async def handle_referral_home(update: Update, context: ContextTypes.DEFAULT_TYP
     
     new_user_line = ""
     if new_user_rw > 0:
-        new_user_line = f"🎁 Bạn bè nhận: **{format_money(new_user_rw)}**\n"
+        new_user_line = f"🎁 Bạn bè nhận: <b>{format_money(new_user_rw)}</b>\n"
     
     text = (
-        "🎁 **GIỚI THIỆU BẠN BÈ**\n"
+        "🎁 <b>GIỚI THIỆU BẠN BÈ</b>\n"
         "━━━━━━━━━━━━━━━━━━\n\n"
-        f"📎 **Link mời của bạn (bấm để copy):**\n"
-        f"`{ref_link}`\n\n"
-        f"💰 Bạn nhận: **{format_money(reward)}/người**\n"
+        f"📎 <b>Link mời của bạn:</b>\n"
+        f"👉 <a href=\"{ref_link}\">Bấm vào đây để mở link</a>\n\n"
+        f"📋 <b>Copy link:</b>\n"
+        f"<code>{ref_link}</code>\n\n"
+        f"💰 Bạn nhận: <b>{format_money(reward)}/người</b>\n"
         f"{new_user_line}"
         f"📊 Trạng thái: {status}\n\n"
-        f"👥 Đã giới thiệu: **{stats['referral_count']}** người\n"
-        f"💵 Tổng thưởng: **{format_money(stats['referral_earnings'])}**\n\n"
-        "💡 _Bấm vào link trên để copy, hoặc dùng nút chia sẻ bên dưới!_"
+        f"👥 Đã giới thiệu: <b>{stats['referral_count']}</b> người\n"
+        f"💵 Tổng thưởng: <b>{format_money(stats['referral_earnings'])}</b>\n\n"
+        "💡 <i>Bấm vào link xanh để xem, hoặc bấm vào ô code để copy!</i>"
     )
     
     share_text = f"Mua tài khoản Premium giá rẻ, tự động 24/7! Bấm vào đây: {ref_link}"
@@ -2495,7 +2497,7 @@ async def handle_referral_home(update: Update, context: ContextTypes.DEFAULT_TYP
         [InlineKeyboardButton("⬅️ Quay lại", callback_data="back_start")],
     ]
     
-    await query.edit_message_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(buttons))
+    await query.edit_message_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(buttons))
 
 
 async def handle_copy_ref(update: Update, context: ContextTypes.DEFAULT_TYPE):
