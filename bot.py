@@ -1691,6 +1691,14 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
         cat_id = context.user_data["awaiting_set_emoji"]
         del context.user_data["awaiting_set_emoji"]
         try:
+            # Kiểm tra xem tin nhắn có chứa custom emoji không
+            emoji_id_from_entity = None
+            if update.message.entities:
+                for entity in update.message.entities:
+                    if entity.type == "custom_emoji":
+                        emoji_id_from_entity = entity.custom_emoji_id
+                        break
+            
             if text.lower() == "reset":
                 db.set_category_emoji_id(cat_id, None)
                 await update.message.reply_text(
@@ -1701,7 +1709,20 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
                          InlineKeyboardButton("🏠 Thoát", callback_data="admin_home")]
                     ])
                 )
+            elif emoji_id_from_entity:
+                # Admin gửi trực tiếp custom emoji → tự lấy ID
+                db.set_category_emoji_id(cat_id, emoji_id_from_entity)
+                await update.message.reply_text(
+                    f"✅ Đã set custom emoji cho danh mục `{cat_id}`!\n"
+                    f"Emoji ID: `{emoji_id_from_entity}`",
+                    parse_mode="Markdown",
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("⬅️ Quay lại", callback_data="admin_set_emoji_list"),
+                         InlineKeyboardButton("🏠 Thoát", callback_data="admin_home")]
+                    ])
+                )
             elif text.strip().isdigit() and len(text.strip()) > 10:
+                # Admin nhập ID thủ công
                 db.set_category_emoji_id(cat_id, text.strip())
                 await update.message.reply_text(
                     f"✅ Đã set custom emoji cho danh mục `{cat_id}`!\n"
@@ -1714,8 +1735,8 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
             else:
                 await update.message.reply_text(
-                    "❌ ID không hợp lệ. Emoji ID phải là một dãy số dài.\n"
-                    "Dùng lệnh `/getemoji` để lấy ID đúng.",
+                    "❌ Không nhận diện được emoji.\n"
+                    "Hãy gửi **custom emoji trực tiếp** hoặc nhập **emoji ID** (dãy số dài).",
                     parse_mode="Markdown"
                 )
         except Exception:
@@ -2656,11 +2677,9 @@ async def handle_admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(
             f"🎨 **Đổi Icon danh mục:** {current_icon} {current_name}\n"
             f"{status}\n\n"
-            f"**Cách làm:**\n"
-            f"1️⃣ Dùng tài khoản **Premium** gửi custom emoji vào chat\n"
-            f"2️⃣ Reply emoji đó bằng lệnh `/getemoji` để lấy ID\n"
-            f"3️⃣ Nhắn tin ID đó vào đây (VD: `5368324170671202286`)\n\n"
-            f"Hoặc nhắn `reset` để xóa và dùng lại emoji mặc định.",
+            f"👉 **Gửi trực tiếp custom emoji** vào đây — bot sẽ tự nhận diện!\n\n"
+            f"Hoặc nhập emoji ID thủ công (dãy số dài).\n"
+            f"Nhắn `reset` để xóa và dùng lại emoji mặc định.",
             parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Hủy", callback_data="admin_set_emoji_list")]])
         )
