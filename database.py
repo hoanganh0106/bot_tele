@@ -506,10 +506,24 @@ class Database:
             }
 
     # === USERS ===
+    def _migrate_users(self, data: dict):
+        """Chuyển users từ list (cũ) sang dict (mới) nếu cần."""
+        users_raw = data.get("users")
+        if isinstance(users_raw, list):
+            # Chuyển list user_ids cũ sang user_list
+            old_list = data.pop("users")
+            user_list = data.setdefault("user_list", [])
+            for uid in old_list:
+                if uid not in user_list:
+                    user_list.append(uid)
+            data["users"] = {}
+
     def add_user(self, user_id: int):
         """Backward-compatible: thêm user vào cả user_list (cũ) và users dict (mới)."""
         with self.lock:
             data = self._read()
+            # Migration: chuyển list → dict nếu database cũ
+            self._migrate_users(data)
             # Legacy list
             user_list = data.setdefault("user_list", [])
             if user_id not in user_list:
@@ -532,15 +546,21 @@ class Database:
     def get_all_users(self) -> list:
         with self.lock:
             data = self._read()
+            self._migrate_users(data)
             # Merge cả 2 nguồn
             user_list = set(data.get("user_list", []))
-            user_dict_ids = {int(uid) for uid in data.get("users", {}).keys()}
+            users_dict = data.get("users", {})
+            if isinstance(users_dict, dict):
+                user_dict_ids = {int(uid) for uid in users_dict.keys()}
+            else:
+                user_dict_ids = set()
             return list(user_list | user_dict_ids)
 
     def register_user(self, user_id: int, username: str = None, first_name: str = None, referred_by: int = None):
         """Đăng ký user mới với thông tin đầy đủ + xử lý referral."""
         with self.lock:
             data = self._read()
+            self._migrate_users(data)
             users = data.setdefault("users", {})
             uid = str(user_id)
             is_new = uid not in users
