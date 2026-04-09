@@ -385,7 +385,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             referred_by = None
 
     # Đăng ký user (xử lý referral trong database)
-    is_new, referral_credited = db.register_user(
+    is_new, referral_credited, new_user_reward = db.register_user(
         user_id=user.id,
         username=user.username,
         first_name=user.first_name,
@@ -394,12 +394,18 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     balance = db.get_user_balance(user.id)
     
+    # Thông báo thưởng cho user mới được giới thiệu
+    welcome_bonus = ""
+    if new_user_reward > 0:
+        welcome_bonus = f"\n🎁 **Quà chào mừng: +{format_money(new_user_reward)}** đã cộng vào ví!\n"
+    
     text = (
         f"👋 Xin chào **{user.first_name}**!\n\n"
         "Chào mừng bạn đến với hệ thống bán tài khoản Premium tự động 🤖\n\n"
         "🔹 **Thanh toán tự động** 24/7, xác nhận trong 1 phút\n"
         "🔹 **Nhận tài khoản ngay** sau khi thanh toán\n"
         "🔹 **Hỗ trợ tận tình** nhanh chóng\n\n"
+        f"{welcome_bonus}"
         f"💰 **Số dư ví:** {format_money(balance)}\n\n"
         "👇 Bấm vào nút bên dưới để chọn sản phẩm 👇"
     )
@@ -1401,6 +1407,24 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ Số tiền không hợp lệ. VD: `2000`", parse_mode="Markdown")
         return
 
+    # New user reward config
+    if context.user_data.get("awaiting_ref_newuser"):
+        del context.user_data["awaiting_ref_newuser"]
+        try:
+            new_reward = int(text.replace(",", "").replace(".", ""))
+            if new_reward < 0:
+                raise ValueError
+            db.set_setting("referral_new_user_reward", new_reward)
+            status = f"**{format_money(new_reward)}**" if new_reward > 0 else "**TẮT**"
+            await update.message.reply_text(
+                f"✅ Đã cập nhật thưởng người được mời: {status}",
+                parse_mode="Markdown",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Quay lại", callback_data="admin_referral")]])
+            )
+        except ValueError:
+            await update.message.reply_text("❌ Số tiền không hợp lệ. VD: `500` hoặc `0` để tắt", parse_mode="Markdown")
+        return
+
     # Min deposit config
     if context.user_data.get("awaiting_min_deposit"):
         del context.user_data["awaiting_min_deposit"]
@@ -1852,6 +1876,7 @@ async def handle_admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.pop("awaiting_stock_items_for", None)
     context.user_data.pop("awaiting_stock_manual_for", None)
     context.user_data.pop("awaiting_ref_reward", None)
+    context.user_data.pop("awaiting_ref_newuser", None)
     context.user_data.pop("awaiting_min_deposit", None)
 
     if data == "admin_stats":
@@ -1892,6 +1917,7 @@ async def handle_admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif data == "admin_referral":
         reward = db.get_setting("referral_reward", 1000)
+        new_user_rw = db.get_setting("referral_new_user_reward", 500)
         enabled = db.get_setting("referral_enabled", True)
         min_dep = db.get_setting("min_deposit", 5000)
         top_refs = db.get_top_referrers(5)
@@ -1903,7 +1929,8 @@ async def handle_admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "🎁 **CẤU HÌNH GIỚI THIỆU**\n"
             "━━━━━━━━━━━━━━━━━━\n\n"
             f"📊 Trạng thái: **{status}**\n"
-            f"💰 Thưởng/người: **{format_money(reward)}**\n"
+            f"💰 Thưởng người giới thiệu: **{format_money(reward)}**\n"
+            f"🎁 Thưởng người được mời: **{format_money(new_user_rw)}**\n"
             f"💳 Nạp tối thiểu: **{format_money(min_dep)}**\n\n"
         )
         
@@ -1915,7 +1942,8 @@ async def handle_admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         buttons = [
             [InlineKeyboardButton(toggle_text, callback_data="admin_ref_toggle")],
-            [InlineKeyboardButton(f"💰 Đổi mức thưởng ({format_money(reward)})", callback_data="admin_ref_reward")],
+            [InlineKeyboardButton(f"💰 Thưởng người mời ({format_money(reward)})", callback_data="admin_ref_reward")],
+            [InlineKeyboardButton(f"🎁 Thưởng người được mời ({format_money(new_user_rw)})", callback_data="admin_ref_newuser")],
             [InlineKeyboardButton(f"💳 Đổi nạp tối thiểu ({format_money(min_dep)})", callback_data="admin_ref_mindeposit")],
             [InlineKeyboardButton("⬅️ Quay lại", callback_data="admin_home")],
         ]
@@ -1928,27 +1956,40 @@ async def handle_admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer(f"Đã {new_status} hệ thống giới thiệu!")
         # Reload referral page
         reward = db.get_setting("referral_reward", 1000)
+        new_user_rw = db.get_setting("referral_new_user_reward", 500)
         enabled = db.get_setting("referral_enabled", True)
         status = "✅ BẬT" if enabled else "⏸️ TẮT"
         toggle_text = "⏸️ Tắt referral" if enabled else "✅ Bật referral"
         min_dep = db.get_setting("min_deposit", 5000)
         buttons = [
             [InlineKeyboardButton(toggle_text, callback_data="admin_ref_toggle")],
-            [InlineKeyboardButton(f"💰 Đổi mức thưởng ({format_money(reward)})", callback_data="admin_ref_reward")],
+            [InlineKeyboardButton(f"💰 Thưởng người mời ({format_money(reward)})", callback_data="admin_ref_reward")],
+            [InlineKeyboardButton(f"🎁 Thưởng người được mời ({format_money(new_user_rw)})", callback_data="admin_ref_newuser")],
             [InlineKeyboardButton(f"💳 Đổi nạp tối thiểu ({format_money(min_dep)})", callback_data="admin_ref_mindeposit")],
             [InlineKeyboardButton("⬅️ Quay lại", callback_data="admin_home")],
         ]
         await query.edit_message_text(
-            f"🎁 **CẤU HÌNH GIỚI THIỆU**\n━━━━━━━━━━━━━━━━━━\n\n📊 Trạng thái: **{status}**\n💰 Thưởng/người: **{format_money(reward)}**\n💳 Nạp tối thiểu: **{format_money(min_dep)}**",
+            f"🎁 **CẤU HÌNH GIỚI THIỆU**\n━━━━━━━━━━━━━━━━━━\n\n📊 Trạng thái: **{status}**\n💰 Thưởng người mời: **{format_money(reward)}**\n🎁 Thưởng người được mời: **{format_money(new_user_rw)}**\n💳 Nạp tối thiểu: **{format_money(min_dep)}**",
             parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(buttons)
         )
 
     elif data == "admin_ref_reward":
         context.user_data["awaiting_ref_reward"] = True
         await query.edit_message_text(
-            "💰 **ĐỔI MỨC THƯỞNG GIỚI THIỆU**\n\n"
+            "💰 **ĐỔI THƯỞNG NGƯỜI GIỚI THIỆU**\n\n"
             f"Mức hiện tại: **{format_money(db.get_setting('referral_reward', 1000))}**\n\n"
             "Nhập số tiền mới (VD: `2000`):",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Hủy", callback_data="admin_referral")]])
+        )
+
+    elif data == "admin_ref_newuser":
+        context.user_data["awaiting_ref_newuser"] = True
+        await query.edit_message_text(
+            "🎁 **ĐỔI THƯỞNG NGƯỜI ĐƯỢC MỜI**\n\n"
+            f"Mức hiện tại: **{format_money(db.get_setting('referral_new_user_reward', 500))}**\n"
+            "_(Đặt 0 để tắt thưởng cho người được mời)_\n\n"
+            "Nhập số tiền mới (VD: `500`):",
             parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Hủy", callback_data="admin_referral")]])
         )
@@ -2423,21 +2464,27 @@ async def handle_referral_home(update: Update, context: ContextTypes.DEFAULT_TYP
     
     stats = db.get_referral_stats(user_id)
     reward = db.get_setting("referral_reward", 1000)
+    new_user_rw = db.get_setting("referral_new_user_reward", 500)
     ref_enabled = db.get_setting("referral_enabled", True)
     
     status = "✅ Đang hoạt động" if ref_enabled else "⏸️ Tạm dừng"
+    
+    new_user_line = ""
+    if new_user_rw > 0:
+        new_user_line = f"🎁 Bạn bè nhận: **{format_money(new_user_rw)}**\n"
     
     text = (
         "🎁 **GIỚI THIỆU BẠN BÈ**\n"
         "━━━━━━━━━━━━━━━━━━\n\n"
         f"📎 **Link mời của bạn:**\n"
         f"`{ref_link}`\n\n"
-        f"💰 Thưởng mỗi người: **{format_money(reward)}**\n"
+        f"💰 Bạn nhận: **{format_money(reward)}/người**\n"
+        f"{new_user_line}"
         f"📊 Trạng thái: {status}\n\n"
         f"👥 Đã giới thiệu: **{stats['referral_count']}** người\n"
         f"💵 Tổng thưởng: **{format_money(stats['referral_earnings'])}**\n\n"
         "💡 _Gửi link trên cho bạn bè. Khi họ bấm vào và /start bot, "
-        "bạn sẽ nhận thưởng tự động vào ví!_"
+        "cả hai cùng nhận thưởng vào ví!_"
     )
     
     buttons = [

@@ -24,7 +24,7 @@ _DEFAULT_DATA = {
     "custom_stocks": {},
     "custom_accounts_inventory": {},
     "custom_hiddens": [],
-    "settings": {"default_markup_percent": 30, "referral_reward": 1000, "referral_enabled": True, "min_deposit": 5000},
+    "settings": {"default_markup_percent": 30, "referral_reward": 1000, "referral_new_user_reward": 500, "referral_enabled": True, "min_deposit": 5000},
     "processed_transactions": [],
     "incoming_payments": [],
     "users": {},
@@ -587,18 +587,25 @@ class Database:
 
             # Xử lý referral reward nếu là user mới + có người giới thiệu
             referral_credited = False
+            new_user_reward = 0
             if is_new and referred_by and str(referred_by) in users:
                 reward = data.get("settings", {}).get("referral_reward", 1000)
+                new_user_bonus = data.get("settings", {}).get("referral_new_user_reward", 500)
                 referral_enabled = data.get("settings", {}).get("referral_enabled", True)
                 ref_uid = str(referred_by)
                 if referral_enabled and referred_by != user_id:
+                    # Thưởng cho người giới thiệu
                     users[ref_uid]["balance"] = users[ref_uid].get("balance", 0) + reward
                     users[ref_uid]["referral_count"] = users[ref_uid].get("referral_count", 0) + 1
                     users[ref_uid]["referral_earnings"] = users[ref_uid].get("referral_earnings", 0) + reward
+                    # Thưởng cho người được giới thiệu
+                    if new_user_bonus > 0:
+                        users[uid]["balance"] = users[uid].get("balance", 0) + new_user_bonus
+                        new_user_reward = new_user_bonus
                     referral_credited = True
 
             self._write(data)
-            return is_new, referral_credited
+            return is_new, referral_credited, new_user_reward
 
     def get_user(self, user_id: int) -> dict:
         """Lấy thông tin user. Trả về dict hoặc {} nếu chưa đăng ký."""
