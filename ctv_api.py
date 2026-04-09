@@ -142,8 +142,8 @@ class CrmTeacherApi:
             "Content-Type": "application/json"
         })
         retry_strategy = Retry(
-            total=3,
-            backoff_factor=0.5,
+            total=1,
+            backoff_factor=0.3,
             status_forcelist=[500, 502, 503, 504],
             allowed_methods=["GET"]
         )
@@ -155,7 +155,7 @@ class CrmTeacherApi:
         url = f"{self.base_url}/products"
         try:
             logger.info(f"CRM API: Fetching products from {url}")
-            r = self.session.get(url, timeout=10)
+            r = self.session.get(url, timeout=5)
             logger.info(f"CRM API: Response status={r.status_code}, length={len(r.text)}")
             data = r.json()
             if isinstance(data, dict) and data.get("success"):

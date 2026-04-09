@@ -6,7 +6,6 @@ Bot Telegram bán CTV tự động
 """
 
 import os
-import json
 import time
 import asyncio
 import logging
@@ -22,7 +21,7 @@ from telegram import (
 )
 from telegram.ext import (
     ApplicationBuilder, CommandHandler, CallbackQueryHandler,
-    ContextTypes, MessageHandler, filters, ConversationHandler
+    ContextTypes, MessageHandler, filters
 )
 
 from ctv_api import CTVApi, CrmTeacherApi
@@ -66,11 +65,7 @@ api = CTVApi(CTV_API_URL, CTV_API_KEY)
 crm_api = CrmTeacherApi(CRMTEACHER_API_URL, CRMTEACHER_API_KEY)
 db = Database(DB_PATH)
 
-# Conversation states
-WAITING_PRICE = 1
-WAITING_QTY = 2
-WAITING_EMAIL = 3
-WAITING_MARKUP_VALUE = 4
+
 
 
 # ============================================
@@ -142,48 +137,165 @@ ALL_CATEGORIES = {
 }
 
 
-# Cache cho API
+# ============================================
+# CACHE + PARALLEL API LOADING (TỐI ƯU TỐC ĐỘ)
+# ============================================
+from concurrent.futures import ThreadPoolExecutor
+
 _api_cache = {"data": None, "expiry": 0}
-API_CACHE_TTL = 10 # 10 giây
+API_CACHE_TTL = 120          # 2 phút — sản phẩm không thay đổi nhanh
+API_STALE_TTL = 600          # 10 phút — cho phép trả cache cũ khi đang refresh
+_cache_refreshing = False    # Flag tránh refresh đồng thời
+
+# Circuit breaker: tạm ngắt API liên tục bị lỗi
+_circuit_breaker = {
+    "CTV": {"failures": 0, "last_fail": 0, "cooldown": 60},
+    "CRM": {"failures": 0, "last_fail": 0, "cooldown": 60},
+}
+CIRCUIT_BREAKER_THRESHOLD = 3  # Sau 3 lần lỗi liên tiếp → tạm ngắt
+
+
+def _is_circuit_open(api_name: str) -> bool:
+    """Kiểm tra circuit breaker: True = API bị tạm ngắt."""
+    cb = _circuit_breaker.get(api_name, {})
+    if cb.get("failures", 0) >= CIRCUIT_BREAKER_THRESHOLD:
+        elapsed = time.time() - cb.get("last_fail", 0)
+        if elapsed < cb.get("cooldown", 60):
+            return True
+        # Cooldown hết → cho thử lại (half-open)
+        cb["failures"] = 0
+    return False
+
+
+def _record_api_result(api_name: str, success: bool):
+    """Ghi nhận kết quả API để cập nhật circuit breaker."""
+    cb = _circuit_breaker.setdefault(api_name, {"failures": 0, "last_fail": 0, "cooldown": 60})
+    if success:
+        cb["failures"] = 0
+    else:
+        cb["failures"] += 1
+        cb["last_fail"] = time.time()
+        # Backoff: tăng cooldown mỗi lần lỗi (tối đa 5 phút)
+        cb["cooldown"] = min(300, 60 * cb["failures"])
+        logger.warning(f"⚡ Circuit breaker [{api_name}]: {cb['failures']} failures, cooldown {cb['cooldown']}s")
+
+
+def _fetch_api1():
+    """Gọi API 1 (CTV) — chạy trong thread."""
+    if _is_circuit_open("CTV"):
+        logger.debug("⚡ API 1 (CTV) circuit OPEN — skipping")
+        return None, 0
+    try:
+        products, balance = api.get_stock()
+        _record_api_result("CTV", products is not None)
+        return products, balance
+    except Exception as e:
+        _record_api_result("CTV", False)
+        logger.error(f"API 1 fetch error: {e}")
+        return None, 0
+
+
+def _fetch_api2():
+    """Gọi API 2 (CRM) — chạy trong thread."""
+    if _is_circuit_open("CRM"):
+        logger.debug("⚡ API 2 (CRM) circuit OPEN — skipping")
+        return {}, 0
+    try:
+        products, balance = crm_api.get_stock()
+        _record_api_result("CRM", bool(products))
+        return products, balance
+    except Exception as e:
+        _record_api_result("CRM", False)
+        logger.error(f"API 2 fetch error: {e}")
+        return {}, 0
+
 
 def invalidate_cache():
     """Xóa cache để lần gọi tiếp theo lấy dữ liệu mới."""
     global _api_cache
     _api_cache = {"data": None, "expiry": 0}
 
-def get_all_products_merged(force_refresh: bool = False) -> tuple[dict, int]:
-    global _api_cache
-    now = time.time()
-    
-    # Trả về cache nếu chưa hết hạn và không buộc refresh
-    if not force_refresh and _api_cache["data"] and now < _api_cache["expiry"]:
-        return _api_cache["data"]
-        
-    products, balance = api.get_stock()
-    if products is None:
-        products = {}
-        
-    crm_products, crm_balance = crm_api.get_stock()
-    if crm_products:
-        products.update(crm_products)
-        balance += crm_balance
-        
+
+def _do_refresh_products() -> tuple[dict, int]:
+    """Gọi đồng thời cả 2 API, merge với custom products.
+    Chạy bởi cả foreground (khi cache trống) và background refresh.
+    """
+    # Gọi 2 API song song
+    with ThreadPoolExecutor(max_workers=2, thread_name_prefix="api") as executor:
+        f1 = executor.submit(_fetch_api1)
+        f2 = executor.submit(_fetch_api2)
+        products1, balance1 = f1.result(timeout=15)
+        products2, balance2 = f2.result(timeout=15)
+
+    products = products1 if products1 else {}
+    balance = balance1 or 0
+    if products2:
+        products.update(products2)
+        balance += balance2
+
+    # Merge custom products từ DB
     custom_products = db.get_custom_products()
     for k, v in custom_products.items():
-        products[k] = dict(v) # Clone
-        
+        products[k] = dict(v)
+
+    # Override stock từ custom inventory/manual
     custom_stocks = db.get_custom_stocks()
     for k, v in products.items():
-        # Nếu sản phẩm đã được đăng ký đổ tài khoản vào kho tự động
         if db.has_custom_accounts_enabled(k):
             products[k]["stock"] = len(db.get_custom_accounts(k))
-        # Còn không thì ưu tiên lấy tồn kho thủ công (nếu có)
         elif k in custom_stocks:
             products[k]["stock"] = custom_stocks[k]
-            
-    _api_cache["data"] = (products, balance)
-    _api_cache["expiry"] = now + API_CACHE_TTL
+
     return products, balance
+
+
+def get_all_products_merged(force_refresh: bool = False) -> tuple[dict, int]:
+    global _api_cache, _cache_refreshing
+    now = time.time()
+
+    # 1. Cache còn tươi → trả ngay (< 1ms)
+    if not force_refresh and _api_cache["data"] and now < _api_cache["expiry"]:
+        return _api_cache["data"]
+
+    # 2. Cache cũ nhưng chưa quá stale → trả cache cũ, background refresh
+    if (not force_refresh and _api_cache["data"]
+            and now < _api_cache.get("stale_expiry", 0)
+            and not _cache_refreshing):
+        _cache_refreshing = True
+        def _bg_refresh():
+            global _api_cache, _cache_refreshing
+            try:
+                products, balance = _do_refresh_products()
+                if products:
+                    _api_cache = {
+                        "data": (products, balance),
+                        "expiry": time.time() + API_CACHE_TTL,
+                        "stale_expiry": time.time() + API_STALE_TTL,
+                    }
+                    logger.info(f"🔄 Background refresh done: {len(products)} products")
+            except Exception as e:
+                logger.error(f"Background refresh error: {e}")
+            finally:
+                _cache_refreshing = False
+
+        Thread(target=_bg_refresh, daemon=True).start()
+        return _api_cache["data"]
+
+    # 3. Không có cache hoặc force → gọi đồng bộ
+    try:
+        products, balance = _do_refresh_products()
+        _api_cache = {
+            "data": (products, balance),
+            "expiry": now + API_CACHE_TTL,
+            "stale_expiry": now + API_STALE_TTL,
+        }
+        return products, balance
+    except Exception as e:
+        logger.error(f"Product refresh failed: {e}")
+        # Fallback: trả cache cũ nếu có
+        if _api_cache["data"]:
+            return _api_cache["data"]
+        return {}, 0
 
 def get_all_categories_merged() -> dict:
     cats = dict(ALL_CATEGORIES)
@@ -1893,6 +2005,26 @@ async def _periodic_order_cleanup(application):
             logger.error(f"Periodic cleanup error: {e}")
 
 
+async def _periodic_product_refresh():
+    """Background refresh sản phẩm mỗi 90 giây.
+    Giữ cache luôn tươi — user không bao giờ phải chờ API.
+    """
+    while True:
+        await asyncio.sleep(90)
+        try:
+            products, balance = _do_refresh_products()
+            if products:
+                global _api_cache
+                _api_cache = {
+                    "data": (products, balance),
+                    "expiry": time.time() + API_CACHE_TTL,
+                    "stale_expiry": time.time() + API_STALE_TTL,
+                }
+                logger.debug(f"🔄 Periodic refresh: {len(products)} products")
+        except Exception as e:
+            logger.error(f"Periodic product refresh error: {e}")
+
+
 async def _payment_processor(application):
     """Poll DB mỗi 5 giây, xử lý giao dịch mới từ SePay.
     
@@ -2024,26 +2156,25 @@ async def post_init(application):
     # === DIAGNOSTIC: Kiểm tra kết nối API khi khởi động ===
     logger.info(f"📂 Database path: {DB_PATH}")
     logger.info(f"📂 Database file exists: {os.path.exists(DB_PATH)}")
-    
-    # Kiểm tra API 1
+
+    # Pre-warm cache: gọi song song cả 2 API ngay khi boot
+    # để /menu đầu tiên không phải chờ
     try:
-        products1, bal1 = api.get_stock()
-        if products1:
-            logger.info(f"✅ API 1 (CTV): OK — {len(products1)} sản phẩm, số dư: {bal1}")
-        else:
-            logger.warning(f"⚠️ API 1 (CTV): Không có sản phẩm hoặc lỗi")
+        products, balance = _do_refresh_products()
+        _api_cache.update({
+            "data": (products, balance),
+            "expiry": time.time() + API_CACHE_TTL,
+            "stale_expiry": time.time() + API_STALE_TTL,
+        })
+        # Log kết quả
+        api1_count = sum(1 for v in products.values() if v.get("api_source") == "CTV")
+        api2_count = sum(1 for v in products.values() if v.get("api_source") == "CRM")
+        custom_count = sum(1 for v in products.values() if v.get("is_custom_local"))
+        logger.info(f"✅ Cache pre-warmed: {len(products)} products (API1: {api1_count}, API2: {api2_count}, Custom: {custom_count})")
+        if api2_count == 0:
+            logger.warning(f"⚠️ API 2 (CRM) returned 0 products — URL: {CRMTEACHER_API_URL}")
     except Exception as e:
-        logger.error(f"❌ API 1 (CTV) error: {e}")
-    
-    # Kiểm tra API 2
-    try:
-        products2, bal2 = crm_api.get_stock()
-        if products2:
-            logger.info(f"✅ API 2 (CRM): OK — {len(products2)} sản phẩm, số dư: {bal2}")
-        else:
-            logger.warning(f"⚠️ API 2 (CRM): Không có sản phẩm — URL: {CRMTEACHER_API_URL}")
-    except Exception as e:
-        logger.error(f"❌ API 2 (CRM) error: {e}")
+        logger.error(f"❌ Cache pre-warm failed: {e}")
 
     # === Auto-backup database khi khởi động ===
     _backup_database()
@@ -2056,6 +2187,9 @@ async def post_init(application):
 
     # Job định kỳ hủy đơn quá hạn
     asyncio.create_task(_periodic_order_cleanup(application))
+
+    # 🔄 Background product refresh — giữ cache luôn tươi
+    asyncio.create_task(_periodic_product_refresh())
 
     # 💳 Payment processor — poll DB mỗi 5 giây để xử lý thanh toán
     asyncio.create_task(_payment_processor(application))
