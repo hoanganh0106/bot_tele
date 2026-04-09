@@ -306,20 +306,17 @@ def get_all_categories_merged() -> dict:
 
 def classify_product(key: str, info: dict) -> tuple:
     merged_cats = get_all_categories_merged()
-    
-    # Tách riêng sản phẩm từ hệ thống 2 (CRM)
-    if info.get("api_source") == "CRM":
-        return "Đối Tác 2", "🚀", "crm_partner"
 
-    # Get custom category first
+    # 1. Ưu tiên cao nhất: admin đã chỉ định danh mục thủ công
     custom_cat = db.get_custom_category(key)
     if custom_cat and custom_cat in merged_cats:
         name, icon = merged_cats[custom_cat]
         return name, icon, custom_cat
 
+    # 2. Phân loại tự động theo tên sản phẩm (áp dụng cho CẢ API1 và API2)
     k = key.lower()
     n = info["name"].lower()
-    if "gpt" in k or "gpt" in n or "openai" in n: return "ChatGPT", "🤖", "gpt"
+    if "gpt" in k or "gpt" in n or "openai" in n or "chatgpt" in n: return "ChatGPT", "🤖", "gpt"
     if "grok" in k or "grok" in n: return "Grok", "🔮", "grok"
     if "cc" in k or "capcut" in n: return "CapCut", "🎬", "capcut"
     if "gemini" in k or "gemini" in n: return "Gemini", "✨", "gemini"
@@ -328,6 +325,10 @@ def classify_product(key: str, info: dict) -> tuple:
     if "discord" in k or "discord" in n: return "Discord", "💬", "discord"
     if "vpn" in k or "vpn" in n or "warp" in k or "1.1.1.1" in n: return "VPN", "🛡️", "vpn"
     if "spotify" in k or "spotify" in n or "music" in n: return "Spotify", "🎵", "spotify"
+
+    # 3. Fallback: sản phẩm CRM không khớp tên → "Đối Tác 2", sản phẩm CTV → "Khác"
+    if info.get("api_source") == "CRM":
+        return "Đối Tác 2", "🚀", "crm_partner"
     return "Khác", "📦", "khac"
 
 def build_category_grid(products, callback_prefix, is_admin=False):
@@ -1562,6 +1563,32 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ Có lỗi xảy ra.")
         return
 
+    if context.user_data.get("awaiting_rename_cat"):
+        cat_id = context.user_data["awaiting_rename_cat"]
+        del context.user_data["awaiting_rename_cat"]
+        try:
+            parts = [p.strip() for p in text.split("|")]
+            if len(parts) == 2:
+                name, icon = parts
+                db.add_custom_category_def(cat_id, name, icon)
+                invalidate_cache()
+                await update.message.reply_text(
+                    f"✅ Đã đổi tên danh mục `{cat_id}` thành: {icon} {name}",
+                    parse_mode="Markdown",
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("⬅️ Quay lại danh mục", callback_data="admin_rename_cat_list"),
+                         InlineKeyboardButton("🏠 Thoát", callback_data="admin_home")]
+                    ])
+                )
+            else:
+                await update.message.reply_text(
+                    "❌ Sai cú pháp. Vui lòng nhập theo mẫu:\n`Tên mới | Emoji`\n\nVí dụ: `ChatGPT Pro | 🤖`",
+                    parse_mode="Markdown"
+                )
+        except Exception:
+            await update.message.reply_text("❌ Có lỗi xảy ra.")
+        return
+
     if context.user_data.get("awaiting_desc_for"):
         key = context.user_data["awaiting_desc_for"]
         del context.user_data["awaiting_desc_for"]
@@ -2213,7 +2240,10 @@ async def handle_admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
         buttons = build_category_grid(products, "admin_viewcat", is_admin=True)
         buttons.append([InlineKeyboardButton("➕ Thêm sản phẩm tự bán", callback_data="admin_add_prod")])
-        buttons.append([InlineKeyboardButton("➕ Thêm danh mục mới", callback_data="admin_add_cat")])
+        buttons.append([
+            InlineKeyboardButton("➕ Thêm danh mục", callback_data="admin_add_cat"),
+            InlineKeyboardButton("✏️ Đổi tên danh mục", callback_data="admin_rename_cat_list"),
+        ])
         buttons.append([InlineKeyboardButton("⬅️ Quay lại", callback_data="admin_home")])
         
         await query.edit_message_text(
@@ -2404,6 +2434,45 @@ async def handle_admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Hủy", callback_data="admin_products")]])
         )
 
+    elif data == "admin_rename_cat_list":
+        # Hiển thị danh sách tất cả danh mục hiện có để admin chọn đổi tên
+        all_cats = get_all_categories_merged()
+        buttons = []
+        row = []
+        for cid, (cname, cicon) in all_cats.items():
+            row.append(InlineKeyboardButton(f"{cicon} {cname}", callback_data=f"admin_rename_cat_{cid}"))
+            if len(row) == 2:
+                buttons.append(row)
+                row = []
+        if row:
+            buttons.append(row)
+        buttons.append([InlineKeyboardButton("⬅️ Quay lại", callback_data="admin_products")])
+        await query.edit_message_text(
+            "✏️ **ĐỔI TÊN DANH MỤC**\n"
+            "━━━━━━━━━━━━━━━━━━\n"
+            "Chọn danh mục bạn muốn đổi tên:",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup(buttons)
+        )
+
+    elif data.startswith("admin_rename_cat_"):
+        cat_id = data.replace("admin_rename_cat_", "")
+        all_cats = get_all_categories_merged()
+        if cat_id not in all_cats:
+            await query.edit_message_text("❌ Danh mục không tồn tại.")
+            return
+        current_name, current_icon = all_cats[cat_id]
+        context.user_data["awaiting_rename_cat"] = cat_id
+        await query.edit_message_text(
+            f"✏️ **Đổi tên danh mục:** {current_icon} {current_name}\n"
+            f"📌 ID: `{cat_id}`\n\n"
+            f"Vui lòng nhắn tin theo cú pháp:\n"
+            f"`Tên mới | Emoji mới`\n\n"
+            f"Ví dụ: `ChatGPT Pro | 🤖`\n"
+            f"Hoặc chỉ đổi tên: `ChatGPT Pro | {current_icon}`",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Hủy", callback_data="admin_rename_cat_list")]])
+        )
     elif data.startswith("admin_viewcat_"):
         cat_id = data.replace("admin_viewcat_", "")
         
