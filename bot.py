@@ -2054,16 +2054,14 @@ async def handle_admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     # Clear awaiting state just in case
-    context.user_data.pop("awaiting_price_for", None)
-    context.user_data.pop("awaiting_markup", None)
-    context.user_data.pop("awaiting_broadcast", None)
-    context.user_data.pop("awaiting_user_lookup", None)
-    context.user_data.pop("awaiting_stock_items_for", None)
-    context.user_data.pop("awaiting_stock_manual_for", None)
-    context.user_data.pop("awaiting_ref_reward", None)
-    context.user_data.pop("awaiting_ref_newuser", None)
-    context.user_data.pop("awaiting_min_deposit", None)
-    context.user_data.pop("awaiting_wallet_adjust", None)
+    for key_to_clear in [
+        "awaiting_price_for", "awaiting_markup", "awaiting_broadcast",
+        "awaiting_user_lookup", "awaiting_stock_items_for", "awaiting_stock_manual_for",
+        "awaiting_ref_reward", "awaiting_ref_newuser", "awaiting_min_deposit",
+        "awaiting_wallet_adjust", "awaiting_desc_for", "awaiting_name_for",
+        "awaiting_new_cat", "awaiting_new_prod", "awaiting_rename_cat",
+    ]:
+        context.user_data.pop(key_to_clear, None)
 
     if data == "admin_stats":
         stats = db.get_stats()
