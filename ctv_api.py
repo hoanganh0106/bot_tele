@@ -155,32 +155,45 @@ class CrmTeacherApi:
         url = f"{self.base_url}/products"
         try:
             logger.info(f"CRM API: Fetching products from {url}")
-            r = self.session.get(url, timeout=5)
+            r = self.session.get(url, timeout=10)
             logger.info(f"CRM API: Response status={r.status_code}, length={len(r.text)}")
             data = r.json()
-            if isinstance(data, dict) and data.get("success"):
-                products = data.get("products", {})
-                for k, v in products.items():
-                    v["api_source"] = "CRM"
-                logger.info(f"CRM API: Found {len(products)} products (dict format)")
-                return products, data.get("balance", 0)
-            # Nếu trả về list/array sản phẩm (trường hợp API /products thuần tuý không có json node success)
-            elif isinstance(data, list):
+
+            if not isinstance(data, dict) or not data.get("success"):
+                logger.warning(f"CRM API: Unexpected response: {str(data)[:500]}")
+                return {}, 0
+
+            # Format thực tế: {"success": true, "data": {"items": [...]}}
+            items_container = data.get("data", {})
+            items_list = items_container.get("items", []) if isinstance(items_container, dict) else []
+
+            if items_list:
                 products = {}
-                for p in data:
-                    # Chuyển đổi định dạng tuỳ thuộc API, giả sử id là key
-                    k = str(p.get("id", p.get("key", "unknown")))
+                for p in items_list:
+                    k = str(p.get("product_id", p.get("id", "unknown")))
                     products[k] = {
                         "name": p.get("name", "Unknown"),
-                        "price": p.get("price", 0),
+                        "price": int(p.get("price", 0)),
                         "stock": p.get("stock", 0),
+                        "description": p.get("description", ""),
+                        "min_quantity": p.get("min_quantity", 1),
+                        "max_quantity": p.get("max_quantity"),
+                        "in_stock": p.get("in_stock", True),
                         "api_source": "CRM"
                     }
-                logger.info(f"CRM API: Found {len(products)} products (list format)")
-                return products, 0
-            else:
-                logger.warning(f"CRM API: Unexpected response format: {str(data)[:500]}")
-                return {}, 0
+                logger.info(f"CRM API: Found {len(products)} products (data.items format)")
+                return products, data.get("balance", 0)
+
+            # Fallback: format cũ {"success": true, "products": {...}}
+            old_products = data.get("products", {})
+            if old_products and isinstance(old_products, dict):
+                for k, v in old_products.items():
+                    v["api_source"] = "CRM"
+                logger.info(f"CRM API: Found {len(old_products)} products (legacy dict format)")
+                return old_products, data.get("balance", 0)
+
+            logger.warning("CRM API: success=true but no products found")
+            return {}, 0
         except Exception as e:
             logger.error(f"CRMTeacher API stock error: {e}")
             return {}, 0
@@ -190,6 +203,11 @@ class CrmTeacherApi:
             r = self.session.get(f"{self.base_url}/balance", timeout=10)
             data = r.json()
             if isinstance(data, dict):
+                # Format mới: {"success": true, "data": {"balance": 0.0}}
+                inner = data.get("data", {})
+                if isinstance(inner, dict) and "balance" in inner:
+                    return inner.get("balance", 0)
+                # Format cũ: {"balance": 0}
                 return data.get("balance", 0)
             return 0
         except Exception as e:

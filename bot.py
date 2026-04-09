@@ -38,7 +38,7 @@ ADMIN_IDS = [int(x.strip()) for x in os.getenv("ADMIN_TELEGRAM_IDS", "").split("
 CTV_API_URL = os.getenv("CTV_API_URL", "http://103.69.87.202:5000")
 CTV_API_KEY = os.getenv("CTV_API_KEY", "")
 
-CRMTEACHER_API_URL = os.getenv("CRMTEACHER_API_URL", "https://api.bottele.crmteacher.org/openapi/v1")
+CRMTEACHER_API_URL = os.getenv("CRMTEACHER_API_URL", "https://api.crmteacher.org/openapi/v1")
 CRMTEACHER_API_KEY = os.getenv("CRMTEACHER_API_KEY", "")
 WEBHOOK_PORT = int(os.getenv("WEBHOOK_PORT", "8443"))
 BANK_NAME = os.getenv("BANK_NAME", "Vietcombank")
