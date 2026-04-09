@@ -373,18 +373,43 @@ def build_category_grid(products, callback_prefix, is_admin=False):
 # ============================================
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
-    db.add_user(user.id)
+    
+    # Kiểm tra referral link: /start ref_123456789
+    referred_by = None
+    if context.args and context.args[0].startswith("ref_"):
+        try:
+            referred_by = int(context.args[0].replace("ref_", ""))
+            if referred_by == user.id:
+                referred_by = None  # Không tự giới thiệu chính mình
+        except (ValueError, IndexError):
+            referred_by = None
+
+    # Đăng ký user (xử lý referral trong database)
+    is_new, referral_credited = db.register_user(
+        user_id=user.id,
+        username=user.username,
+        first_name=user.first_name,
+        referred_by=referred_by
+    )
+
+    balance = db.get_user_balance(user.id)
+    
     text = (
         f"👋 Xin chào **{user.first_name}**!\n\n"
         "Chào mừng bạn đến với hệ thống bán tài khoản Premium tự động 🤖\n\n"
         "🔹 **Thanh toán tự động** 24/7, xác nhận trong 1 phút\n"
         "🔹 **Nhận tài khoản ngay** sau khi thanh toán\n"
         "🔹 **Hỗ trợ tận tình** nhanh chóng\n\n"
+        f"💰 **Số dư ví:** {format_money(balance)}\n\n"
         "👇 Bấm vào nút bên dưới để chọn sản phẩm 👇"
     )
     
     buttons = [
         [InlineKeyboardButton("🛒 MENU SẢN PHẨM", callback_data="reload_menu")],
+        [
+            InlineKeyboardButton(f"💰 Ví: {format_money(balance)}", callback_data="wallet_home"),
+            InlineKeyboardButton("🎁 Giới thiệu", callback_data="referral_home"),
+        ],
         [
             InlineKeyboardButton("📋 Lịch sử mua hàng", callback_data="btn_myorders"),
             InlineKeyboardButton("📞 Liên hệ Admin", url="https://t.me/hoanganh1162")
@@ -396,6 +421,25 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text += "\n\n_🔑 Xin chào Admin, bảng Quản trị đã được mở khóa!_"
         
     await update.message.reply_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(buttons))
+
+    # Thông báo cho người giới thiệu
+    if referral_credited and referred_by:
+        reward = db.get_setting("referral_reward", 1000)
+        ref_balance = db.get_user_balance(referred_by)
+        try:
+            await context.bot.send_message(
+                chat_id=referred_by,
+                text=(
+                    f"🎉 **THƯỞNG GIỚI THIỆU!**\n"
+                    f"━━━━━━━━━━━━━━━━━━\n"
+                    f"👤 **{user.first_name}** đã tham gia qua link mời của bạn!\n"
+                    f"💰 Bạn nhận được: **+{format_money(reward)}**\n"
+                    f"💵 Số dư ví hiện tại: **{format_money(ref_balance)}**"
+                ),
+                parse_mode="Markdown"
+            )
+        except Exception:
+            pass
 
 
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -628,13 +672,42 @@ async def handle_qty_select(update: Update, context: ContextTypes.DEFAULT_TYPE):
     db.save_order(order_code, order)
     context.user_data["current_order"] = order_code
 
-    # Tạo QR
+    # Kiểm tra số dư ví
+    user_balance = db.get_user_balance(query.from_user.id)
+
+    # Tạo QR cho chuyển khoản
     qr_url = generate_qr_url(total, order_code)
 
-    buttons = [
-        [InlineKeyboardButton("✅ Đã chuyển khoản", callback_data=f"paid_{order_code}")],
-        [InlineKeyboardButton("❌ Hủy đơn", callback_data=f"cancel_{order_code}")],
-    ]
+    buttons = []
+    wallet_text = ""
+    
+    if user_balance >= total:
+        # Đủ tiền trong ví → ưu tiên thanh toán bằng ví
+        wallet_text = (
+            f"\n💰 **Số dư ví: {format_money(user_balance)}** ✅\n"
+            f"Bạn có thể thanh toán ngay bằng ví!\n"
+        )
+        buttons.append([InlineKeyboardButton(
+            f"💰 Thanh toán bằng ví ({format_money(total)})",
+            callback_data=f"paywallet_{order_code}"
+        )])
+        buttons.append([InlineKeyboardButton("💳 Chuyển khoản thay", callback_data=f"paid_{order_code}")])
+    elif user_balance > 0:
+        # Có ít tiền trong ví
+        remain = total - user_balance
+        wallet_text = (
+            f"\n💰 **Số dư ví: {format_money(user_balance)}**\n"
+            f"Dùng ví + chuyển khoản {format_money(remain)} phần còn lại\n"
+        )
+        buttons.append([InlineKeyboardButton(
+            f"💰 Ví {format_money(user_balance)} + CK {format_money(remain)}",
+            callback_data=f"paypartial_{order_code}"
+        )])
+        buttons.append([InlineKeyboardButton("💳 CK toàn bộ", callback_data=f"paid_{order_code}")])
+    else:
+        buttons.append([InlineKeyboardButton("✅ Đã chuyển khoản", callback_data=f"paid_{order_code}")])
+    
+    buttons.append([InlineKeyboardButton("❌ Hủy đơn", callback_data=f"cancel_{order_code}")])
 
     text = (
         f"🧾 **ĐƠN HÀNG #{order_code}**\n"
@@ -642,7 +715,8 @@ async def handle_qty_select(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"📦 {info.get('name', product_key)}\n"
         f"🔢 Số lượng: **{qty}**\n"
         f"💰 Đơn giá: **{format_money(sell_price)}**\n"
-        f"💰 Tổng: **{format_money(total)}**\n\n"
+        f"💰 Tổng: **{format_money(total)}**\n"
+        f"{wallet_text}\n"
         f"🏦 **CHUYỂN KHOẢN:**\n"
         f"Ngân hàng: **{BANK_NAME}**\n"
         f"STK: `{BANK_ACCOUNT_NUMBER}`\n"
@@ -669,14 +743,29 @@ async def handle_qty_select(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def auto_cancel_order(context, order_code, user_id, delay):
     """Tự hủy đơn sau thời gian chờ."""
     await asyncio.sleep(delay)
+    
+    # Kiểm tra wallet partial trước khi cancel
+    order = db.get_order(order_code)
+    wallet_paid = order.get("wallet_paid", 0) if order else 0
+    
     # CRITICAL: Dùng cancel_order_if_pending (atomic) để tránh race condition
     # với webhook đang xử lý thanh toán cùng lúc
     cancelled = db.cancel_order_if_pending(order_code)
     if cancelled:
+        # Hoàn tiền ví nếu có
+        refund_text = ""
+        if wallet_paid > 0:
+            db.add_balance(user_id, wallet_paid, reason="refund")
+            new_balance = db.get_user_balance(user_id)
+            refund_text = f"\n💰 Đã hoàn {format_money(wallet_paid)} vào ví (Số dư: {format_money(new_balance)})"
+        
         try:
             await context.bot.send_message(
                 chat_id=user_id,
-                text=f"⏰ Đơn hàng **#{order_code}** đã tự động hủy do quá thời gian thanh toán.",
+                text=(
+                    f"⏰ Đơn hàng **#{order_code}** đã tự động hủy do quá thời gian thanh toán."
+                    f"{refund_text}"
+                ),
                 parse_mode="Markdown"
             )
         except Exception:
@@ -697,17 +786,125 @@ async def handle_paid_button(update: Update, context: ContextTypes.DEFAULT_TYPE)
     )
 
 
+async def handle_pay_wallet(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Thanh toán đơn hàng 100% bằng ví."""
+    query = update.callback_query
+    await query.answer()
+    order_code = query.data.replace("paywallet_", "")
+    
+    order = db.get_order(order_code)
+    if not order or order.get("status") != "pending":
+        await query.edit_message_text("❌ Đơn hàng không tồn tại hoặc đã được xử lý.")
+        return
+
+    total = int(order.get("total", 0))
+    user_id = query.from_user.id
+    
+    # Trừ tiền ví
+    success = db.deduct_balance(user_id, total)
+    if not success:
+        await query.edit_message_text(
+            f"❌ Số dư ví không đủ ({format_money(db.get_user_balance(user_id))}).\n"
+            f"Cần: {format_money(total)}"
+        )
+        return
+
+    new_balance = db.get_user_balance(user_id)
+    
+    await query.edit_message_text(
+        f"✅ Đã thanh toán **{format_money(total)}** từ ví!\n"
+        f"💰 Số dư còn lại: **{format_money(new_balance)}**\n\n"
+        f"⏳ Đang xử lý đơn hàng **#{order_code}**...",
+        parse_mode="Markdown"
+    )
+
+    # Xử lý đơn hàng
+    result = await process_paid_order(context, order_code, payment_source="wallet")
+    if result:
+        logger.info(f"✅ Wallet payment: Order {order_code} completed, {format_money(total)} deducted from user {user_id}")
+
+
+async def handle_pay_partial(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Thanh toán một phần bằng ví, phần còn lại chuyển khoản."""
+    query = update.callback_query
+    await query.answer()
+    order_code = query.data.replace("paypartial_", "")
+    
+    order = db.get_order(order_code)
+    if not order or order.get("status") != "pending":
+        await query.edit_message_text("❌ Đơn hàng không tồn tại hoặc đã được xử lý.")
+        return
+
+    total = int(order.get("total", 0))
+    user_id = query.from_user.id
+    user_balance = db.get_user_balance(user_id)
+    
+    if user_balance <= 0:
+        await query.edit_message_text("❌ Số dư ví = 0. Vui lòng chuyển khoản toàn bộ.")
+        return
+
+    # Trừ phần ví
+    wallet_amount = min(user_balance, total)
+    db.deduct_balance(user_id, wallet_amount)
+    
+    remain = total - wallet_amount
+    new_balance = db.get_user_balance(user_id)
+    
+    # Cập nhật đơn hàng: ghi nhận đã trả 1 phần
+    order_update = {
+        "wallet_paid": wallet_amount,
+        "remaining_amount": remain,
+    }
+    with db.lock:
+        data = db._read()
+        if order_code in data["orders"]:
+            data["orders"][order_code].update(order_update)
+            # Cập nhật total thành phần còn lại cần CK
+            data["orders"][order_code]["original_total"] = total
+            data["orders"][order_code]["total"] = remain
+            db._write(data)
+
+    qr_url = generate_qr_url(remain, order_code)
+
+    await query.edit_message_text(
+        f"✅ Đã trừ **{format_money(wallet_amount)}** từ ví!\n"
+        f"💰 Số dư còn lại: **{format_money(new_balance)}**\n\n"
+        f"🏦 **Chuyển khoản phần còn lại:**\n"
+        f"Ngân hàng: **{BANK_NAME}**\n"
+        f"STK: `{BANK_ACCOUNT_NUMBER}`\n"
+        f"Tên: **{BANK_ACCOUNT_NAME}**\n"
+        f"Số tiền: **{format_money(remain)}**\n"
+        f"Nội dung: `{order_code}`\n\n"
+        f"📱 Quét QR:\n"
+        f"[QR Thanh toán]({qr_url})\n\n"
+        f"⏰ Đơn tự hủy sau **5 phút** (hoàn tiền ví nếu hủy)\n"
+        f"✅ Hệ thống tự xác nhận sau khi nhận được CK",
+        parse_mode="Markdown",
+        disable_web_page_preview=False
+    )
+
+
 async def handle_cancel_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Hủy đơn hàng — dùng atomic operation để tránh race condition."""
     query = update.callback_query
     await query.answer()
     order_code = query.data.replace("cancel_", "")
 
+    # Kiểm tra có trả ví partial không
+    order = db.get_order(order_code)
+    wallet_paid = order.get("wallet_paid", 0) if order else 0
+
     # CRITICAL: Dùng cancel_order_if_pending (atomic) thay vì read-check-write
     cancelled = db.cancel_order_if_pending(order_code)
     if cancelled:
+        refund_text = ""
+        if wallet_paid > 0:
+            db.add_balance(order.get("user_id"), wallet_paid, reason="refund")
+            new_balance = db.get_user_balance(order.get("user_id"))
+            refund_text = f"\n💰 Đã hoàn **{format_money(wallet_paid)}** vào ví (Số dư: {format_money(new_balance)})"
+        
         await query.edit_message_text(
-            f"❌ Đơn **#{order_code}** đã được hủy.\n"
+            f"❌ Đơn **#{order_code}** đã được hủy.{refund_text}\n"
             "Gõ /menu để mua sản phẩm khác.",
             parse_mode="Markdown"
         )
@@ -1153,6 +1350,40 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ Giá không hợp lệ. Vui lòng nhập số (VD: 50000) hoặc chữ `reset`.")
         return
 
+    # Referral reward config
+    if context.user_data.get("awaiting_ref_reward"):
+        del context.user_data["awaiting_ref_reward"]
+        try:
+            new_reward = int(text.replace(",", "").replace(".", ""))
+            if new_reward < 0:
+                raise ValueError
+            db.set_setting("referral_reward", new_reward)
+            await update.message.reply_text(
+                f"✅ Đã cập nhật thưởng giới thiệu: **{format_money(new_reward)}/người**",
+                parse_mode="Markdown",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Quay lại", callback_data="admin_referral")]])
+            )
+        except ValueError:
+            await update.message.reply_text("❌ Số tiền không hợp lệ. VD: `2000`", parse_mode="Markdown")
+        return
+
+    # Min deposit config
+    if context.user_data.get("awaiting_min_deposit"):
+        del context.user_data["awaiting_min_deposit"]
+        try:
+            new_min = int(text.replace(",", "").replace(".", ""))
+            if new_min < 1000:
+                raise ValueError
+            db.set_setting("min_deposit", new_min)
+            await update.message.reply_text(
+                f"✅ Đã cập nhật nạp tối thiểu: **{format_money(new_min)}**",
+                parse_mode="Markdown",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Quay lại", callback_data="admin_referral")]])
+            )
+        except ValueError:
+            await update.message.reply_text("❌ Số tiền không hợp lệ (tối thiểu 1,000đ). VD: `5000`", parse_mode="Markdown")
+        return
+
     if context.user_data.get("awaiting_new_prod"):
         del context.user_data["awaiting_new_prod"]
         try:
@@ -1383,6 +1614,7 @@ def _build_admin_dashboard():
         [InlineKeyboardButton("🔍 Tra cứu khách hàng", callback_data="admin_user_lookup")],
         [InlineKeyboardButton("⚙️ Quản lý sản phẩm", callback_data="admin_products")],
         [InlineKeyboardButton("⚙️ Set Markup mặc định", callback_data="admin_markup")],
+        [InlineKeyboardButton("🎁 Cấu hình giới thiệu", callback_data="admin_referral")],
         [InlineKeyboardButton("📢 Gửi thông báo (Broadcast)", callback_data="admin_broadcast")],
     ]
     return text, buttons
@@ -1579,6 +1811,8 @@ async def handle_admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.pop("awaiting_user_lookup", None)
     context.user_data.pop("awaiting_stock_items_for", None)
     context.user_data.pop("awaiting_stock_manual_for", None)
+    context.user_data.pop("awaiting_ref_reward", None)
+    context.user_data.pop("awaiting_min_deposit", None)
 
     if data == "admin_stats":
         stats = db.get_stats()
@@ -1616,6 +1850,78 @@ async def handle_admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         await query.edit_message_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Thoát (Về đầu)", callback_data="admin_home")]]))
 
+    elif data == "admin_referral":
+        reward = db.get_setting("referral_reward", 1000)
+        enabled = db.get_setting("referral_enabled", True)
+        min_dep = db.get_setting("min_deposit", 5000)
+        top_refs = db.get_top_referrers(5)
+        
+        status = "✅ BẬT" if enabled else "⏸️ TẮT"
+        toggle_text = "⏸️ Tắt referral" if enabled else "✅ Bật referral"
+        
+        text = (
+            "🎁 **CẤU HÌNH GIỚI THIỆU**\n"
+            "━━━━━━━━━━━━━━━━━━\n\n"
+            f"📊 Trạng thái: **{status}**\n"
+            f"💰 Thưởng/người: **{format_money(reward)}**\n"
+            f"💳 Nạp tối thiểu: **{format_money(min_dep)}**\n\n"
+        )
+        
+        if top_refs:
+            text += "🏆 **Top giới thiệu:**\n"
+            for i, ref in enumerate(top_refs, 1):
+                name = ref.get("first_name") or ref.get("username") or str(ref["user_id"])
+                text += f"   {i}. {name} — {ref.get('referral_count', 0)} người ({format_money(ref.get('referral_earnings', 0))})\n"
+        
+        buttons = [
+            [InlineKeyboardButton(toggle_text, callback_data="admin_ref_toggle")],
+            [InlineKeyboardButton(f"💰 Đổi mức thưởng ({format_money(reward)})", callback_data="admin_ref_reward")],
+            [InlineKeyboardButton(f"💳 Đổi nạp tối thiểu ({format_money(min_dep)})", callback_data="admin_ref_mindeposit")],
+            [InlineKeyboardButton("⬅️ Quay lại", callback_data="admin_home")],
+        ]
+        await query.edit_message_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(buttons))
+
+    elif data == "admin_ref_toggle":
+        current = db.get_setting("referral_enabled", True)
+        db.set_setting("referral_enabled", not current)
+        new_status = "TẮT" if current else "BẬT"
+        await query.answer(f"Đã {new_status} hệ thống giới thiệu!")
+        # Reload referral page
+        reward = db.get_setting("referral_reward", 1000)
+        enabled = db.get_setting("referral_enabled", True)
+        status = "✅ BẬT" if enabled else "⏸️ TẮT"
+        toggle_text = "⏸️ Tắt referral" if enabled else "✅ Bật referral"
+        min_dep = db.get_setting("min_deposit", 5000)
+        buttons = [
+            [InlineKeyboardButton(toggle_text, callback_data="admin_ref_toggle")],
+            [InlineKeyboardButton(f"💰 Đổi mức thưởng ({format_money(reward)})", callback_data="admin_ref_reward")],
+            [InlineKeyboardButton(f"💳 Đổi nạp tối thiểu ({format_money(min_dep)})", callback_data="admin_ref_mindeposit")],
+            [InlineKeyboardButton("⬅️ Quay lại", callback_data="admin_home")],
+        ]
+        await query.edit_message_text(
+            f"🎁 **CẤU HÌNH GIỚI THIỆU**\n━━━━━━━━━━━━━━━━━━\n\n📊 Trạng thái: **{status}**\n💰 Thưởng/người: **{format_money(reward)}**\n💳 Nạp tối thiểu: **{format_money(min_dep)}**",
+            parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(buttons)
+        )
+
+    elif data == "admin_ref_reward":
+        context.user_data["awaiting_ref_reward"] = True
+        await query.edit_message_text(
+            "💰 **ĐỔI MỨC THƯỞNG GIỚI THIỆU**\n\n"
+            f"Mức hiện tại: **{format_money(db.get_setting('referral_reward', 1000))}**\n\n"
+            "Nhập số tiền mới (VD: `2000`):",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Hủy", callback_data="admin_referral")]])
+        )
+
+    elif data == "admin_ref_mindeposit":
+        context.user_data["awaiting_min_deposit"] = True
+        await query.edit_message_text(
+            "💳 **ĐỔI MỨC NẠP TỐI THIỂU**\n\n"
+            f"Mức hiện tại: **{format_money(db.get_setting('min_deposit', 5000))}**\n\n"
+            "Nhập số tiền mới (VD: `10000`):",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Hủy", callback_data="admin_referral")]])
+        )
     elif data == "admin_pending":
         pending = db.get_pending_orders()
         if not pending:
@@ -1948,6 +2254,165 @@ async def handle_admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 
+# ============================================
+# VÍ + NẠP TIỀN + GIỚI THIỆU
+# ============================================
+async def handle_wallet_home(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Hiển thị ví người dùng."""
+    query = update.callback_query
+    await query.answer()
+    user_id = query.from_user.id
+    
+    user_info = db.get_user(user_id)
+    balance = user_info.get("balance", 0)
+    total_deposited = user_info.get("total_deposited", 0)
+    total_spent = user_info.get("total_spent", 0)
+    referral_earnings = user_info.get("referral_earnings", 0)
+    
+    text = (
+        "💰 **VÍ CỦA BẠN**\n"
+        "━━━━━━━━━━━━━━━━━━\n\n"
+        f"💵 **Số dư:** {format_money(balance)}\n\n"
+        f"📊 **Thống kê:**\n"
+        f"   💳 Đã nạp: {format_money(total_deposited)}\n"
+        f"   🛒 Đã chi: {format_money(total_spent)}\n"
+        f"   🎁 Thưởng giới thiệu: {format_money(referral_earnings)}\n\n"
+        "💡 _Bạn có thể dùng số dư ví để mua sản phẩm mà không cần chuyển khoản._"
+    )
+    
+    buttons = [
+        [InlineKeyboardButton("💳 Nạp tiền vào ví", callback_data="deposit_start")],
+        [InlineKeyboardButton("🎁 Giới thiệu bạn bè", callback_data="referral_home")],
+        [InlineKeyboardButton("🛒 Mua sản phẩm", callback_data="reload_menu")],
+        [InlineKeyboardButton("⬅️ Quay lại", callback_data="back_start")],
+    ]
+    
+    await query.edit_message_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(buttons))
+
+
+async def handle_deposit_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Tạo lệnh nạp tiền."""
+    query = update.callback_query
+    await query.answer()
+    user_id = query.from_user.id
+    
+    dep_code = db.create_deposit(user_id)
+    min_deposit = db.get_setting("min_deposit", 5000)
+    
+    qr_url = generate_qr_url(0, dep_code)
+    
+    text = (
+        "💳 **NẠP TIỀN VÀO VÍ**\n"
+        "━━━━━━━━━━━━━━━━━━\n\n"
+        f"🏦 Ngân hàng: **{BANK_NAME}**\n"
+        f"💳 Số TK: `{BANK_ACCOUNT_NUMBER}`\n"
+        f"👤 Tên: **{BANK_ACCOUNT_NAME}**\n"
+        f"📝 Nội dung: `{dep_code}`\n\n"
+        f"💰 Số tiền: **Tùy ý** (tối thiểu {format_money(min_deposit)})\n\n"
+        f"📱 Quét QR bên dưới:\n"
+        f"[QR Nạp tiền]({qr_url})\n\n"
+        "✅ Tiền sẽ **tự động cộng** vào ví sau 1-2 phút.\n"
+        "🔔 Bạn sẽ nhận thông báo khi nạp thành công!"
+    )
+    
+    buttons = [
+        [InlineKeyboardButton("💰 Xem số dư", callback_data="wallet_home")],
+        [InlineKeyboardButton("⬅️ Quay lại", callback_data="wallet_home")],
+    ]
+    
+    await query.edit_message_text(
+        text, parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup(buttons),
+        disable_web_page_preview=False
+    )
+
+
+async def handle_referral_home(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Hiển thị trang giới thiệu."""
+    query = update.callback_query
+    await query.answer()
+    user_id = query.from_user.id
+    
+    bot_info = await context.bot.get_me()
+    bot_username = bot_info.username
+    ref_link = f"https://t.me/{bot_username}?start=ref_{user_id}"
+    
+    stats = db.get_referral_stats(user_id)
+    reward = db.get_setting("referral_reward", 1000)
+    ref_enabled = db.get_setting("referral_enabled", True)
+    
+    status = "✅ Đang hoạt động" if ref_enabled else "⏸️ Tạm dừng"
+    
+    text = (
+        "🎁 **GIỚI THIỆU BẠN BÈ**\n"
+        "━━━━━━━━━━━━━━━━━━\n\n"
+        f"📎 **Link mời của bạn:**\n"
+        f"`{ref_link}`\n\n"
+        f"💰 Thưởng mỗi người: **{format_money(reward)}**\n"
+        f"📊 Trạng thái: {status}\n\n"
+        f"👥 Đã giới thiệu: **{stats['referral_count']}** người\n"
+        f"💵 Tổng thưởng: **{format_money(stats['referral_earnings'])}**\n\n"
+        "💡 _Gửi link trên cho bạn bè. Khi họ bấm vào và /start bot, "
+        "bạn sẽ nhận thưởng tự động vào ví!_"
+    )
+    
+    buttons = [
+        [InlineKeyboardButton("📋 Copy link mời", callback_data=f"copy_ref_{user_id}")],
+        [InlineKeyboardButton("💰 Xem ví", callback_data="wallet_home")],
+        [InlineKeyboardButton("⬅️ Quay lại", callback_data="back_start")],
+    ]
+    
+    await query.edit_message_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(buttons))
+
+
+async def handle_copy_ref(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Gửi link ref dạng text để user copy dễ dàng."""
+    query = update.callback_query
+    user_id = query.from_user.id
+    
+    bot_info = await context.bot.get_me()
+    bot_username = bot_info.username
+    ref_link = f"https://t.me/{bot_username}?start=ref_{user_id}"
+    
+    await query.answer(f"📋 Link: {ref_link}", show_alert=True)
+
+
+async def handle_back_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Quay lại màn hình /start."""
+    query = update.callback_query
+    await query.answer()
+    user_id = query.from_user.id
+    
+    balance = db.get_user_balance(user_id)
+    
+    text = (
+        f"👋 Xin chào **{query.from_user.first_name}**!\n\n"
+        "Chào mừng bạn đến với hệ thống bán tài khoản Premium tự động 🤖\n\n"
+        "🔹 **Thanh toán tự động** 24/7, xác nhận trong 1 phút\n"
+        "🔹 **Nhận tài khoản ngay** sau khi thanh toán\n"
+        "🔹 **Hỗ trợ tận tình** nhanh chóng\n\n"
+        f"💰 **Số dư ví:** {format_money(balance)}\n\n"
+        "👇 Bấm vào nút bên dưới để chọn sản phẩm 👇"
+    )
+    
+    buttons = [
+        [InlineKeyboardButton("🛒 MENU SẢN PHẨM", callback_data="reload_menu")],
+        [
+            InlineKeyboardButton(f"💰 Ví: {format_money(balance)}", callback_data="wallet_home"),
+            InlineKeyboardButton("🎁 Giới thiệu", callback_data="referral_home"),
+        ],
+        [
+            InlineKeyboardButton("📋 Lịch sử mua hàng", callback_data="btn_myorders"),
+            InlineKeyboardButton("📞 Liên hệ Admin", url="https://t.me/hoanganh1162")
+        ]
+    ]
+    
+    if is_admin(user_id):
+        buttons.append([InlineKeyboardButton("⚙️ Quản trị Admin", callback_data="admin_home")])
+    
+    await query.edit_message_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(buttons))
+
+
 async def handle_noop(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Xử lý nút category separator."""
     query = update.callback_query
@@ -2081,6 +2546,51 @@ async def _handle_payment(application, payment: dict):
 
     # Làm sạch nội dung CK
     clean_content = content.upper().replace(" ", "").replace("-", "").replace("\n", "")
+
+    # === KIỂM TRA NẠP TIỀN VÀO VÍ ===
+    deposit_user_id = db.find_deposit_by_content(clean_content)
+    if deposit_user_id:
+        min_deposit = db.get_setting("min_deposit", 5000)
+        if transfer_amount < min_deposit:
+            logger.info(f"Deposit amount {transfer_amount} below minimum {min_deposit} for user {deposit_user_id}")
+            db.mark_payment_processed(transaction_id)
+            db.mark_transaction_processed(transaction_id)
+            await _notify_all_admins(application,
+                f"⚠️ **NẠP VÍ DƯỚI MỨC TỐI THIỂU**\n"
+                f"👤 User: {deposit_user_id}\n"
+                f"💰 Số tiền: {transfer_amount:,}đ (tối thiểu {min_deposit:,}đ)\n"
+                f"📝 Nội dung: {content}"
+            )
+            return
+
+        new_balance = db.add_balance(deposit_user_id, transfer_amount, reason="deposit")
+        db.mark_payment_processed(transaction_id)
+        db.mark_transaction_processed(transaction_id)
+        logger.info(f"✅ Deposit: {transfer_amount}đ → user {deposit_user_id}, new balance: {new_balance}")
+
+        # Thông báo cho user
+        try:
+            await application.bot.send_message(
+                chat_id=deposit_user_id,
+                text=(
+                    f"✅ **NẠP TIỀN THÀNH CÔNG!**\n"
+                    f"━━━━━━━━━━━━━━━━━━\n"
+                    f"💰 Số tiền: **+{format_money(transfer_amount)}**\n"
+                    f"💵 Số dư mới: **{format_money(new_balance)}**\n\n"
+                    f"Bạn có thể dùng ví để mua sản phẩm ngay! Gõ /menu"
+                ),
+                parse_mode="Markdown"
+            )
+        except Exception as e:
+            logger.error(f"Failed to notify deposit: {e}")
+
+        # Thông báo admin
+        await _notify_all_admins(application,
+            f"💳 **NẠP VÍ**\n"
+            f"👤 User ID: {deposit_user_id}\n"
+            f"💰 +{transfer_amount:,}đ → Số dư: {new_balance:,}đ"
+        )
+        return
 
     # Tìm đơn hàng khớp
     order_code, order = db.find_order_by_content(clean_content)
@@ -2258,8 +2768,15 @@ def main():
     app.add_handler(CallbackQueryHandler(handle_product_select, pattern="^prod_"))
     app.add_handler(CallbackQueryHandler(handle_qty_select, pattern="^qty_"))
     app.add_handler(CallbackQueryHandler(handle_paid_button, pattern="^paid_"))
+    app.add_handler(CallbackQueryHandler(handle_pay_wallet, pattern="^paywallet_"))
+    app.add_handler(CallbackQueryHandler(handle_pay_partial, pattern="^paypartial_"))
     app.add_handler(CallbackQueryHandler(handle_cancel_order, pattern="^cancel_"))
     app.add_handler(CallbackQueryHandler(handle_back_menu, pattern="^back_menu$"))
+    app.add_handler(CallbackQueryHandler(handle_back_start, pattern="^back_start$"))
+    app.add_handler(CallbackQueryHandler(handle_wallet_home, pattern="^wallet_home$"))
+    app.add_handler(CallbackQueryHandler(handle_deposit_start, pattern="^deposit_start$"))
+    app.add_handler(CallbackQueryHandler(handle_referral_home, pattern="^referral_home$"))
+    app.add_handler(CallbackQueryHandler(handle_copy_ref, pattern="^copy_ref_"))
     app.add_handler(CallbackQueryHandler(handle_admin_confirm_pay, pattern="^adminpay_"))
     app.add_handler(CallbackQueryHandler(handle_admin_cancel, pattern="^admincx_"))
     app.add_handler(CallbackQueryHandler(handle_admin_cb, pattern="^admin_"))

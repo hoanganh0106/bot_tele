@@ -24,10 +24,12 @@ _DEFAULT_DATA = {
     "custom_stocks": {},
     "custom_accounts_inventory": {},
     "custom_hiddens": [],
-    "settings": {"default_markup_percent": 30},
+    "settings": {"default_markup_percent": 30, "referral_reward": 1000, "referral_enabled": True, "min_deposit": 5000},
     "processed_transactions": [],
     "incoming_payments": [],
-    "users": []
+    "users": {},
+    "deposits": {},
+    "user_list": []
 }
 
 
@@ -505,13 +507,166 @@ class Database:
 
     # === USERS ===
     def add_user(self, user_id: int):
+        """Backward-compatible: thêm user vào cả user_list (cũ) và users dict (mới)."""
         with self.lock:
             data = self._read()
-            users = data.setdefault("users", [])
-            if user_id not in users:
-                users.append(user_id)
-                self._write(data)
+            # Legacy list
+            user_list = data.setdefault("user_list", [])
+            if user_id not in user_list:
+                user_list.append(user_id)
+            # New dict
+            users = data.setdefault("users", {})
+            uid = str(user_id)
+            if uid not in users:
+                users[uid] = {
+                    "balance": 0,
+                    "referral_count": 0,
+                    "referral_earnings": 0,
+                    "total_deposited": 0,
+                    "total_spent": 0,
+                    "referred_by": None,
+                    "joined_at": datetime.now().isoformat(),
+                }
+            self._write(data)
 
     def get_all_users(self) -> list:
         with self.lock:
-            return list(self._read().get("users", []))
+            data = self._read()
+            # Merge cả 2 nguồn
+            user_list = set(data.get("user_list", []))
+            user_dict_ids = {int(uid) for uid in data.get("users", {}).keys()}
+            return list(user_list | user_dict_ids)
+
+    def register_user(self, user_id: int, username: str = None, first_name: str = None, referred_by: int = None):
+        """Đăng ký user mới với thông tin đầy đủ + xử lý referral."""
+        with self.lock:
+            data = self._read()
+            users = data.setdefault("users", {})
+            uid = str(user_id)
+            is_new = uid not in users
+
+            if is_new:
+                users[uid] = {
+                    "balance": 0,
+                    "referral_count": 0,
+                    "referral_earnings": 0,
+                    "total_deposited": 0,
+                    "total_spent": 0,
+                    "referred_by": referred_by,
+                    "joined_at": datetime.now().isoformat(),
+                }
+
+            # Luôn cập nhật username/first_name
+            users[uid]["username"] = username
+            users[uid]["first_name"] = first_name
+
+            # Backward-compatible
+            user_list = data.setdefault("user_list", [])
+            if user_id not in user_list:
+                user_list.append(user_id)
+
+            # Xử lý referral reward nếu là user mới + có người giới thiệu
+            referral_credited = False
+            if is_new and referred_by and str(referred_by) in users:
+                reward = data.get("settings", {}).get("referral_reward", 1000)
+                referral_enabled = data.get("settings", {}).get("referral_enabled", True)
+                ref_uid = str(referred_by)
+                if referral_enabled and referred_by != user_id:
+                    users[ref_uid]["balance"] = users[ref_uid].get("balance", 0) + reward
+                    users[ref_uid]["referral_count"] = users[ref_uid].get("referral_count", 0) + 1
+                    users[ref_uid]["referral_earnings"] = users[ref_uid].get("referral_earnings", 0) + reward
+                    referral_credited = True
+
+            self._write(data)
+            return is_new, referral_credited
+
+    def get_user(self, user_id: int) -> dict:
+        """Lấy thông tin user. Trả về dict hoặc {} nếu chưa đăng ký."""
+        with self.lock:
+            return dict(self._read().get("users", {}).get(str(user_id), {}))
+
+    def get_user_balance(self, user_id: int) -> int:
+        """Lấy số dư ví."""
+        with self.lock:
+            return self._read().get("users", {}).get(str(user_id), {}).get("balance", 0)
+
+    def add_balance(self, user_id: int, amount: int, reason: str = "") -> int:
+        """Cộng tiền vào ví. Trả về số dư mới."""
+        with self.lock:
+            data = self._read()
+            users = data.setdefault("users", {})
+            uid = str(user_id)
+            if uid not in users:
+                users[uid] = {"balance": 0}
+            users[uid]["balance"] = users[uid].get("balance", 0) + amount
+            if reason == "deposit":
+                users[uid]["total_deposited"] = users[uid].get("total_deposited", 0) + amount
+            new_balance = users[uid]["balance"]
+            self._write(data)
+            return new_balance
+
+    def deduct_balance(self, user_id: int, amount: int) -> bool:
+        """Trừ tiền từ ví. Trả về True nếu thành công, False nếu không đủ tiền."""
+        with self.lock:
+            data = self._read()
+            users = data.setdefault("users", {})
+            uid = str(user_id)
+            current = users.get(uid, {}).get("balance", 0)
+            if current < amount:
+                return False
+            users[uid]["balance"] = current - amount
+            users[uid]["total_spent"] = users[uid].get("total_spent", 0) + amount
+            self._write(data)
+            return True
+
+    # === DEPOSITS ===
+    def create_deposit(self, user_id: int, amount: int = 0) -> str:
+        """Tạo lệnh nạp tiền. Trả về mã nạp tiền."""
+        with self.lock:
+            data = self._read()
+            deposits = data.setdefault("deposits", {})
+            dep_code = f"NAP{user_id}"
+            deposits[dep_code] = {
+                "user_id": user_id,
+                "expected_amount": amount,
+                "status": "pending",
+                "created_at": datetime.now().isoformat(),
+            }
+            self._write(data)
+            return dep_code
+
+    def find_deposit_by_content(self, content: str) -> tuple:
+        """Tìm user_id từ nội dung nạp tiền."""
+        clean = content.upper().replace(" ", "").replace("-", "")
+        # Tìm pattern NAP + user_id  
+        import re
+        match = re.search(r"NAP(\d+)", clean)
+        if match:
+            user_id = int(match.group(1))
+            uid = str(user_id)
+            with self.lock:
+                if uid in self._read().get("users", {}):
+                    return user_id
+        return None
+
+    # === REFERRAL STATS ===
+    def get_referral_stats(self, user_id: int) -> dict:
+        """Lấy thông tin referral của user."""
+        user = self.get_user(user_id)
+        return {
+            "referral_count": user.get("referral_count", 0),
+            "referral_earnings": user.get("referral_earnings", 0),
+            "referred_by": user.get("referred_by"),
+        }
+
+    def get_top_referrers(self, limit: int = 10) -> list:
+        """Top người giới thiệu."""
+        with self.lock:
+            users = self._read().get("users", {})
+            ranked = [
+                {"user_id": int(uid), **info}
+                for uid, info in users.items()
+                if info.get("referral_count", 0) > 0
+            ]
+            ranked.sort(key=lambda x: x.get("referral_count", 0), reverse=True)
+            return ranked[:limit]
