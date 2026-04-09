@@ -120,6 +120,22 @@ def escape_md(text: str) -> str:
     return text
 
 
+def escape_html(text: str) -> str:
+    """Escape ký tự đặc biệt HTML cho Telegram."""
+    if not text:
+        return text
+    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def fmt_icon(cat_id: str, fallback_icon: str = "") -> str:
+    """Trả về custom emoji HTML tag nếu có, hoặc fallback icon."""
+    emoji_id = db.get_category_emoji_id(cat_id) if db else None
+    if emoji_id:
+        fb = fallback_icon or "⭐"
+        return f'<tg-emoji emoji-id="{emoji_id}">{fb}</tg-emoji>'
+    return fallback_icon
+
+
 def generate_qr_url(amount: int, content: str) -> str:
     """Tạo QR VietQR."""
     return (
@@ -545,11 +561,11 @@ async def cmd_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ])
 
         await msg.edit_text(
-            "🛒 **MENU SẢN PHẨM**\n"
+            "🛒 <b>MENU SẢN PHẨM</b>\n"
             "━━━━━━━━━━━━━━━━━━\n"
-            f"💰 Số dư ví: **{format_money(user_balance)}**\n"
+            f"💰 Số dư ví: <b>{format_money(user_balance)}</b>\n"
             "Chọn danh mục sản phẩm bạn muốn xem:",
-            parse_mode="Markdown",
+            parse_mode="HTML",
             reply_markup=InlineKeyboardMarkup(buttons)
         )
     except Exception as e:
@@ -638,7 +654,7 @@ async def handle_product_select(update: Update, context: ContextTypes.DEFAULT_TY
     # Nếu là slot_gpt_team, thông báo cần email
     note = ""
     if product_key == "slot_gpt_team":
-        note = "\n⚠️ _Sản phẩm này cần cung cấp email sau khi thanh toán_"
+        note = "\n⚠️ <i>Sản phẩm này cần cung cấp email sau khi thanh toán</i>"
 
     # Hiển thị mô tả: chỉ custom hoặc API, KHÔNG tự sinh
     desc = db.get_custom_description(product_key)
@@ -647,20 +663,25 @@ async def handle_product_select(update: Update, context: ContextTypes.DEFAULT_TY
     
     desc_block = ""
     if desc:
-        desc_block = f"\n📝 {escape_md(desc)}\n"
+        desc_block = f"\n📝 {escape_html(desc)}\n"
     
     # Chỉ hiển thị "Nhận tự động" nếu sản phẩm THẬT SỰ có kho auto-delivery
     if db.has_custom_accounts_enabled(product_key):
         desc_block += "\n⚡ Nhận tự động sau thanh toán\n"
     
+    # Icon danh mục (custom emoji nếu có)
+    _, icon, cid_for_icon = classify_product(product_key, info)
+    cat_icon = fmt_icon(cid_for_icon, icon)
+    pname = escape_html(info['name'])
+    
     await query.edit_message_text(
-        f"📦 **{info['name']}**\n"
+        f"{cat_icon} <b>{pname}</b>\n"
         f"━━━━━━━━━━━━━━━━━━\n"
-        f"💰 Giá: **{format_money(sell_price)}** / cái\n"
-        f"📊 Kho: **{info['stock']}** còn lại\n"
+        f"💰 Giá: <b>{format_money(sell_price)}</b> / cái\n"
+        f"📊 Kho: <b>{info['stock']}</b> còn lại\n"
         f"{desc_block}{note}\n"
         f"👇 Chọn số lượng muốn mua:",
-        parse_mode="Markdown",
+        parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup(qty_buttons)
     )
 
@@ -1026,10 +1047,10 @@ async def handle_back_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         InlineKeyboardButton("🔄 Cập nhật sản phẩm", callback_data="reload_menu")
     ])
     await query.edit_message_text(
-        "🛒 **MENU SẢN PHẨM**\n"
+        "🛒 <b>MENU SẢN PHẨM</b>\n"
         "━━━━━━━━━━━━━━━━━━\n"
         "Chọn danh mục sản phẩm bạn muốn xem:",
-        parse_mode="Markdown",
+        parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup(buttons)
     )
 
@@ -2008,11 +2029,11 @@ async def handle_category_click(update: Update, context: ContextTypes.DEFAULT_TY
             InlineKeyboardButton("🔄 Cập nhật", callback_data="reload_menu")
         ])
         await query.edit_message_text(
-            "🛒 **MENU SẢN PHẨM**\n"
+            "🛒 <b>MENU SẢN PHẨM</b>\n"
             "━━━━━━━━━━━━━━━━━━\n"
-            f"💰 Số dư ví: **{format_money(user_balance)}**\n"
+            f"💰 Số dư ví: <b>{format_money(user_balance)}</b>\n"
             "Chọn danh mục sản phẩm bạn muốn xem:",
-            parse_mode="Markdown",
+            parse_mode="HTML",
             reply_markup=InlineKeyboardMarkup(buttons)
         )
         return
@@ -2068,9 +2089,14 @@ async def handle_category_click(update: Update, context: ContextTypes.DEFAULT_TY
                
     buttons.append([InlineKeyboardButton("⬅️ Quay lại danh mục", callback_data="back_menu")])
     
+    # Lấy tên + icon danh mục
+    all_cats = get_all_categories_merged()
+    cat_name, cat_emoji = all_cats.get(cat_id, ["Sản phẩm", "🛒"])
+    cat_icon_html = fmt_icon(cat_id, cat_emoji)
+    
     await query.edit_message_text(
-        f"🛒 **DANH SÁCH SẢN PHẨM**\n━━━━━━━━━━━━━━━━━━\n_💡 Giá | ✅Còn hàng | ❌Hết | 🔄Đang cập nhật_",
-        parse_mode="Markdown",
+        f"{cat_icon_html} <b>{escape_html(cat_name)}</b>\n━━━━━━━━━━━━━━━━━━\n<i>💡 Giá | ✅Còn hàng | ❌Hết | 🔄Đang cập nhật</i>",
+        parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup(buttons)
     )
 
