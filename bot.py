@@ -315,7 +315,7 @@ def classify_product(key: str, info: dict) -> tuple:
 
     # 2. Phân loại tự động theo tên sản phẩm (áp dụng cho CẢ API1 và API2)
     k = key.lower()
-    n = info["name"].lower()
+    n = info.get("name", "").lower()
     if "gpt" in k or "gpt" in n or "openai" in n or "chatgpt" in n: return "ChatGPT", "🤖", "gpt"
     if "grok" in k or "grok" in n: return "Grok", "🔮", "grok"
     if "cc" in k or "capcut" in n: return "CapCut", "🎬", "capcut"
@@ -469,34 +469,38 @@ async def cmd_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     db.add_user(update.effective_user.id)
     msg = await update.message.reply_text("⏳ Đang tải sản phẩm...")
 
-    products, balance = get_all_products_merged()
-    if not products:
-        await msg.edit_text("❌ Không thể tải sản phẩm lúc này. Vui lòng thử lại sau!")
-        return
+    try:
+        products, balance = get_all_products_merged()
+        if not products:
+            await msg.edit_text("❌ Không thể tải sản phẩm lúc này. Vui lòng thử lại sau!")
+            return
 
-    user_balance = db.get_user_balance(update.effective_user.id)
-    
-    buttons = build_category_grid(products, "viewcat", is_admin=False)
-    
-    # Nút ví + giới thiệu
-    buttons.append([
-        InlineKeyboardButton(f"💰 Ví: {format_money(user_balance)}", callback_data="wallet_home"),
-        InlineKeyboardButton("🎁 Giới thiệu bạn bè", callback_data="referral_home"),
-    ])
-    # Thêm nút cố định
-    buttons.append([
-        InlineKeyboardButton("📞 Liên hệ Admin", url="https://t.me/hoanganh1162"),
-        InlineKeyboardButton("🔄 Cập nhật", callback_data="reload_menu")
-    ])
+        user_balance = db.get_user_balance(update.effective_user.id)
+        
+        buttons = build_category_grid(products, "viewcat", is_admin=False)
+        
+        # Nút ví + giới thiệu
+        buttons.append([
+            InlineKeyboardButton(f"💰 Ví: {format_money(user_balance)}", callback_data="wallet_home"),
+            InlineKeyboardButton("🎁 Giới thiệu bạn bè", callback_data="referral_home"),
+        ])
+        # Thêm nút cố định
+        buttons.append([
+            InlineKeyboardButton("📞 Liên hệ Admin", url="https://t.me/hoanganh1162"),
+            InlineKeyboardButton("🔄 Cập nhật", callback_data="reload_menu")
+        ])
 
-    await msg.edit_text(
-        "🛒 **MENU SẢN PHẨM**\n"
-        "━━━━━━━━━━━━━━━━━━\n"
-        f"💰 Số dư ví: **{format_money(user_balance)}**\n"
-        "Chọn danh mục sản phẩm bạn muốn xem:",
-        parse_mode="Markdown",
-        reply_markup=InlineKeyboardMarkup(buttons)
-    )
+        await msg.edit_text(
+            "🛒 **MENU SẢN PHẨM**\n"
+            "━━━━━━━━━━━━━━━━━━\n"
+            f"💰 Số dư ví: **{format_money(user_balance)}**\n"
+            "Chọn danh mục sản phẩm bạn muốn xem:",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup(buttons)
+        )
+    except Exception as e:
+        logger.error(f"cmd_menu error: {e}")
+        await msg.edit_text("❌ Có lỗi xảy ra khi tải sản phẩm. Vui lòng /menu lại.")
 
 
 async def handle_product_select(update: Update, context: ContextTypes.DEFAULT_TYPE):
