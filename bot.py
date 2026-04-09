@@ -1696,6 +1696,101 @@ async def cmd_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(buttons))
 
 
+async def cmd_wallet_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Admin chỉnh số dư ví user. Cú pháp: /wallet <user_id> <+/- số tiền>"""
+    if not is_admin(update.effective_user.id):
+        return await update.message.reply_text("⛔ Tính năng chỉ dành cho Admin.")
+    
+    args = context.args
+    if not args or len(args) < 2:
+        await update.message.reply_text(
+            "💰 **QUẢN LÝ VÍ USER**\n"
+            "━━━━━━━━━━━━━━━━━━\n\n"
+            "Cú pháp: `/wallet <user_id> <số tiền>`\n\n"
+            "📥 Cộng tiền: `/wallet 123456 +5000`\n"
+            "📤 Trừ tiền: `/wallet 123456 -3000`\n"
+            "📋 Xem ví: `/wallet 123456`",
+            parse_mode="Markdown"
+        )
+        return
+
+    try:
+        target_user_id = int(args[0])
+    except ValueError:
+        return await update.message.reply_text("❌ User ID phải là số.")
+
+    user_info = db.get_user(target_user_id)
+    current_balance = db.get_user_balance(target_user_id)
+    user_name = user_info.get("first_name") or user_info.get("username") or str(target_user_id)
+    
+    # Chỉ xem ví
+    if len(args) == 1:
+        await update.message.reply_text(
+            f"💰 **Ví của {user_name}** (ID: `{target_user_id}`)\n"
+            f"━━━━━━━━━━━━━━━━━━\n"
+            f"💵 Số dư: **{format_money(current_balance)}**\n"
+            f"💳 Đã nạp: **{format_money(user_info.get('total_deposited', 0))}**\n"
+            f"🛒 Đã chi: **{format_money(user_info.get('total_spent', 0))}**\n"
+            f"🎁 Thưởng ref: **{format_money(user_info.get('referral_earnings', 0))}**",
+            parse_mode="Markdown"
+        )
+        return
+
+    # Chỉnh ví
+    amount_str = args[1].replace(",", "").replace(".", "")
+    try:
+        amount = int(amount_str)
+    except ValueError:
+        return await update.message.reply_text("❌ Số tiền không hợp lệ. VD: `+5000` hoặc `-3000`", parse_mode="Markdown")
+
+    if amount > 0:
+        new_balance = db.add_balance(target_user_id, amount, reason="admin_add")
+        action = f"➕ Cộng **{format_money(amount)}**"
+    elif amount < 0:
+        deduct_amount = abs(amount)
+        if deduct_amount > current_balance:
+            return await update.message.reply_text(
+                f"❌ Không thể trừ {format_money(deduct_amount)} — Số dư chỉ có {format_money(current_balance)}"
+            )
+        db.deduct_balance(target_user_id, deduct_amount)
+        new_balance = db.get_user_balance(target_user_id)
+        action = f"➖ Trừ **{format_money(deduct_amount)}**"
+    else:
+        return await update.message.reply_text("❌ Số tiền phải khác 0.")
+
+    await update.message.reply_text(
+        f"✅ **ĐÃ CẬP NHẬT VÍ**\n"
+        f"━━━━━━━━━━━━━━━━━━\n"
+        f"👤 User: **{user_name}** (`{target_user_id}`)\n"
+        f"📝 Thao tác: {action}\n"
+        f"💵 Số dư mới: **{format_money(new_balance)}**",
+        parse_mode="Markdown"
+    )
+    
+    # Thông báo cho user
+    try:
+        if amount > 0:
+            await context.bot.send_message(
+                chat_id=target_user_id,
+                text=(
+                    f"💰 **Admin đã cộng {format_money(amount)} vào ví của bạn!**\n"
+                    f"💵 Số dư mới: **{format_money(new_balance)}**"
+                ),
+                parse_mode="Markdown"
+            )
+        else:
+            await context.bot.send_message(
+                chat_id=target_user_id,
+                text=(
+                    f"💰 **Admin đã trừ {format_money(abs(amount))} từ ví của bạn.**\n"
+                    f"💵 Số dư mới: **{format_money(new_balance)}**"
+                ),
+                parse_mode="Markdown"
+            )
+    except Exception:
+        pass
+
+
 async def handle_category_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -2907,6 +3002,7 @@ def main():
 
     # Admin commands
     app.add_handler(CommandHandler("admin", cmd_admin))
+    app.add_handler(CommandHandler("wallet", cmd_wallet_admin))
 
     # Callback handlers
     app.add_handler(CallbackQueryHandler(handle_noop, pattern="^noop$"))
