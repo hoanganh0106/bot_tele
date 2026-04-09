@@ -10,6 +10,7 @@ ExecStart=/home/ubuntu/ctv-bot/venv/bin/python bot.py
 Restart=always
 RestartSec=10
 Environment=PYTHONUNBUFFERED=1
+Environment=DATA_DIR=/home/ubuntu/ctv-bot-data
 
 [Install]
 WantedBy=multi-user.target

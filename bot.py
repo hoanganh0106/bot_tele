@@ -54,10 +54,17 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Data directory — mặc định lưu NGOÀI thư mục git để không bị mất khi pull code
+# Trên server: /home/ubuntu/ctv-bot-data/
+# Local dev: ./data/
+DATA_DIR = os.getenv("DATA_DIR", "data")
+os.makedirs(DATA_DIR, exist_ok=True)
+DB_PATH = os.path.join(DATA_DIR, "bot_data.json")
+
 # Init
 api = CTVApi(CTV_API_URL, CTV_API_KEY)
 crm_api = CrmTeacherApi(CRMTEACHER_API_URL, CRMTEACHER_API_KEY)
-db = Database("data/bot_data.json")
+db = Database(DB_PATH)
 
 # Conversation states
 WAITING_PRICE = 1
@@ -2014,6 +2021,33 @@ async def post_init(application):
     ]
     await application.bot.set_my_commands(commands)
 
+    # === DIAGNOSTIC: Kiểm tra kết nối API khi khởi động ===
+    logger.info(f"📂 Database path: {DB_PATH}")
+    logger.info(f"📂 Database file exists: {os.path.exists(DB_PATH)}")
+    
+    # Kiểm tra API 1
+    try:
+        products1, bal1 = api.get_stock()
+        if products1:
+            logger.info(f"✅ API 1 (CTV): OK — {len(products1)} sản phẩm, số dư: {bal1}")
+        else:
+            logger.warning(f"⚠️ API 1 (CTV): Không có sản phẩm hoặc lỗi")
+    except Exception as e:
+        logger.error(f"❌ API 1 (CTV) error: {e}")
+    
+    # Kiểm tra API 2
+    try:
+        products2, bal2 = crm_api.get_stock()
+        if products2:
+            logger.info(f"✅ API 2 (CRM): OK — {len(products2)} sản phẩm, số dư: {bal2}")
+        else:
+            logger.warning(f"⚠️ API 2 (CRM): Không có sản phẩm — URL: {CRMTEACHER_API_URL}")
+    except Exception as e:
+        logger.error(f"❌ API 2 (CRM) error: {e}")
+
+    # === Auto-backup database khi khởi động ===
+    _backup_database()
+
     # Recover đơn kẹt ở 'processing' từ crash cũ
     db.recover_stuck_orders()
 
@@ -2037,6 +2071,29 @@ async def post_init(application):
     logger.info(f"SePay webhook server started on port {WEBHOOK_PORT}")
 
 
+def _backup_database():
+    """Tự động backup database mỗi lần khởi động."""
+    import shutil
+    if os.path.exists(DB_PATH):
+        backup_dir = os.path.join(DATA_DIR, "backups")
+        os.makedirs(backup_dir, exist_ok=True)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        backup_path = os.path.join(backup_dir, f"bot_data_{timestamp}.json")
+        shutil.copy2(DB_PATH, backup_path)
+        logger.info(f"💾 Database backed up to: {backup_path}")
+        
+        # Giữ tối đa 20 bản backup gần nhất
+        backups = sorted(
+            [f for f in os.listdir(backup_dir) if f.startswith("bot_data_")],
+            reverse=True
+        )
+        for old in backups[20:]:
+            try:
+                os.remove(os.path.join(backup_dir, old))
+            except Exception:
+                pass
+
+
 def main():
     """Start bot."""
     if not BOT_TOKEN or BOT_TOKEN == "YOUR_TELEGRAM_BOT_TOKEN_HERE":
@@ -2047,8 +2104,8 @@ def main():
         print("❌ Chưa điền CTV_API_KEY trong config.env!")
         return
 
-    # Tạo thư mục data
-    os.makedirs("data", exist_ok=True)
+    # Tạo thư mục data (DATA_DIR đã được tạo ở trên)
+    os.makedirs(DATA_DIR, exist_ok=True)
 
     # Build bot
     app = ApplicationBuilder().token(BOT_TOKEN).post_init(post_init).build()

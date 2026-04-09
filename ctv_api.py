@@ -152,13 +152,17 @@ class CrmTeacherApi:
         self.session.mount("https://", adapter)
 
     def get_stock(self):
+        url = f"{self.base_url}/products"
         try:
-            r = self.session.get(f"{self.base_url}/products", timeout=10)
+            logger.info(f"CRM API: Fetching products from {url}")
+            r = self.session.get(url, timeout=10)
+            logger.info(f"CRM API: Response status={r.status_code}, length={len(r.text)}")
             data = r.json()
             if isinstance(data, dict) and data.get("success"):
                 products = data.get("products", {})
                 for k, v in products.items():
                     v["api_source"] = "CRM"
+                logger.info(f"CRM API: Found {len(products)} products (dict format)")
                 return products, data.get("balance", 0)
             # Nếu trả về list/array sản phẩm (trường hợp API /products thuần tuý không có json node success)
             elif isinstance(data, list):
@@ -172,8 +176,10 @@ class CrmTeacherApi:
                         "stock": p.get("stock", 0),
                         "api_source": "CRM"
                     }
+                logger.info(f"CRM API: Found {len(products)} products (list format)")
                 return products, 0
             else:
+                logger.warning(f"CRM API: Unexpected response format: {str(data)[:500]}")
                 return {}, 0
         except Exception as e:
             logger.error(f"CRMTeacher API stock error: {e}")
