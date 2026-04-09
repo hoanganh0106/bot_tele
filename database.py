@@ -316,6 +316,28 @@ class Database:
                 del defs[cat_id]
                 self._write(data)
 
+    # === CATEGORY CUSTOM EMOJI IDS ===
+    def get_category_emoji_id(self, cat_id: str) -> str | None:
+        """Lấy custom_emoji_id cho danh mục."""
+        with self.lock:
+            return self._read().get("category_emoji_ids", {}).get(cat_id)
+
+    def set_category_emoji_id(self, cat_id: str, emoji_id: str):
+        """Set custom_emoji_id cho danh mục."""
+        with self.lock:
+            data = self._read()
+            emoji_ids = data.setdefault("category_emoji_ids", {})
+            if emoji_id is None:
+                emoji_ids.pop(cat_id, None)
+            else:
+                emoji_ids[cat_id] = emoji_id
+            self._write(data)
+
+    def get_all_category_emoji_ids(self) -> dict:
+        """Lấy tất cả custom_emoji_id."""
+        with self.lock:
+            return dict(self._read().get("category_emoji_ids", {}))
+
     # === CUSTOM STOCKS ===
     def get_custom_stocks(self) -> dict:
         with self.lock:

@@ -367,17 +367,25 @@ def build_category_grid(products, callback_prefix, is_admin=False):
     for k, v in categories.items():
         sorted_cats.append((k, v))
 
+    # Lấy custom emoji IDs
+    emoji_ids = db.get_all_category_emoji_ids()
+
     buttons = []
     row = []
     for cat_id, data in sorted_cats:
-        btn_text = f"{data['icon']} {data['name']} ({data['count']})"
+        # Nếu có custom emoji ID, dùng nó thay vì emoji thường
+        custom_eid = emoji_ids.get(cat_id)
+        if custom_eid:
+            btn_text = f"{data['icon']} {data['name']}"
+        else:
+            btn_text = f"{data['icon']} {data['name']}"
         row.append(InlineKeyboardButton(btn_text, callback_data=f"{callback_prefix}_{cat_id}"))
         if len(row) == 2:
             buttons.append(row)
             row = []
     if row:
         buttons.append(row)
-    return buttons
+    return buttons, emoji_ids
 
 # ============================================
 # COMMAND HANDLERS
@@ -474,6 +482,42 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(text, parse_mode="Markdown")
 
 
+async def cmd_getemoji(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Admin: Lấy custom_emoji_id từ tin nhắn chứa custom emoji."""
+    if not is_admin(update.effective_user.id):
+        await update.message.reply_text("⛔ Chỉ Admin mới dùng được lệnh này.")
+        return
+
+    target_msg = update.message.reply_to_message or update.message
+    
+    emoji_found = []
+    if target_msg.entities:
+        for entity in target_msg.entities:
+            if entity.type == "custom_emoji":
+                emoji_id = entity.custom_emoji_id
+                emoji_text = target_msg.text[entity.offset:entity.offset + entity.length]
+                emoji_found.append((emoji_text, emoji_id))
+    
+    if not emoji_found:
+        await update.message.reply_text(
+            "📌 **HƯỚNG DẪN LẤY CUSTOM EMOJI ID**\n"
+            "━━━━━━━━━━━━━━━━━━\n\n"
+            "**Cách 1:** Gửi một custom emoji vào chat, rồi reply tin nhắn đó bằng `/getemoji`\n\n"
+            "**Cách 2:** Gửi custom emoji cùng với lệnh\n\n"
+            "💡 _Bạn cần Telegram Premium để tìm và gửi custom emoji._",
+            parse_mode="Markdown"
+        )
+        return
+    
+    text = "🎨 **CUSTOM EMOJI ĐÃ TÌM THẤY**\n━━━━━━━━━━━━━━━━━━\n\n"
+    for emoji_text, emoji_id in emoji_found:
+        text += f"• {emoji_text} → ID: `{emoji_id}`\n"
+    
+    text += "\n📋 Để gắn emoji vào danh mục, vào:\n**Admin → Quản lý sản phẩm → 🎨 Đổi Icon danh mục**"
+    
+    await update.message.reply_text(text, parse_mode="Markdown")
+
+
 async def cmd_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Hiển thị menu sản phẩm."""
     db.add_user(update.effective_user.id)
@@ -487,7 +531,7 @@ async def cmd_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         user_balance = db.get_user_balance(update.effective_user.id)
         
-        buttons = build_category_grid(products, "viewcat", is_admin=False)
+        buttons, _ = build_category_grid(products, "viewcat", is_admin=False)
         
         # Nút ví + giới thiệu
         buttons.append([
@@ -976,7 +1020,7 @@ async def handle_back_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not products:
         await query.edit_message_text("❌ Không thể tải sản phẩm. Gõ /menu để thử lại.")
         return
-    buttons = build_category_grid(products, "viewcat", is_admin=False)
+    buttons, _ = build_category_grid(products, "viewcat", is_admin=False)
     buttons.append([
         InlineKeyboardButton("📞 Liên hệ Admin", url="https://t.me/hoanganh1162"),
         InlineKeyboardButton("🔄 Cập nhật sản phẩm", callback_data="reload_menu")
@@ -1512,8 +1556,19 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if len(parts) == 3:
                 prod_id, name, price = parts
                 prod_id = prod_id.lower().replace(" ", "")
+                # Kiểm tra trùng mã ID
+                existing_products, _ = get_all_products_merged()
+                if existing_products and prod_id in existing_products:
+                    existing_name = existing_products[prod_id].get('name', '?')
+                    await update.message.reply_text(
+                        f"⚠️ **Mã `{prod_id}` đã tồn tại!**\n"
+                        f"Sản phẩm hiện tại: {existing_name}\n\n"
+                        f"Vui lòng chọn mã khác (VD: `{prod_id}_2`).",
+                        parse_mode="Markdown"
+                    )
+                    return
                 db.add_custom_product(prod_id, name, int(price))
-                invalidate_cache()  # Xóa cache để cập nhật sản phẩm mới
+                invalidate_cache()
                 await update.message.reply_text(f"✅ Đã thêm sản phẩm `{prod_id}`. Hãy vào Quản lý sản phẩm để đổi danh mục và cập nhật kho cho nó!", parse_mode="Markdown")
             else:
                 await update.message.reply_text("❌ Sai cú pháp. Mẫu: `ytb_1m | Youtube Premium 1T | 35000`", parse_mode="Markdown")
@@ -1597,6 +1652,41 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
             else:
                 await update.message.reply_text(
                     "❌ Sai cú pháp. Vui lòng nhập theo mẫu:\n`Tên mới | Emoji`\n\nVí dụ: `ChatGPT Pro | 🤖`",
+                    parse_mode="Markdown"
+                )
+        except Exception:
+            await update.message.reply_text("❌ Có lỗi xảy ra.")
+        return
+
+    if context.user_data.get("awaiting_set_emoji"):
+        cat_id = context.user_data["awaiting_set_emoji"]
+        del context.user_data["awaiting_set_emoji"]
+        try:
+            if text.lower() == "reset":
+                db.set_category_emoji_id(cat_id, None)
+                await update.message.reply_text(
+                    f"✅ Đã xóa custom emoji cho danh mục `{cat_id}`. Sẽ dùng emoji mặc định.",
+                    parse_mode="Markdown",
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("⬅️ Quay lại", callback_data="admin_set_emoji_list"),
+                         InlineKeyboardButton("🏠 Thoát", callback_data="admin_home")]
+                    ])
+                )
+            elif text.strip().isdigit() and len(text.strip()) > 10:
+                db.set_category_emoji_id(cat_id, text.strip())
+                await update.message.reply_text(
+                    f"✅ Đã set custom emoji cho danh mục `{cat_id}`!\n"
+                    f"Emoji ID: `{text.strip()}`",
+                    parse_mode="Markdown",
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("⬅️ Quay lại", callback_data="admin_set_emoji_list"),
+                         InlineKeyboardButton("🏠 Thoát", callback_data="admin_home")]
+                    ])
+                )
+            else:
+                await update.message.reply_text(
+                    "❌ ID không hợp lệ. Emoji ID phải là một dãy số dài.\n"
+                    "Dùng lệnh `/getemoji` để lấy ID đúng.",
                     parse_mode="Markdown"
                 )
         except Exception:
@@ -1902,7 +1992,7 @@ async def handle_category_click(update: Update, context: ContextTypes.DEFAULT_TY
             await query.edit_message_text("❌ Không thể tải sản phẩm. Gõ /menu để thử lại.")
             return
         user_balance = db.get_user_balance(query.from_user.id)
-        buttons = build_category_grid(products, "viewcat", is_admin=False)
+        buttons, _ = build_category_grid(products, "viewcat", is_admin=False)
         buttons.append([
             InlineKeyboardButton(f"💰 Ví: {format_money(user_balance)}", callback_data="wallet_home"),
             InlineKeyboardButton("🎁 Giới thiệu bạn bè", callback_data="referral_home"),
@@ -2070,6 +2160,7 @@ async def handle_admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "awaiting_ref_reward", "awaiting_ref_newuser", "awaiting_min_deposit",
         "awaiting_wallet_adjust", "awaiting_desc_for", "awaiting_name_for",
         "awaiting_new_cat", "awaiting_new_prod", "awaiting_rename_cat",
+        "awaiting_set_emoji",
     ]:
         context.user_data.pop(key_to_clear, None)
 
@@ -2250,12 +2341,13 @@ async def handle_admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not products:
             return await query.edit_message_text("❌ Không lấy được dữ liệu.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Thoát (Về đầu)", callback_data="admin_home")]]))
             
-        buttons = build_category_grid(products, "admin_viewcat", is_admin=True)
+        buttons, _ = build_category_grid(products, "admin_viewcat", is_admin=True)
         buttons.append([InlineKeyboardButton("➕ Thêm sản phẩm tự bán", callback_data="admin_add_prod")])
         buttons.append([
             InlineKeyboardButton("➕ Thêm danh mục", callback_data="admin_add_cat"),
             InlineKeyboardButton("✏️ Đổi tên danh mục", callback_data="admin_rename_cat_list"),
         ])
+        buttons.append([InlineKeyboardButton("🎨 Đổi Icon danh mục (Custom Emoji)", callback_data="admin_set_emoji_list")])
         buttons.append([InlineKeyboardButton("⬅️ Quay lại", callback_data="admin_home")])
         
         await query.edit_message_text(
@@ -2485,6 +2577,54 @@ async def handle_admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Hủy", callback_data="admin_rename_cat_list")]])
         )
+
+    elif data == "admin_set_emoji_list":
+        all_cats = get_all_categories_merged()
+        emoji_ids = db.get_all_category_emoji_ids()
+        buttons = []
+        row = []
+        for cid, (cname, cicon) in all_cats.items():
+            has_emoji = "✅" if cid in emoji_ids else "❌"
+            row.append(InlineKeyboardButton(f"{cicon} {cname} {has_emoji}", callback_data=f"admin_set_emoji_{cid}"))
+            if len(row) == 2:
+                buttons.append(row)
+                row = []
+        if row:
+            buttons.append(row)
+        buttons.append([InlineKeyboardButton("⬅️ Quay lại", callback_data="admin_products")])
+        await query.edit_message_text(
+            "🎨 **ĐỔI ICON DANH MỤC (Custom Emoji)**\n"
+            "━━━━━━━━━━━━━━━━━━\n"
+            "✅ = Đã có custom emoji\n"
+            "❌ = Chưa có (đang dùng emoji mặc định)\n\n"
+            "Chọn danh mục bạn muốn đổi icon:",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup(buttons)
+        )
+
+    elif data.startswith("admin_set_emoji_"):
+        cat_id = data.replace("admin_set_emoji_", "")
+        all_cats = get_all_categories_merged()
+        if cat_id not in all_cats:
+            await query.edit_message_text("❌ Danh mục không tồn tại.")
+            return
+        current_name, current_icon = all_cats[cat_id]
+        current_eid = db.get_category_emoji_id(cat_id)
+        context.user_data["awaiting_set_emoji"] = cat_id
+        
+        status = f"📌 Emoji ID hiện tại: `{current_eid}`" if current_eid else "⚠️ _Chưa có custom emoji_"
+        await query.edit_message_text(
+            f"🎨 **Đổi Icon danh mục:** {current_icon} {current_name}\n"
+            f"{status}\n\n"
+            f"**Cách làm:**\n"
+            f"1️⃣ Dùng tài khoản **Premium** gửi custom emoji vào chat\n"
+            f"2️⃣ Reply emoji đó bằng lệnh `/getemoji` để lấy ID\n"
+            f"3️⃣ Nhắn tin ID đó vào đây (VD: `5368324170671202286`)\n\n"
+            f"Hoặc nhắn `reset` để xóa và dùng lại emoji mặc định.",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Hủy", callback_data="admin_set_emoji_list")]])
+        )
+
     elif data.startswith("admin_viewcat_"):
         cat_id = data.replace("admin_viewcat_", "")
         
@@ -3170,6 +3310,7 @@ def main():
 
     # Admin commands
     app.add_handler(CommandHandler("admin", cmd_admin))
+    app.add_handler(CommandHandler("getemoji", cmd_getemoji))
 
     # Callback handlers
     app.add_handler(CallbackQueryHandler(handle_noop, pattern="^noop$"))
