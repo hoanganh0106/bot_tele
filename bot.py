@@ -110,6 +110,16 @@ def format_user_link(username: str = None, user_id: int = None) -> str:
     return "Không rõ"
 
 
+def escape_md(text: str) -> str:
+    """Escape ký tự đặc biệt Markdown v1 cho Telegram."""
+    if not text:
+        return text
+    # Telegram Markdown v1 chỉ cần escape: _ * ` [
+    for ch in ['\\', '_', '*', '`', '[']:
+        text = text.replace(ch, f'\\{ch}')
+    return text
+
+
 def generate_qr_url(amount: int, content: str) -> str:
     """Tạo QR VietQR."""
     return (
@@ -593,7 +603,7 @@ async def handle_product_select(update: Update, context: ContextTypes.DEFAULT_TY
     
     desc_block = ""
     if desc:
-        desc_block = f"\n📝 {desc}\n"
+        desc_block = f"\n📝 {escape_md(desc)}\n"
     
     # Chỉ hiển thị "Nhận tự động" nếu sản phẩm THẬT SỰ có kho auto-delivery
     if db.has_custom_accounts_enabled(product_key):
@@ -2405,7 +2415,7 @@ async def handle_admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
             desc_block = (
                 f"\n{desc_source}:\n"
                 f"━━━━━━━━━━━━━━━━━━\n"
-                f"{current_desc}\n"
+                f"{escape_md(current_desc)}\n"
                 f"━━━━━━━━━━━━━━━━━━\n"
             )
         else:
