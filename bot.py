@@ -1442,6 +1442,54 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ Số tiền không hợp lệ (tối thiểu 1,000đ). VD: `5000`", parse_mode="Markdown")
         return
 
+    # Wallet adjust (admin cộng/trừ ví)
+    if context.user_data.get("awaiting_wallet_adjust"):
+        adjust = context.user_data.pop("awaiting_wallet_adjust")
+        target_id = adjust["user_id"]
+        action = adjust["action"]
+        try:
+            amount = int(text.replace(",", "").replace(".", ""))
+            if amount <= 0:
+                raise ValueError
+        except ValueError:
+            await update.message.reply_text("❌ Số tiền không hợp lệ. Nhập số dương. VD: `5000`", parse_mode="Markdown")
+            return
+        
+        user_info = db.get_user(target_id)
+        name = user_info.get("first_name") or str(target_id)
+        
+        if action == "add":
+            new_balance = db.add_balance(target_id, amount, reason="admin_add")
+            action_text = f"➕ Cộng **{format_money(amount)}**"
+            notify_text = f"💰 **Admin đã cộng {format_money(amount)} vào ví của bạn!**\n💵 Số dư mới: **{format_money(new_balance)}**"
+        else:
+            current = db.get_user_balance(target_id)
+            if amount > current:
+                await update.message.reply_text(
+                    f"❌ Không thể trừ {format_money(amount)} — Số dư chỉ có {format_money(current)}"
+                )
+                return
+            db.deduct_balance(target_id, amount)
+            new_balance = db.get_user_balance(target_id)
+            action_text = f"➖ Trừ **{format_money(amount)}**"
+            notify_text = f"💰 **Admin đã trừ {format_money(amount)} từ ví của bạn.**\n💵 Số dư mới: **{format_money(new_balance)}**"
+        
+        await update.message.reply_text(
+            f"✅ **ĐÃ CẬP NHẬT VÍ**\n"
+            f"━━━━━━━━━━━━━━━━━━\n"
+            f"👤 User: **{name}** (`{target_id}`)\n"
+            f"📝 Thao tác: {action_text}\n"
+            f"💵 Số dư mới: **{format_money(new_balance)}**",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Thoát", callback_data="admin_home")]])
+        )
+        
+        try:
+            await context.bot.send_message(chat_id=target_id, text=notify_text, parse_mode="Markdown")
+        except Exception:
+            pass
+        return
+
     if context.user_data.get("awaiting_new_prod"):
         del context.user_data["awaiting_new_prod"]
         try:
@@ -1587,14 +1635,18 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         recent = sorted(user_orders.items(), key=lambda x: x[1].get("created_at", ""), reverse=True)[:10]
         total_spent = sum(o.get("total", 0) for o in user_orders.values() if o.get("status") == "paid")
+        user_info = db.get_user(target_id)
+        user_balance = db.get_user_balance(target_id)
         
         msg = (
             f"🔍 **THÔNG TIN KHÁCH HÀNG**\n"
             f"━━━━━━━━━━━━━━━━━━\n"
             f"👤 ID: `{target_id}`\n"
             f"👤 Username: {target_username if target_username else 'Không có'}\n"
+            f"💰 Số dư ví: **{format_money(user_balance)}**\n"
             f"💳 Đã chi (đơn thành công): **{format_money(total_spent)}**\n"
-            f"📦 Tổng số đơn: **{len(user_orders)}**\n\n"
+            f"📦 Tổng số đơn: **{len(user_orders)}**\n"
+            f"🎁 Đã giới thiệu: **{user_info.get('referral_count', 0)}** người\n\n"
             f"📋 **10 ĐƠN GẦN NHẤT:**\n"
         )
         
@@ -1620,7 +1672,14 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         msg += f"   `{item}`\n"
                 msg += "\n"
 
-        await update.message.reply_text(msg, parse_mode="Markdown")
+        buttons = [
+            [
+                InlineKeyboardButton(f"➕ Cộng ví", callback_data=f"admin_wallet_add_{target_id}"),
+                InlineKeyboardButton(f"➖ Trừ ví", callback_data=f"admin_wallet_sub_{target_id}"),
+            ],
+            [InlineKeyboardButton("🏠 Thoát", callback_data="admin_home")]
+        ]
+        await update.message.reply_text(msg, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(buttons))
         return
 
     # 5. Mặc định xử lý nhập email cho đơn chờ email
@@ -1973,6 +2032,7 @@ async def handle_admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.pop("awaiting_ref_reward", None)
     context.user_data.pop("awaiting_ref_newuser", None)
     context.user_data.pop("awaiting_min_deposit", None)
+    context.user_data.pop("awaiting_wallet_adjust", None)
 
     if data == "admin_stats":
         stats = db.get_stats()
@@ -2098,6 +2158,34 @@ async def handle_admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Hủy", callback_data="admin_referral")]])
         )
+    elif data.startswith("admin_wallet_add_"):
+        target_id = int(data.replace("admin_wallet_add_", ""))
+        context.user_data["awaiting_wallet_adjust"] = {"user_id": target_id, "action": "add"}
+        user_info = db.get_user(target_id)
+        name = user_info.get("first_name") or str(target_id)
+        balance = db.get_user_balance(target_id)
+        await query.edit_message_text(
+            f"➕ **CỘNG VÍ — {name}** (`{target_id}`)\n"
+            f"💵 Số dư hiện tại: **{format_money(balance)}**\n\n"
+            "Nhập số tiền cần cộng (VD: `5000`):",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Hủy", callback_data="admin_home")]])
+        )
+
+    elif data.startswith("admin_wallet_sub_"):
+        target_id = int(data.replace("admin_wallet_sub_", ""))
+        context.user_data["awaiting_wallet_adjust"] = {"user_id": target_id, "action": "sub"}
+        user_info = db.get_user(target_id)
+        name = user_info.get("first_name") or str(target_id)
+        balance = db.get_user_balance(target_id)
+        await query.edit_message_text(
+            f"➖ **TRỪ VÍ — {name}** (`{target_id}`)\n"
+            f"💵 Số dư hiện tại: **{format_money(balance)}**\n\n"
+            "Nhập số tiền cần trừ (VD: `3000`):",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Hủy", callback_data="admin_home")]])
+        )
+
     elif data == "admin_pending":
         pending = db.get_pending_orders()
         if not pending:
@@ -2587,7 +2675,6 @@ async def handle_referral_home(update: Update, context: ContextTypes.DEFAULT_TYP
     
     buttons = [
         [InlineKeyboardButton("📤 Chia sẻ cho bạn bè", switch_inline_query=share_text)],
-        [InlineKeyboardButton("📋 Gửi link để copy", callback_data=f"copy_ref_{user_id}")],
         [InlineKeyboardButton("💰 Xem ví", callback_data="wallet_home")],
         [InlineKeyboardButton("⬅️ Quay lại", callback_data="back_start")],
     ]
@@ -3002,7 +3089,6 @@ def main():
 
     # Admin commands
     app.add_handler(CommandHandler("admin", cmd_admin))
-    app.add_handler(CommandHandler("wallet", cmd_wallet_admin))
 
     # Callback handlers
     app.add_handler(CallbackQueryHandler(handle_noop, pattern="^noop$"))
