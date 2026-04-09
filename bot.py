@@ -467,17 +467,25 @@ async def cmd_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await msg.edit_text("❌ Không thể tải sản phẩm lúc này. Vui lòng thử lại sau!")
         return
 
+    user_balance = db.get_user_balance(update.effective_user.id)
+    
     buttons = build_category_grid(products, "viewcat", is_admin=False)
     
+    # Nút ví + giới thiệu
+    buttons.append([
+        InlineKeyboardButton(f"💰 Ví: {format_money(user_balance)}", callback_data="wallet_home"),
+        InlineKeyboardButton("🎁 Giới thiệu bạn bè", callback_data="referral_home"),
+    ])
     # Thêm nút cố định
     buttons.append([
         InlineKeyboardButton("📞 Liên hệ Admin", url="https://t.me/hoanganh1162"),
-        InlineKeyboardButton("🔄 Cập nhật sản phẩm", callback_data="reload_menu")
+        InlineKeyboardButton("🔄 Cập nhật", callback_data="reload_menu")
     ])
 
     await msg.edit_text(
         "🛒 **MENU SẢN PHẨM**\n"
         "━━━━━━━━━━━━━━━━━━\n"
+        f"💰 Số dư ví: **{format_money(user_balance)}**\n"
         "Chọn danh mục sản phẩm bạn muốn xem:",
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup(buttons)
@@ -675,39 +683,30 @@ async def handle_qty_select(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Kiểm tra số dư ví
     user_balance = db.get_user_balance(query.from_user.id)
 
-    # Tạo QR cho chuyển khoản
-    qr_url = generate_qr_url(total, order_code)
-
+    # Hiển thị chọn phương thức thanh toán (CHƯA tạo QR)
     buttons = []
-    wallet_text = ""
     
     if user_balance >= total:
-        # Đủ tiền trong ví → ưu tiên thanh toán bằng ví
-        wallet_text = (
-            f"\n💰 **Số dư ví: {format_money(user_balance)}** ✅\n"
-            f"Bạn có thể thanh toán ngay bằng ví!\n"
-        )
         buttons.append([InlineKeyboardButton(
             f"💰 Thanh toán bằng ví ({format_money(total)})",
             callback_data=f"paywallet_{order_code}"
         )])
-        buttons.append([InlineKeyboardButton("💳 Chuyển khoản thay", callback_data=f"paid_{order_code}")])
     elif user_balance > 0:
-        # Có ít tiền trong ví
         remain = total - user_balance
-        wallet_text = (
-            f"\n💰 **Số dư ví: {format_money(user_balance)}**\n"
-            f"Dùng ví + chuyển khoản {format_money(remain)} phần còn lại\n"
-        )
         buttons.append([InlineKeyboardButton(
             f"💰 Ví {format_money(user_balance)} + CK {format_money(remain)}",
             callback_data=f"paypartial_{order_code}"
         )])
-        buttons.append([InlineKeyboardButton("💳 CK toàn bộ", callback_data=f"paid_{order_code}")])
-    else:
-        buttons.append([InlineKeyboardButton("✅ Đã chuyển khoản", callback_data=f"paid_{order_code}")])
     
+    buttons.append([InlineKeyboardButton(
+        f"💳 Chuyển khoản {format_money(total)}",
+        callback_data=f"paybank_{order_code}"
+    )])
     buttons.append([InlineKeyboardButton("❌ Hủy đơn", callback_data=f"cancel_{order_code}")])
+
+    wallet_line = ""
+    if user_balance > 0:
+        wallet_line = f"💰 Số dư ví: **{format_money(user_balance)}**\n\n"
 
     text = (
         f"🧾 **ĐƠN HÀNG #{order_code}**\n"
@@ -715,25 +714,16 @@ async def handle_qty_select(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"📦 {info.get('name', product_key)}\n"
         f"🔢 Số lượng: **{qty}**\n"
         f"💰 Đơn giá: **{format_money(sell_price)}**\n"
-        f"💰 Tổng: **{format_money(total)}**\n"
-        f"{wallet_text}\n"
-        f"🏦 **CHUYỂN KHOẢN:**\n"
-        f"Ngân hàng: **{BANK_NAME}**\n"
-        f"STK: `{BANK_ACCOUNT_NUMBER}`\n"
-        f"Tên: **{BANK_ACCOUNT_NAME}**\n"
-        f"Số tiền: **{format_money(total)}**\n"
-        f"Nội dung: `{order_code}`\n\n"
-        f"📱 Quét QR bên dưới để thanh toán nhanh:\n"
-        f"[QR Thanh toán]({qr_url})\n\n"
-        f"⏰ Đơn hàng tự hủy sau **5 phút**\n"
-        f"✅ Thanh toán sẽ được xác nhận **TỰ ĐỘNG**"
+        f"💰 Tổng: **{format_money(total)}**\n\n"
+        f"{wallet_line}"
+        f"🔽 **Chọn phương thức thanh toán:**\n\n"
+        f"⏰ Đơn hàng tự hủy sau **5 phút**"
     )
 
     await query.edit_message_text(
         text,
         parse_mode="Markdown",
-        reply_markup=InlineKeyboardMarkup(buttons),
-        disable_web_page_preview=False
+        reply_markup=InlineKeyboardMarkup(buttons)
     )
 
     # Auto cancel sau 5 phút
@@ -770,6 +760,50 @@ async def auto_cancel_order(context, order_code, user_id, delay):
             )
         except Exception:
             pass
+
+
+async def handle_pay_bank(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Khi khách chọn chuyển khoản — hiển thị QR."""
+    query = update.callback_query
+    await query.answer()
+    order_code = query.data.replace("paybank_", "")
+    
+    order = db.get_order(order_code)
+    if not order or order.get("status") != "pending":
+        await query.edit_message_text("❌ Đơn hàng không tồn tại hoặc đã được xử lý.")
+        return
+
+    total = int(order.get("total", 0))
+    qr_url = generate_qr_url(total, order_code)
+
+    text = (
+        f"🧾 **ĐƠN HÀNG #{order_code}**\n"
+        f"━━━━━━━━━━━━━━━━━━\n"
+        f"📦 {order.get('product_name', '?')}\n"
+        f"💰 Tổng: **{format_money(total)}**\n\n"
+        f"🏦 **CHUYỂN KHOẢN:**\n"
+        f"Ngân hàng: **{BANK_NAME}**\n"
+        f"STK: `{BANK_ACCOUNT_NUMBER}`\n"
+        f"Tên: **{BANK_ACCOUNT_NAME}**\n"
+        f"Số tiền: **{format_money(total)}**\n"
+        f"Nội dung: `{order_code}`\n\n"
+        f"📱 Quét QR bên dưới để thanh toán nhanh:\n"
+        f"[QR Thanh toán]({qr_url})\n\n"
+        f"⏰ Đơn hàng tự hủy sau **5 phút**\n"
+        f"✅ Thanh toán sẽ được xác nhận **TỰ ĐỘNG**"
+    )
+
+    buttons = [
+        [InlineKeyboardButton("✅ Đã chuyển khoản", callback_data=f"paid_{order_code}")],
+        [InlineKeyboardButton("❌ Hủy đơn", callback_data=f"cancel_{order_code}")],
+    ]
+
+    await query.edit_message_text(
+        text,
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup(buttons),
+        disable_web_page_preview=False
+    )
 
 
 async def handle_paid_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1648,14 +1682,20 @@ async def handle_category_click(update: Update, context: ContextTypes.DEFAULT_TY
         if not products:
             await query.edit_message_text("❌ Không thể tải sản phẩm. Gõ /menu để thử lại.")
             return
+        user_balance = db.get_user_balance(query.from_user.id)
         buttons = build_category_grid(products, "viewcat", is_admin=False)
         buttons.append([
+            InlineKeyboardButton(f"💰 Ví: {format_money(user_balance)}", callback_data="wallet_home"),
+            InlineKeyboardButton("🎁 Giới thiệu bạn bè", callback_data="referral_home"),
+        ])
+        buttons.append([
             InlineKeyboardButton("📞 Liên hệ Admin", url="https://t.me/hoanganh1162"),
-            InlineKeyboardButton("🔄 Cập nhật sản phẩm", callback_data="reload_menu")
+            InlineKeyboardButton("🔄 Cập nhật", callback_data="reload_menu")
         ])
         await query.edit_message_text(
             "🛒 **MENU SẢN PHẨM**\n"
             "━━━━━━━━━━━━━━━━━━\n"
+            f"💰 Số dư ví: **{format_money(user_balance)}**\n"
             "Chọn danh mục sản phẩm bạn muốn xem:",
             parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup(buttons)
@@ -1992,9 +2032,53 @@ async def handle_admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("📥 Thêm sản phẩm vào kho", callback_data=f"admin_stock_add_items_{key}")],
+                [InlineKeyboardButton("👁️ Xem tài khoản trong kho", callback_data=f"admin_stock_view_{key}")],
                 [InlineKeyboardButton("🔢 Số lượng liên hệ trực tiếp", callback_data=f"admin_stock_manual_{key}")],
                 [InlineKeyboardButton("🗑️ Xóa sạch kho", callback_data=f"admin_stock_reset_{key}")],
                 [InlineKeyboardButton("⬅️ Quay lại", callback_data=f"admin_price_{key}"),
+                 InlineKeyboardButton("🏠 Thoát", callback_data="admin_home")]
+            ])
+        )
+
+    elif data.startswith("admin_stock_view_"):
+        key = data.replace("admin_stock_view_", "")
+        accounts = db.get_custom_accounts(key)
+        
+        if not accounts:
+            await query.edit_message_text(
+                f"📦 **KHO `{key}`**\n━━━━━━━━━━━━━━━━━━\n\n"
+                f"📭 Kho trống — chưa có tài khoản nào.",
+                parse_mode="Markdown",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("📥 Thêm vào kho", callback_data=f"admin_stock_add_items_{key}")],
+                    [InlineKeyboardButton("⬅️ Quay lại", callback_data=f"admin_stock_{key}")]
+                ])
+            )
+            return
+        
+        text = (
+            f"📦 **KHO `{key}`** — {len(accounts)} tài khoản\n"
+            f"━━━━━━━━━━━━━━━━━━\n\n"
+        )
+        
+        for i, acc in enumerate(accounts, 1):
+            # Hiện full nội dung để admin kiểm tra
+            acc_display = acc.strip()
+            if len(acc_display) > 60:
+                acc_display = acc_display[:60] + "..."
+            text += f"{i}. `{acc_display}`\n"
+            
+            if i >= 50:
+                text += f"\n_... và {len(accounts) - 50} tài khoản khác_"
+                break
+        
+        await query.edit_message_text(
+            text,
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("📥 Thêm tiếp", callback_data=f"admin_stock_add_items_{key}")],
+                [InlineKeyboardButton("🗑️ Xóa sạch kho", callback_data=f"admin_stock_reset_{key}")],
+                [InlineKeyboardButton("⬅️ Quay lại", callback_data=f"admin_stock_{key}"),
                  InlineKeyboardButton("🏠 Thoát", callback_data="admin_home")]
             ])
         )
@@ -2768,6 +2852,7 @@ def main():
     app.add_handler(CallbackQueryHandler(handle_product_select, pattern="^prod_"))
     app.add_handler(CallbackQueryHandler(handle_qty_select, pattern="^qty_"))
     app.add_handler(CallbackQueryHandler(handle_paid_button, pattern="^paid_"))
+    app.add_handler(CallbackQueryHandler(handle_pay_bank, pattern="^paybank_"))
     app.add_handler(CallbackQueryHandler(handle_pay_wallet, pattern="^paywallet_"))
     app.add_handler(CallbackQueryHandler(handle_pay_partial, pattern="^paypartial_"))
     app.add_handler(CallbackQueryHandler(handle_cancel_order, pattern="^cancel_"))
