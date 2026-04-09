@@ -53,9 +53,13 @@ git pull origin main || {
 git rm -f data/bot_data.json 2>/dev/null || true
 rm -f data/bot_data.json 2>/dev/null || true
 
-# 5. Cài dependencies mới (dùng venv/bin/pip trực tiếp)
+# 5. Cài dependencies mới (dùng python -m pip để an toàn hơn)
 echo "📦 Cập nhật dependencies..."
-"$PROJECT_DIR/venv/bin/pip" install -r requirements.txt -q
+if [ -f "$PROJECT_DIR/venv/bin/python" ]; then
+    "$PROJECT_DIR/venv/bin/python" -m pip install -r requirements.txt -q
+else
+    echo "⚠️ Không tìm thấy venv tại $PROJECT_DIR/venv. Bỏ qua cài đặt pip."
+fi
 
 # 6. Đảm bảo config.env KHÔNG bị ghi đè
 if [ ! -f "config.env" ]; then
