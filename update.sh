@@ -43,16 +43,21 @@ fi
 # 4. Pull code mới
 cd "$PROJECT_DIR"
 echo "📥 Pulling code mới..."
-git stash 2>/dev/null || true
-git pull origin main
-git stash pop 2>/dev/null || true
+git pull origin main || {
+    echo "⚠️ Git pull conflict, force reset..."
+    git fetch origin main
+    git reset --hard origin/main
+}
 
-# 5. Cài dependencies mới (nếu requirements.txt thay đổi)
+# Dọn file data cũ trong git (đã chuyển ra DATA_DIR)
+git rm -f data/bot_data.json 2>/dev/null || true
+rm -f data/bot_data.json 2>/dev/null || true
+
+# 5. Cài dependencies mới (dùng venv/bin/pip trực tiếp)
 echo "📦 Cập nhật dependencies..."
-source venv/bin/activate
-pip install -r requirements.txt -q
+"$PROJECT_DIR/venv/bin/pip" install -r requirements.txt -q
 
-# 6. Đảm bảo config.env và database KHÔNG bị ghi đè
+# 6. Đảm bảo config.env KHÔNG bị ghi đè
 if [ ! -f "config.env" ]; then
     echo "⚠️ config.env bị thiếu! Khôi phục từ git..."
     git checkout config.env 2>/dev/null || echo "❌ Không tìm thấy config.env trong git"
