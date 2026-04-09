@@ -1741,9 +1741,15 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
         success_count = 0
         status_msg = await update.message.reply_text(f"⏳ Bắt đầu gửi thông báo đến {len(users)} người dùng...")
         
+        # Gửi header + copy tin nhắn gốc (giữ custom emoji, format...)
         for uid in users:
             try:
-                await context.bot.send_message(chat_id=uid, text=f"📢 **THÔNG BÁO TỪ ADMIN:**\n\n{text}", parse_mode="Markdown")
+                await context.bot.send_message(chat_id=uid, text="📢 **THÔNG BÁO TỪ ADMIN:**", parse_mode="Markdown")
+                await context.bot.copy_message(
+                    chat_id=uid,
+                    from_chat_id=update.effective_chat.id,
+                    message_id=update.message.message_id
+                )
                 success_count += 1
             except Exception:
                 pass
