@@ -389,13 +389,21 @@ def build_category_grid(products, callback_prefix, is_admin=False):
     buttons = []
     row = []
     for cat_id, data in sorted_cats:
-        # Nếu có custom emoji ID, dùng nó thay vì emoji thường
         custom_eid = emoji_ids.get(cat_id)
+        btn_text = f"{data['name']} ({data['count']})"
+        
         if custom_eid:
-            btn_text = f"{data['icon']} {data['name']}"
+            # Dùng icon_custom_emoji_id để hiển thị custom emoji trên nút
+            btn = InlineKeyboardButton(
+                btn_text,
+                callback_data=f"{callback_prefix}_{cat_id}",
+                api_kwargs={"icon_custom_emoji_id": custom_eid}
+            )
         else:
-            btn_text = f"{data['icon']} {data['name']}"
-        row.append(InlineKeyboardButton(btn_text, callback_data=f"{callback_prefix}_{cat_id}"))
+            btn_text = f"{data['icon']} {data['name']} ({data['count']})"
+            btn = InlineKeyboardButton(btn_text, callback_data=f"{callback_prefix}_{cat_id}")
+        
+        row.append(btn)
         if len(row) == 2:
             buttons.append(row)
             row = []
