@@ -2476,19 +2476,21 @@ async def handle_referral_home(update: Update, context: ContextTypes.DEFAULT_TYP
     text = (
         "🎁 **GIỚI THIỆU BẠN BÈ**\n"
         "━━━━━━━━━━━━━━━━━━\n\n"
-        f"📎 **Link mời của bạn:**\n"
+        f"📎 **Link mời của bạn (bấm để copy):**\n"
         f"`{ref_link}`\n\n"
         f"💰 Bạn nhận: **{format_money(reward)}/người**\n"
         f"{new_user_line}"
         f"📊 Trạng thái: {status}\n\n"
         f"👥 Đã giới thiệu: **{stats['referral_count']}** người\n"
         f"💵 Tổng thưởng: **{format_money(stats['referral_earnings'])}**\n\n"
-        "💡 _Gửi link trên cho bạn bè. Khi họ bấm vào và /start bot, "
-        "cả hai cùng nhận thưởng vào ví!_"
+        "💡 _Bấm vào link trên để copy, hoặc dùng nút chia sẻ bên dưới!_"
     )
     
+    share_text = f"Mua tài khoản Premium giá rẻ, tự động 24/7! Bấm vào đây: {ref_link}"
+    
     buttons = [
-        [InlineKeyboardButton("📋 Copy link mời", callback_data=f"copy_ref_{user_id}")],
+        [InlineKeyboardButton("📤 Chia sẻ cho bạn bè", switch_inline_query=share_text)],
+        [InlineKeyboardButton("📋 Gửi link để copy", callback_data=f"copy_ref_{user_id}")],
         [InlineKeyboardButton("💰 Xem ví", callback_data="wallet_home")],
         [InlineKeyboardButton("⬅️ Quay lại", callback_data="back_start")],
     ]
@@ -2497,15 +2499,25 @@ async def handle_referral_home(update: Update, context: ContextTypes.DEFAULT_TYP
 
 
 async def handle_copy_ref(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Gửi link ref dạng text để user copy dễ dàng."""
+    """Gửi link ref dạng message riêng để user copy dễ dàng."""
     query = update.callback_query
+    await query.answer()
     user_id = query.from_user.id
     
     bot_info = await context.bot.get_me()
     bot_username = bot_info.username
     ref_link = f"https://t.me/{bot_username}?start=ref_{user_id}"
     
-    await query.answer(f"📋 Link: {ref_link}", show_alert=True)
+    # Gửi message riêng để user dễ copy
+    await context.bot.send_message(
+        chat_id=user_id,
+        text=(
+            f"📋 **Link giới thiệu của bạn:**\n\n"
+            f"`{ref_link}`\n\n"
+            "👆 _Bấm vào link trên để copy!_"
+        ),
+        parse_mode="Markdown"
+    )
 
 
 async def handle_back_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
