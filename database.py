@@ -338,6 +338,38 @@ class Database:
         with self.lock:
             return dict(self._read().get("category_emoji_ids", {}))
 
+    # === UI BUTTON EMOJI IDS ===
+    def get_ui_emoji(self, btn_key: str) -> str | None:
+        """Lấy custom_emoji_id cho nút UI."""
+        with self.lock:
+            return self._read().get("ui_emoji_ids", {}).get(btn_key)
+
+    def set_ui_emoji(self, btn_key: str, emoji_id: str):
+        """Set custom_emoji_id cho nút UI."""
+        with self.lock:
+            data = self._read()
+            ui = data.setdefault("ui_emoji_ids", {})
+            if emoji_id is None:
+                ui.pop(btn_key, None)
+            else:
+                ui[btn_key] = emoji_id
+            self._write(data)
+
+    def get_all_ui_emoji(self) -> dict:
+        with self.lock:
+            return dict(self._read().get("ui_emoji_ids", {}))
+
+    # === WELCOME MESSAGE ===
+    def get_welcome_message(self) -> str | None:
+        with self.lock:
+            return self._read().get("settings", {}).get("welcome_message")
+
+    def set_welcome_message(self, msg: str):
+        with self.lock:
+            data = self._read()
+            data.setdefault("settings", {})["welcome_message"] = msg
+            self._write(data)
+
     # === CUSTOM STOCKS ===
     def get_custom_stocks(self) -> dict:
         with self.lock:

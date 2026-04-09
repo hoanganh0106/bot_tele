@@ -136,6 +136,32 @@ def fmt_icon(cat_id: str, fallback_icon: str = "") -> str:
     return fallback_icon
 
 
+# Danh sách các nút UI có thể tùy chỉnh icon
+UI_BUTTONS = {
+    "menu": "🛒 MENU SẢN PHẨM",
+    "wallet": "💰 Ví",
+    "referral": "🎁 Giới thiệu",
+    "history": "📋 Lịch sử mua hàng",
+    "contact": "📞 Liên hệ Admin",
+    "reload": "🔄 Cập nhật",
+    "back": "⬅️ Quay lại",
+    "home": "🏠 Thoát",
+    "game": "🎮 CHƠI GAME",
+}
+
+
+def ui_btn(btn_key: str, text: str = None, callback_data: str = None, url: str = None) -> InlineKeyboardButton:
+    """Tạo InlineKeyboardButton với custom emoji icon nếu có."""
+    display_text = text or UI_BUTTONS.get(btn_key, btn_key)
+    emoji_id = db.get_ui_emoji(btn_key) if db else None
+    kwargs = {}
+    if emoji_id:
+        kwargs["api_kwargs"] = {"icon_custom_emoji_id": emoji_id}
+    if url:
+        return InlineKeyboardButton(display_text, url=url, **kwargs)
+    return InlineKeyboardButton(display_text, callback_data=callback_data or btn_key, **kwargs)
+
+
 def generate_qr_url(amount: int, content: str) -> str:
     """Tạo QR VietQR."""
     return (
@@ -440,36 +466,45 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Thông báo thưởng cho user mới được giới thiệu
     welcome_bonus = ""
     if new_user_reward > 0:
-        welcome_bonus = f"\n🎁 **Quà chào mừng: +{format_money(new_user_reward)}** đã cộng vào ví!\n"
+        welcome_bonus = f"\n🎁 <b>Quà chào mừng: +{format_money(new_user_reward)}</b> đã cộng vào ví!\n"
     
-    text = (
-        f"👋 Xin chào **{user.first_name}**!\n\n"
-        "Chào mừng bạn đến với hệ thống bán tài khoản Premium tự động 🤖\n\n"
-        "🔹 **Thanh toán tự động** 24/7, xác nhận trong 1 phút\n"
-        "🔹 **Nhận tài khoản ngay** sau khi thanh toán\n"
-        "🔹 **Hỗ trợ tận tình** nhanh chóng\n\n"
-        f"{welcome_bonus}"
-        f"💰 **Số dư ví:** {format_money(balance)}\n\n"
-        "👇 Bấm vào nút bên dưới để chọn sản phẩm 👇"
-    )
+    # Lấy welcome message tùy chỉnh hoặc dùng mặc định
+    custom_welcome = db.get_welcome_message()
+    if custom_welcome:
+        # Thay thế biến trong template
+        text = custom_welcome.replace("{name}", user.first_name or "bạn")
+        text = text.replace("{balance}", format_money(balance))
+        text = text.replace("{id}", str(user.id))
+        text += f"\n{welcome_bonus}" if welcome_bonus else ""
+    else:
+        text = (
+            f"👋 Xin chào <b>{escape_html(user.first_name)}</b>!\n\n"
+            "Chào mừng bạn đến với hệ thống bán tài khoản Premium tự động 🤖\n\n"
+            "🔹 <b>Thanh toán tự động</b> 24/7, xác nhận trong 1 phút\n"
+            "🔹 <b>Nhận tài khoản ngay</b> sau khi thanh toán\n"
+            "🔹 <b>Hỗ trợ tận tình</b> nhanh chóng\n\n"
+            f"{welcome_bonus}"
+            f"💰 <b>Số dư ví:</b> {format_money(balance)}\n\n"
+            "👇 Bấm vào nút bên dưới để chọn sản phẩm 👇"
+        )
     
     buttons = [
-        [InlineKeyboardButton("🛒 MENU SẢN PHẨM", callback_data="reload_menu")],
+        [ui_btn("menu", "🛒 MENU SẢN PHẨM", callback_data="reload_menu")],
         [
-            InlineKeyboardButton(f"💰 Ví: {format_money(balance)}", callback_data="wallet_home"),
-            InlineKeyboardButton("🎁 Giới thiệu", callback_data="referral_home"),
+            ui_btn("wallet", f"💰 Ví: {format_money(balance)}", callback_data="wallet_home"),
+            ui_btn("referral", "🎁 Giới thiệu", callback_data="referral_home"),
         ],
         [
-            InlineKeyboardButton("📋 Lịch sử mua hàng", callback_data="btn_myorders"),
-            InlineKeyboardButton("📞 Liên hệ Admin", url="https://t.me/hoanganh1162")
+            ui_btn("history", "📋 Lịch sử mua hàng", callback_data="btn_myorders"),
+            ui_btn("contact", "📞 Liên hệ Admin", url="https://t.me/hoanganh1162")
         ]
     ]
     
     if is_admin(user.id):
         buttons.append([InlineKeyboardButton("⚙️ Quản trị Admin", callback_data="admin_home")])
-        text += "\n\n_🔑 Xin chào Admin, bảng Quản trị đã được mở khóa!_"
+        text += "\n\n<i>🔑 Xin chào Admin, bảng Quản trị đã được mở khóa!</i>"
         
-    await update.message.reply_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(buttons))
+    await update.message.reply_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(buttons))
 
     # Thông báo cho người giới thiệu
     if referral_credited and referred_by:
@@ -559,13 +594,13 @@ async def cmd_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         # Nút ví + giới thiệu
         buttons.append([
-            InlineKeyboardButton(f"💰 Ví: {format_money(user_balance)}", callback_data="wallet_home"),
-            InlineKeyboardButton("🎁 Giới thiệu bạn bè", callback_data="referral_home"),
+            ui_btn("wallet", f"💰 Ví: {format_money(user_balance)}", callback_data="wallet_home"),
+            ui_btn("referral", "🎁 Giới thiệu bạn bè", callback_data="referral_home"),
         ])
         # Thêm nút cố định
         buttons.append([
-            InlineKeyboardButton("📞 Liên hệ Admin", url="https://t.me/hoanganh1162"),
-            InlineKeyboardButton("🔄 Cập nhật", callback_data="reload_menu")
+            ui_btn("contact", "📞 Liên hệ Admin", url="https://t.me/hoanganh1162"),
+            ui_btn("reload", "🔄 Cập nhật", callback_data="reload_menu")
         ])
 
         await msg.edit_text(
@@ -1051,8 +1086,8 @@ async def handle_back_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     buttons, _ = build_category_grid(products, "viewcat", is_admin=False)
     buttons.append([
-        InlineKeyboardButton("📞 Liên hệ Admin", url="https://t.me/hoanganh1162"),
-        InlineKeyboardButton("🔄 Cập nhật sản phẩm", callback_data="reload_menu")
+        ui_btn("contact", "📞 Liên hệ Admin", url="https://t.me/hoanganh1162"),
+        ui_btn("reload", "🔄 Cập nhật sản phẩm", callback_data="reload_menu")
     ])
     await query.edit_message_text(
         "🛒 <b>MENU SẢN PHẨM</b>\n"
@@ -1743,6 +1778,87 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ Có lỗi xảy ra.")
         return
 
+    if context.user_data.get("awaiting_welcome_msg"):
+        del context.user_data["awaiting_welcome_msg"]
+        try:
+            if text.lower() == "reset":
+                db.set_welcome_message(None)
+                await update.message.reply_text(
+                    "✅ Đã quay về lời chào mặc định.",
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("⬅️ Quay lại", callback_data="admin_ui_custom"),
+                         InlineKeyboardButton("🏠 Thoát", callback_data="admin_home")]
+                    ])
+                )
+            else:
+                db.set_welcome_message(text)
+                await update.message.reply_text(
+                    f"✅ Đã cập nhật lời chào /start!\n\n"
+                    f"📝 Xem trước: gõ /start để kiểm tra.",
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("⬅️ Quay lại", callback_data="admin_ui_custom"),
+                         InlineKeyboardButton("🏠 Thoát", callback_data="admin_home")]
+                    ])
+                )
+        except Exception:
+            await update.message.reply_text("❌ Có lỗi xảy ra.")
+        return
+
+    if context.user_data.get("awaiting_ui_emoji"):
+        btn_key = context.user_data["awaiting_ui_emoji"]
+        del context.user_data["awaiting_ui_emoji"]
+        try:
+            # Tự nhận custom emoji từ entities
+            emoji_id_from_entity = None
+            if update.message.entities:
+                for entity in update.message.entities:
+                    if entity.type == "custom_emoji":
+                        emoji_id_from_entity = entity.custom_emoji_id
+                        break
+
+            btn_name = UI_BUTTONS.get(btn_key, btn_key)
+            if text.lower() == "reset":
+                db.set_ui_emoji(btn_key, None)
+                await update.message.reply_text(
+                    f"✅ Đã xóa custom emoji cho nút `{btn_name}`.",
+                    parse_mode="Markdown",
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("⬅️ Quay lại", callback_data="admin_edit_btn_list"),
+                         InlineKeyboardButton("🏠 Thoát", callback_data="admin_home")]
+                    ])
+                )
+            elif emoji_id_from_entity:
+                db.set_ui_emoji(btn_key, emoji_id_from_entity)
+                await update.message.reply_text(
+                    f"✅ Đã set custom emoji cho nút `{btn_name}`!\n"
+                    f"Emoji ID: `{emoji_id_from_entity}`",
+                    parse_mode="Markdown",
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("⬅️ Quay lại", callback_data="admin_edit_btn_list"),
+                         InlineKeyboardButton("🏠 Thoát", callback_data="admin_home")]
+                    ])
+                )
+            elif text.strip().isdigit() and len(text.strip()) > 10:
+                db.set_ui_emoji(btn_key, text.strip())
+                await update.message.reply_text(
+                    f"✅ Đã set custom emoji cho nút `{btn_name}`!\n"
+                    f"Emoji ID: `{text.strip()}`",
+                    parse_mode="Markdown",
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("⬅️ Quay lại", callback_data="admin_edit_btn_list"),
+                         InlineKeyboardButton("🏠 Thoát", callback_data="admin_home")]
+                    ])
+                )
+            else:
+                await update.message.reply_text(
+                    "❌ Không nhận diện được.\n"
+                    "Gửi **custom emoji trực tiếp** hoặc nhập **emoji ID** (dãy số dài).",
+                    parse_mode="Markdown"
+                )
+        except Exception:
+            await update.message.reply_text("❌ Có lỗi xảy ra.")
+        return
+
     if context.user_data.get("awaiting_desc_for"):
         key = context.user_data["awaiting_desc_for"]
         del context.user_data["awaiting_desc_for"]
@@ -1920,6 +2036,7 @@ def _build_admin_dashboard():
         [InlineKeyboardButton("⚙️ Set Markup mặc định", callback_data="admin_markup")],
         [InlineKeyboardButton("🎁 Cấu hình giới thiệu", callback_data="admin_referral")],
         [InlineKeyboardButton("📢 Gửi thông báo (Broadcast)", callback_data="admin_broadcast")],
+        [InlineKeyboardButton("🎨 Tùy chỉnh giao diện", callback_data="admin_ui_custom")],
     ]
     return text, buttons
 
@@ -2050,12 +2167,12 @@ async def handle_category_click(update: Update, context: ContextTypes.DEFAULT_TY
         user_balance = db.get_user_balance(query.from_user.id)
         buttons, _ = build_category_grid(products, "viewcat", is_admin=False)
         buttons.append([
-            InlineKeyboardButton(f"💰 Ví: {format_money(user_balance)}", callback_data="wallet_home"),
-            InlineKeyboardButton("🎁 Giới thiệu bạn bè", callback_data="referral_home"),
+            ui_btn("wallet", f"💰 Ví: {format_money(user_balance)}", callback_data="wallet_home"),
+            ui_btn("referral", "🎁 Giới thiệu bạn bè", callback_data="referral_home"),
         ])
         buttons.append([
-            InlineKeyboardButton("📞 Liên hệ Admin", url="https://t.me/hoanganh1162"),
-            InlineKeyboardButton("🔄 Cập nhật", callback_data="reload_menu")
+            ui_btn("contact", "📞 Liên hệ Admin", url="https://t.me/hoanganh1162"),
+            ui_btn("reload", "🔄 Cập nhật", callback_data="reload_menu")
         ])
         await query.edit_message_text(
             "🛒 <b>MENU SẢN PHẨM</b>\n"
@@ -2222,6 +2339,7 @@ async def handle_admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "awaiting_wallet_adjust", "awaiting_desc_for", "awaiting_name_for",
         "awaiting_new_cat", "awaiting_new_prod", "awaiting_rename_cat",
         "awaiting_set_emoji",
+        "awaiting_welcome_msg", "awaiting_ui_emoji",
     ]:
         context.user_data.pop(key_to_clear, None)
 
@@ -2839,6 +2957,69 @@ async def handle_admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "⚠️ _Hoặc bấm 'Hủy' để thoát._",
             parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Hủy", callback_data="admin_home")]])
+        )
+
+    elif data == "admin_ui_custom":
+        buttons = [
+            [InlineKeyboardButton("✏️ Sửa lời chào /start", callback_data="admin_edit_welcome")],
+            [InlineKeyboardButton("🎨 Đổi Icon nút bấm", callback_data="admin_edit_btn_list")],
+            [InlineKeyboardButton("⬅️ Quay lại", callback_data="admin_home")],
+        ]
+        await query.edit_message_text(
+            "🎨 **TÙY CHỈNH GIAO DIỆN**\n"
+            "━━━━━━━━━━━━━━━━━━\n"
+            "Chọn mục bạn muốn tùy chỉnh:",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup(buttons)
+        )
+
+    elif data == "admin_edit_welcome":
+        context.user_data["awaiting_welcome_msg"] = True
+        current = db.get_welcome_message()
+        preview = f"\n\n📝 Nội dung hiện tại:\n━━━━━━━━━━━━━━━━━━\n{current}\n━━━━━━━━━━━━━━━━━━" if current else "\n\n⚠️ _Đang dùng lời chào mặc định_"
+        await query.edit_message_text(
+            f"✏️ **SỬA LỜI CHÀO /START**{preview}\n\n"
+            "📝 Nhắn tin **nội dung mới** cho lời chào.\n\n"
+            "💡 Biến có thể dùng:\n"
+            "• `{name}` — Tên người dùng\n"
+            "• `{balance}` — Số dư ví\n"
+            "• `{id}` — ID Telegram\n\n"
+            "Nhắn `reset` để quay về lời chào mặc định.",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Hủy", callback_data="admin_ui_custom")]])
+        )
+
+    elif data == "admin_edit_btn_list":
+        ui_emojis = db.get_all_ui_emoji()
+        buttons = []
+        for btn_key, default_text in UI_BUTTONS.items():
+            has = "✅" if btn_key in ui_emojis else "❌"
+            buttons.append([InlineKeyboardButton(f"{has} {default_text}", callback_data=f"admin_edit_btn_{btn_key}")])
+        buttons.append([InlineKeyboardButton("⬅️ Quay lại", callback_data="admin_ui_custom")])
+        await query.edit_message_text(
+            "🎨 **ĐỔI ICON NÚT BẤM**\n"
+            "━━━━━━━━━━━━━━━━━━\n"
+            "✅ = Đã có custom emoji\n"
+            "❌ = Đang dùng emoji mặc định\n\n"
+            "Chọn nút bạn muốn đổi icon:",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup(buttons)
+        )
+
+    elif data.startswith("admin_edit_btn_"):
+        btn_key = data.replace("admin_edit_btn_", "")
+        current_eid = db.get_ui_emoji(btn_key)
+        context.user_data["awaiting_ui_emoji"] = btn_key
+        default_name = UI_BUTTONS.get(btn_key, btn_key)
+        status = f"📌 Emoji ID hiện tại: `{current_eid}`" if current_eid else "⚠️ _Đang dùng emoji mặc định_"
+        await query.edit_message_text(
+            f"🎨 **Đổi Icon:** {default_name}\n"
+            f"{status}\n\n"
+            f"👉 **Gửi trực tiếp custom emoji** vào đây!\n"
+            f"Hoặc nhập emoji ID thủ công.\n"
+            f"Nhắn `reset` để xóa.",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Hủy", callback_data="admin_edit_btn_list")]])
         )
 
 
