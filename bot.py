@@ -40,7 +40,7 @@ CTV_API_URL = os.getenv("CTV_API_URL", "http://103.69.87.202:5000")
 CTV_API_KEY = os.getenv("CTV_API_KEY", "")
 
 CRMTEACHER_API_URL = os.getenv("CRMTEACHER_API_URL", "https://api.bottele.crmteacher.org/openapi/v1")
-CRMTEACHER_API_KEY = os.getenv("CRMTEACHER_API_KEY", "rsk_live_5KpJDlb9H5m43GLyNOB2M45O3Ipp0rz2EaY7kZRq2q5wLLr9")
+CRMTEACHER_API_KEY = os.getenv("CRMTEACHER_API_KEY", "")
 WEBHOOK_PORT = int(os.getenv("WEBHOOK_PORT", "8443"))
 BANK_NAME = os.getenv("BANK_NAME", "Vietcombank")
 BANK_ACCOUNT_NUMBER = os.getenv("BANK_ACCOUNT_NUMBER", "")
@@ -300,7 +300,7 @@ async def cmd_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = await update.message.reply_text("⏳ Đang tải sản phẩm...")
 
     products, balance = get_all_products_merged()
-    if products is None:
+    if not products:
         await msg.edit_text("❌ Không thể tải sản phẩm lúc này. Vui lòng thử lại sau!")
         return
 
@@ -579,15 +579,14 @@ async def handle_paid_button(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 
 async def handle_cancel_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Hủy đơn hàng."""
+    """Hủy đơn hàng — dùng atomic operation để tránh race condition."""
     query = update.callback_query
     await query.answer()
     order_code = query.data.replace("cancel_", "")
 
-    order = db.get_order(order_code)
-    if order and order["status"] == "pending":
-        order["status"] = "cancelled"
-        db.save_order(order_code, order)
+    # CRITICAL: Dùng cancel_order_if_pending (atomic) thay vì read-check-write
+    cancelled = db.cancel_order_if_pending(order_code)
+    if cancelled:
         await query.edit_message_text(
             f"❌ Đơn **#{order_code}** đã được hủy.\n"
             "Gõ /menu để mua sản phẩm khác.",
@@ -977,7 +976,7 @@ async def handle_admin_confirm_pay(update: Update, context: ContextTypes.DEFAULT
 
 
 async def handle_admin_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Admin hủy đơn."""
+    """Admin hủy đơn — dùng atomic operation."""
     query = update.callback_query
     if not is_admin(query.from_user.id):
         await query.answer("⛔ Không có quyền!", show_alert=True)
@@ -985,20 +984,29 @@ async def handle_admin_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     await query.answer()
     order_code = query.data.replace("admincx_", "")
+    
     order = db.get_order(order_code)
-    if order and order["status"] == "pending":
-        order["status"] = "cancelled"
-        db.save_order(order_code, order)
+    if not order:
+        await query.edit_message_text("Đơn hàng không tồn tại.")
+        return
+    
+    user_id = order.get("user_id")
+    cancelled = db.cancel_order_if_pending(order_code)
+    if cancelled:
         await query.edit_message_text(f"❌ Đơn `{order_code}` đã bị admin hủy.", parse_mode="Markdown")
-
         try:
             await context.bot.send_message(
-                chat_id=order["user_id"],
+                chat_id=user_id,
                 text=f"❌ Đơn hàng **#{order_code}** đã bị hủy bởi admin.",
                 parse_mode="Markdown"
             )
         except Exception:
             pass
+    else:
+        await query.edit_message_text(
+            f"⚠️ Đơn `{order_code}` không thể hủy (trạng thái: {order.get('status', '?')}).",
+            parse_mode="Markdown"
+        )
 
 async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Xử lý nhập text (email, sửa giá, sửa markup, v.v.)."""
@@ -1156,7 +1164,58 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await status_msg.edit_text(f"✅ Đã gửi thành công đến **{success_count}/{len(users)}** người dùng.", parse_mode="Markdown")
         return
 
-    # 4. Mặc định xử lý nhập email cho slot_gpt_team
+    # 4. Tra cứu người dùng (ĐẶT TRƯỚC email handler để không bị chặn bởi return)
+    if context.user_data.get("awaiting_user_lookup"):
+        del context.user_data["awaiting_user_lookup"]
+        target_id, target_username, user_orders = db.find_user_orders_by_query(text)
+        
+        if target_id is None:
+            await update.message.reply_text(
+                f"❌ Không tìm thấy thông tin khách hàng nào khớp với `{text}`.\n"
+                f"Vui lòng kiểm tra lại Username hoặc ID.",
+                parse_mode="Markdown"
+            )
+            return
+
+        recent = sorted(user_orders.items(), key=lambda x: x[1].get("created_at", ""), reverse=True)[:10]
+        total_spent = sum(o.get("total", 0) for o in user_orders.values() if o.get("status") == "paid")
+        
+        msg = (
+            f"🔍 **THÔNG TIN KHÁCH HÀNG**\n"
+            f"━━━━━━━━━━━━━━━━━━\n"
+            f"👤 ID: `{target_id}`\n"
+            f"👤 Username: {target_username if target_username else 'Không có'}\n"
+            f"💳 Đã chi (đơn thành công): **{format_money(total_spent)}**\n"
+            f"📦 Tổng số đơn: **{len(user_orders)}**\n\n"
+            f"📋 **10 ĐƠN GẦN NHẤT:**\n"
+        )
+        
+        if not recent:
+            msg += "_Chưa có đơn hàng nào_\n"
+        else:
+            for code, order in recent:
+                status_icon = {
+                    "pending": "⏳", "paid": "✅", "cancelled": "❌",
+                    "cancelled_timeout": "⏰", "failed": "💔"
+                }.get(order["status"], "❓")
+                
+                msg += (
+                    f"{status_icon} `{code}` - {format_money(order.get('total', 0))}\n"
+                    f"   Sản phẩm: {order.get('product_name', '?')} x{order.get('qty', 1)}\n"
+                    f"   Thời gian: {order.get('created_at', '?')[:16]}\n"
+                )
+                
+                items = order.get("items", [])
+                if items:
+                    msg += "   🔑 **Tài khoản đã giao:**\n"
+                    for item in items:
+                        msg += f"   `{item}`\n"
+                msg += "\n"
+
+        await update.message.reply_text(msg, parse_mode="Markdown")
+        return
+
+    # 5. Mặc định xử lý nhập email cho đơn chờ email
     waiting_order = db.find_order_waiting_email(user_id)
     if not waiting_order:
         return
@@ -1196,60 +1255,6 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("⏳ Đang xử lý ghi nhận thông tin...")
     await process_paid_order(context, order_code, order.get("payment_source", "sepay"))
 
-    # 5. Tra cứu người dùng
-    if context.user_data.get("awaiting_user_lookup"):
-        del context.user_data["awaiting_user_lookup"]
-        target_id, target_username, user_orders = db.find_user_orders_by_query(text)
-        
-        if target_id is None:
-            await update.message.reply_text(
-                f"❌ Không tìm thấy thông tin khách hàng nào khớp với `{text}`.\n"
-                f"Vui lòng kiểm tra lại Username hoặc ID.",
-                parse_mode="Markdown"
-            )
-            return
-
-        recent = sorted(user_orders.items(), key=lambda x: x[1].get("created_at", ""), reverse=True)[:10]
-        total_spent = sum(o.get("total", 0) for o in user_orders.values() if o.get("status") == "paid")
-        
-        msg = (
-            f"🔍 **THÔNG TIN KHÁCH HÀNG**\n"
-            f"━━━━━━━━━━━━━━━━━━\n"
-            f"👤 ID: `{target_id}`\n"
-            f"👤 Username: {target_username if target_username else 'Không có'}\n"
-            f"💳 Đã chi (đơn thành công): **{format_money(total_spent)}**\n"
-            f"📦 Tổng số đơn: **{len(user_orders)}**\n\n"
-            f"📋 **10 ĐƠN GẦN NHẤT:**\n"
-        )
-        
-        if not recent:
-            msg += "_Chưa có đơn hàng nào_\n"
-        else:
-            for code, order in recent:
-                status_icon = {
-                    "pending": "⏳",
-                    "paid": "✅",
-                    "cancelled": "❌",
-                    "cancelled_timeout": "⏰",
-                    "failed": "💔"
-                }.get(order["status"], "❓")
-                
-                msg += (
-                    f"{status_icon} `{code}` - {format_money(order.get('total', 0))}\n"
-                    f"   Sản phẩm: {order.get('product_name', '?')} x{order.get('qty', 1)}\n"
-                    f"   Thời gian: {order.get('created_at', '?')[:16]}\n"
-                )
-                
-                items = order.get("items", [])
-                if items:
-                    msg += "   🔑 **Tài khoản đã giao:**\n"
-                    for item in items:
-                        msg += f"   `{item}`\n"
-                msg += "\n"
-
-        await update.message.reply_text(msg, parse_mode="Markdown")
-        return
-
 def _build_admin_dashboard():
     """Trả về (text, buttons) cho admin dashboard."""
     text = "🛠 **ADMIN DASHBOARD**\nChọn chức năng quản lý bên dưới:"
@@ -1288,13 +1293,43 @@ async def handle_category_click(update: Update, context: ContextTypes.DEFAULT_TY
     data = query.data
     
     if data == "reload_menu":
-        fake_update = Update(update_id=update.update_id, message=query.message)
-        await cmd_menu(fake_update, context) 
+        products, _ = get_all_products_merged(force_refresh=True)
+        if not products:
+            await query.edit_message_text("❌ Không thể tải sản phẩm. Gõ /menu để thử lại.")
+            return
+        buttons = build_category_grid(products, "viewcat", is_admin=False)
+        buttons.append([
+            InlineKeyboardButton("📞 Liên hệ Admin", url="https://t.me/hoanganh1162"),
+            InlineKeyboardButton("🔄 Cập nhật sản phẩm", callback_data="reload_menu")
+        ])
+        await query.edit_message_text(
+            "🛒 **MENU SẢN PHẨM**\n"
+            "━━━━━━━━━━━━━━━━━━\n"
+            "Chọn danh mục sản phẩm bạn muốn xem:",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup(buttons)
+        )
         return
         
     if data == "btn_myorders":
-        fake_update = Update(update_id=update.update_id, message=query.message, effective_user=update.effective_user)
-        await cmd_myorders(fake_update, context)
+        user_id = update.effective_user.id
+        orders = db.get_user_orders(user_id)
+        if not orders:
+            await query.edit_message_text("📭 Bạn chưa có đơn hàng nào.")
+            return
+        recent = sorted(orders.items(), key=lambda x: x[1].get("created_at", ""), reverse=True)[:10]
+        text = "📋 **LỊCH SỬ ĐƠN HÀNG** (10 gần nhất)\n━━━━━━━━━━━━━━━━━━\n\n"
+        for code, order in recent:
+            status_icon = {
+                "pending": "⏳", "paid": "✅", "cancelled": "❌",
+                "cancelled_timeout": "⏰", "failed": "💔"
+            }.get(order["status"], "❓")
+            text += (
+                f"{status_icon} `{code}`\n"
+                f"   {order.get('product_name', '?')} x{order['qty']} — {format_money(order['total'])}\n"
+                f"   {order.get('created_at', '?')[:16]}\n\n"
+            )
+        await query.edit_message_text(text[:4000], parse_mode="Markdown")
         return
 
     cat_id = data.replace("viewcat_", "")
@@ -1705,10 +1740,13 @@ async def handle_admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await render_admin_product_detail(update, context, key)
 
     elif data.startswith("admin_del_prod_"):
-        # Format: admin_del_prod_KEY_CID
-        parts = data.replace("admin_del_prod_", "").split("_")
+        # Format: admin_del_prod_KEY_CID — KEY có thể chứa dấu _
+        raw = data.replace("admin_del_prod_", "")
+        # Tách CID từ cuối (rsplit để giữ nguyên KEY chứa dấu _)
+        parts = raw.rsplit("_", 1)
         key = parts[0]
         cid = parts[1] if len(parts) > 1 else "khac"
+
         
         # Xóa sản phẩm
         db.delete_custom_product(key)

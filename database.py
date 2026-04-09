@@ -405,8 +405,8 @@ class Database:
                     del data[prop][key]
                     
             # Bỏ ẩn nếu đang ẩn
-            if "hidden_products" in data and key in data["hidden_products"]:
-                data["hidden_products"].remove(key)
+            if "custom_hiddens" in data and key in data["custom_hiddens"]:
+                data["custom_hiddens"].remove(key)
                 
             self._write(data)
 
