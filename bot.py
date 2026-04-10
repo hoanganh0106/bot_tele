@@ -3310,87 +3310,6 @@ async def handle_noop(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 
-async def cmd_diag(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Admin-only: Chẩn đoán hệ thống thanh toán."""
-    if not is_admin(update.effective_user.id):
-        return
-    
-    try:
-        # 1. Pending orders
-        pending = db.get_pending_orders()
-        pending_text = ""
-        if pending:
-            for code, order in list(pending.items())[:5]:
-                created = order.get("created_at", "?")[:16]
-                pending_text += f"  `{code}` — {order.get('product_name', '?')} — {created}\n"
-        else:
-            pending_text = "  _(không có)_\n"
-        
-        # 2. Unprocessed payments  
-        unprocessed = db.get_unprocessed_payments()
-        payment_text = ""
-        if unprocessed:
-            for p in unprocessed[:5]:
-                payment_text += f"  ID: `{p.get('id','?')}` — {p.get('transferAmount',0):,}đ — `{p.get('content','?')[:30]}`\n"
-        else:
-            payment_text = "  _(không có)_\n"
-        
-        # 3. Recent processed payments (last 5)
-        all_payments = []
-        with db.lock:
-            all_payments = list(db._read().get("incoming_payments", []))
-        recent = all_payments[-5:] if all_payments else []
-        recent_text = ""
-        if recent:
-            for p in reversed(recent):
-                status = "✅" if p.get("processed") else "⏳"
-                recent_text += f"  {status} `{p.get('id','?')}` — {p.get('transferAmount',0):,}đ — `{p.get('content','?')[:25]}`\n"
-        else:
-            recent_text = "  _(không có payment nào trong DB)_\n"
-        
-        # 4. Failed orders (for retry)
-        failed_orders = []
-        with db.lock:
-            orders = db._read().get("orders", {})
-            for code, o in orders.items():
-                if o.get("status") == "failed":
-                    failed_orders.append((code, o))
-        failed_text = ""
-        if failed_orders:
-            for code, o in failed_orders[:5]:
-                failed_text += f"  `{code}` — {o.get('error', '?')[:50]}\n"
-        else:
-            failed_text = "  _(không có)_\n"
-        
-        # 5. Product cache status
-        cache_status = "❌ TRỐNG"
-        cache_count = 0
-        if _api_cache.get("data"):
-            products, _ = _api_cache["data"]
-            cache_count = len(products) if products else 0
-            if cache_count > 0:
-                remaining = _api_cache.get("expiry", 0) - time.time()
-                cache_status = f"✅ {cache_count} sản phẩm (hết hạn sau {int(remaining)}s)"
-            else:
-                cache_status = "⚠️ Cache có nhưng trống (0 sản phẩm)"
-        
-        text = (
-            f"🔍 **CHẨN ĐOÁN HỆ THỐNG**\n"
-            f"━━━━━━━━━━━━━━━━━━\n\n"
-            f"📦 **Đơn pending** ({len(pending)}):\n{pending_text}\n"
-            f"💳 **Payment chưa xử lý** ({len(unprocessed)}):\n{payment_text}\n"
-            f"📜 **Payment gần nhất** (5):\n{recent_text}\n"
-            f"❌ **Đơn failed** ({len(failed_orders)}):\n{failed_text}\n"
-            f"🗄️ **Cache sản phẩm**: {cache_status}\n"
-            f"🔌 **Webhook port**: {WEBHOOK_PORT}\n"
-            f"📊 **Total payments in DB**: {len(all_payments)}\n\n"
-            f"💡 _Nếu 'Payment chưa xử lý' = 0 và 'Đơn pending' > 0 → webhook không nhận được tiền từ SePay!_"
-        )
-        
-        await update.message.reply_text(text, parse_mode="Markdown")
-    except Exception as e:
-        await update.message.reply_text(f"❌ Lỗi diag: {e}")
-
 
 # ============================================
 # SETUP & RUN
@@ -3844,7 +3763,7 @@ def main():
     # Admin commands
     app.add_handler(CommandHandler("admin", cmd_admin))
     app.add_handler(CommandHandler("getemoji", cmd_getemoji))
-    app.add_handler(CommandHandler("diag", cmd_diag))
+
 
     # Callback handlers
     app.add_handler(CallbackQueryHandler(handle_noop, pattern="^noop$"))
