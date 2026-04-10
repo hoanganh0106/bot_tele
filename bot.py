@@ -3628,6 +3628,15 @@ async def _handle_payment(application, payment: dict):
     transfer_amount = int(payment.get("transferAmount", 0)) if payment.get("transferAmount") else 0
     content = payment.get("content", "")
     reference_code = payment.get("referenceCode", "")
+    
+    # FIX: SePay có thể gửi nội dung CK ở nhiều trường khác nhau:
+    # - transactionContent: nội dung gốc khách nhập
+    # - description: mô tả giao dịch (có thể chứa order code)
+    # - code: mã SePay tự nhận diện
+    # - content: trường cũ (đôi khi là mô tả ngân hàng, KHÔNG phải nội dung CK)
+    transaction_content = payment.get("transactionContent", "")
+    description = payment.get("description", "")
+    sepay_code = payment.get("code", "")
 
     # Dedup: skip nếu đã xử lý rồi (phòng trường hợp race condition)
     if db.is_transaction_processed(transaction_id):
@@ -3635,10 +3644,15 @@ async def _handle_payment(application, payment: dict):
         db.mark_payment_processed(transaction_id)
         return
 
-    logger.info(f"Processing payment: id={transaction_id}, amount={transfer_amount}, content='{content}'")
+    logger.info(
+        f"Processing payment: id={transaction_id}, amount={transfer_amount}, "
+        f"content='{content}', txContent='{transaction_content}', "
+        f"desc='{description}', code='{sepay_code}'"
+    )
 
-    # Làm sạch nội dung CK
-    clean_content = content.upper().replace(" ", "").replace("-", "").replace("\n", "")
+    # Gom TẤT CẢ các trường có thể chứa order code vào 1 chuỗi
+    all_text = f"{content} {transaction_content} {description} {sepay_code} {reference_code}"
+    clean_content = all_text.upper().replace(" ", "").replace("-", "").replace("\n", "")
 
     # === KIỂM TRA NẠP TIỀN VÀO VÍ ===
     deposit_user_id = db.find_deposit_by_content(clean_content)
@@ -3685,22 +3699,35 @@ async def _handle_payment(application, payment: dict):
         )
         return
 
-    # Tìm đơn hàng khớp
+    # Tìm đơn hàng khớp — tìm trong toàn bộ text
     order_code, order = db.find_order_by_content(clean_content)
 
+    # Fallback: tìm regex BOT order code trong toàn bộ text
     if not order_code:
         match = re.search(r"BOT\d{10}[A-Z0-9]{6}", clean_content)
         if match:
             order_code, order = db.find_order_by_content(match.group())
 
+    # Fallback 2: thử từng trường riêng lẻ
     if not order_code:
-        logger.info(f"No matching order for content: {content}")
+        for field in [transaction_content, description, content, sepay_code]:
+            if field:
+                clean_field = field.upper().replace(" ", "").replace("-", "").replace("\n", "")
+                order_code, order = db.find_order_by_content(clean_field)
+                if order_code:
+                    logger.info(f"  → Found order {order_code} in field: {field[:50]}")
+                    break
+
+    if not order_code:
+        logger.info(f"No matching order for payment {transaction_id}")
         db.mark_payment_processed(transaction_id)
+        # Hiển thị TẤT CẢ các trường để admin debug
+        detail = f"content: {content}\ntxContent: {transaction_content}\ndesc: {description}\ncode: {sepay_code}"
         await _notify_all_admins(application,
             f"⚠️ **TIỀN VÀO KHÔNG KHỚP ĐƠN**\n"
             f"━━━━━━━━━━━━━━━━━━\n"
             f"💰 Số tiền: {transfer_amount:,}đ\n"
-            f"📝 Nội dung: {content}\n"
+            f"📝 {detail}\n"
             f"🔗 Ref: {reference_code}\n\n"
             f"_Có thể khách ghi sai nội dung CK_"
         )

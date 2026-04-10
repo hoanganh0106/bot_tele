@@ -53,10 +53,24 @@ def create_flask_app():
             return jsonify({"success": True, "message": "Ignored"}), 200
 
         # Lưu giao dịch vào DB (bot sẽ poll và xử lý)
+        # FIX: SePay gửi 'transactionContent' cho nội dung CK gốc từ khách,
+        # KHÔNG phải 'content'. Cũng lưu 'description' và 'code' để fallback matching.
+        raw_content = data.get("content", "")
+        transaction_content = data.get("transactionContent", "")
+        description = data.get("description", "")
+        sepay_code = data.get("code", "")
+        
+        # Ưu tiên transactionContent > description > content
+        best_content = transaction_content or description or raw_content
+        
         payment = {
             "id": data.get("id"),
             "transferAmount": data.get("transferAmount", 0),
-            "content": data.get("content", ""),
+            "content": best_content,
+            "raw_content": raw_content,
+            "transactionContent": transaction_content,
+            "description": description,
+            "code": sepay_code,
             "referenceCode": data.get("referenceCode", ""),
             "received_at": datetime.now().isoformat(),
             "processed": False
@@ -65,7 +79,9 @@ def create_flask_app():
         stored = shared_db.store_incoming_payment(payment)
         logger.info(
             f"SePay webhook: stored={stored}, id={payment['id']}, "
-            f"amount={payment['transferAmount']}, content='{payment['content']}'"
+            f"amount={payment['transferAmount']}, "
+            f"content='{raw_content}', transactionContent='{transaction_content}', "
+            f"description='{description}', code='{sepay_code}'"
         )
 
         return jsonify({"success": True}), 200
