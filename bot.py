@@ -1168,6 +1168,10 @@ async def cmd_myorders(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def process_paid_order(context, order_code: str, payment_source: str = "sepay"):
     """Xử lý đơn hàng đã thanh toán.
     Dùng atomic complete_order_payment để tránh race condition.
+    
+    CRITICAL: Toàn bộ body được wrap trong try/except để đảm bảo
+    MỌI lỗi đều set order = 'failed' + thông báo admin.
+    Trước đây chỉ có phần API call được bảo vệ → orders bị treo vĩnh viễn.
     """
     order = db.get_order(order_code)
     if not order:
@@ -1181,50 +1185,119 @@ async def process_paid_order(context, order_code: str, payment_source: str = "se
     product_key = order["product_key"]
     qty = order["qty"]
     user_id = order["user_id"]
-    
-    # Backward compatibility cho các đơn cũ
-    is_custom_local = order.get("is_custom_local")
-    if is_custom_local is None:
-        products, _ = get_all_products_merged()
-        is_custom_local = False
-        if products and product_key in products:
-            is_custom_local = products[product_key].get("is_custom_local", False)
 
-    # Nếu là slot_gpt_team hoặc Hàng tự bán CẦN cung cấp thông tin
-    if order.get("needs_email") and not order.get("emails"):
-        result = db.complete_order_payment(order_code, {
-            "status": "paid_waiting_email",
-            "paid_at": datetime.now().isoformat(),
-            "payment_source": payment_source,
-            "is_custom_local": is_custom_local
-        })
-        if not result:
-            logger.info(f"Order {order_code} was taken by another thread")
-            return False
+    logger.info(f"📦 Processing order {order_code}: product={product_key}, qty={qty}, user={user_id}, source={payment_source}")
 
-        try:
-            await context.bot.send_message(
-                chat_id=user_id,
-                text=(
-                    f"✅ Đơn **#{order_code}** đã thanh toán thành công!\n\n"
-                    f"📧 Sản phẩm này yêu cầu bạn cung cấp thông tin/email.\n"
-                    f"Vui lòng nhắn tin gửi **{qty} email** (mỗi email viết trên 1 dòng):\n\n"
-                    f"Ví dụ:\n```\nemail1@gmail.com\nemail2@gmail.com\n```"
-                ),
-                parse_mode="Markdown"
-            )
-        except Exception as e:
-            logger.error(f"Failed to send email request: {e}")
+    try:
+        # Backward compatibility cho các đơn cũ
+        is_custom_local = order.get("is_custom_local")
+        if is_custom_local is None:
+            products, _ = get_all_products_merged()
+            is_custom_local = False
+            if products and product_key in products:
+                is_custom_local = products[product_key].get("is_custom_local", False)
 
-        return True
+        logger.info(f"  → is_custom_local={is_custom_local}")
 
-    # Nếu là SẢN PHẨM KHÔNG QUA API (TỰ BÁN): Xử lý luôn và báo cho Admin thủ công
-    if is_custom_local:
-        if order.get("is_auto_delivered", False):
-            # Lấy list account từ inventory db
-            accounts = db.pop_custom_accounts(product_key, qty)
-            if len(accounts) < qty:
-                # Nếu khách mua lúc vừa hết (tranh chấp), đưa về dạng chờ xử lý tay
+        # Nếu là slot_gpt_team hoặc Hàng tự bán CẦN cung cấp thông tin
+        if order.get("needs_email") and not order.get("emails"):
+            result = db.complete_order_payment(order_code, {
+                "status": "paid_waiting_email",
+                "paid_at": datetime.now().isoformat(),
+                "payment_source": payment_source,
+                "is_custom_local": is_custom_local
+            })
+            if not result:
+                logger.info(f"Order {order_code} was taken by another thread")
+                return False
+
+            try:
+                await context.bot.send_message(
+                    chat_id=user_id,
+                    text=(
+                        f"✅ Đơn **#{order_code}** đã thanh toán thành công!\n\n"
+                        f"📧 Sản phẩm này yêu cầu bạn cung cấp thông tin/email.\n"
+                        f"Vui lòng nhắn tin gửi **{qty} email** (mỗi email viết trên 1 dòng):\n\n"
+                        f"Ví dụ:\n```\nemail1@gmail.com\nemail2@gmail.com\n```"
+                    ),
+                    parse_mode="Markdown"
+                )
+            except Exception as e:
+                logger.error(f"Failed to send email request: {e}")
+
+            logger.info(f"  ✅ Order {order_code} → paid_waiting_email")
+            return True
+
+        # Nếu là SẢN PHẨM KHÔNG QUA API (TỰ BÁN): Xử lý luôn và báo cho Admin thủ công
+        if is_custom_local:
+            if order.get("is_auto_delivered", False):
+                # Lấy list account từ inventory db
+                accounts = db.pop_custom_accounts(product_key, qty)
+                if len(accounts) < qty:
+                    # Nếu khách mua lúc vừa hết (tranh chấp), đưa về dạng chờ xử lý tay
+                    result = db.complete_order_payment(order_code, {
+                        "status": "paid",
+                        "paid_at": datetime.now().isoformat(),
+                        "payment_source": payment_source
+                    })
+                    if not result:
+                        return False
+                    
+                    admin_text = (
+                        f"🚨 **[HÀNG TỰ BÁN] AUTO GIAO HÀNG HẾT KHO**\n"
+                        f"━━━━━━━━━━━━━━━━━━\n"
+                        f"📋 Mã: `{order_code}`\n"
+                        f"👤 Khách: {format_user_link(order.get('username'), user_id)}\n"
+                        f"📦 Sản phẩm: {order.get('product_name', '?')} x{qty}\n"
+                        f"⚠️ Không đủ tài khoản trong kho để tự động giao!\n"
+                        f"⚡ Hãy ib khách và trả tài khoản tay nhé!"
+                    )
+                    await _notify_all_admins(context, admin_text)
+                    
+                    try:
+                        await context.bot.send_message(user_id, f"✅ Đơn **#{order_code}** thanh toán thành công!\n\nTuy nhiên kho hàng tự động vừa hết đột xuất. Vui lòng chờ Admin xử lý giao tài khoản bù cho bạn trong chốc lát nhé!")
+                    except Exception: pass
+                    
+                    logger.info(f"  ✅ Order {order_code} → paid (auto delivery out of stock)")
+                    return True
+
+                # Giao thành công — atomic set paid + items
+                result = db.complete_order_payment(order_code, {
+                    "status": "paid",
+                    "items": accounts,
+                    "paid_at": datetime.now().isoformat(),
+                    "payment_source": payment_source
+                })
+                if not result:
+                    return False
+                
+                items_str = "\n".join([f"✨ `{a}`" for a in accounts])
+                
+                # Gửi cho khách
+                try:
+                    await context.bot.send_message(
+                        chat_id=user_id,
+                        text=(f"✅ **ĐƠN HÀNG #{order_code} HOÀN TẤT!**\n\n"
+                              f"🔑 **TÀI KHOẢN CỦA BẠN LÀ:**\n"
+                              f"{items_str}\n\n"
+                              f"Cảm ơn bạn đã mua hàng. Cần hỗ trợ xin liên hệ Admin!"),
+                        parse_mode="Markdown"
+                    )
+                except Exception: pass
+                
+                # Báo Admin
+                await _notify_all_admins(context, 
+                    f"🔔 **[HÀNG TỰ BÁN] AUTO GIAO HÀNG THÀNH CÔNG**\n"
+                    f"Mã: `{order_code}`\n"
+                    f"👤 Khách: {format_user_link(order.get('username'), user_id)} | Mua x{qty}\n"
+                    f"🔑 Đã tự động xuất {qty} tài khoản từ kho để giao cho khách:\n"
+                    f"{items_str}"
+                )
+                logger.info(f"  ✅ Order {order_code} → paid (auto delivered {qty} accounts)")
+                return True
+                
+            else:
+                # Xử lý TAY (gửi email/info để admin duyệt)
                 result = db.complete_order_payment(order_code, {
                     "status": "paid",
                     "paid_at": datetime.now().isoformat(),
@@ -1233,161 +1306,100 @@ async def process_paid_order(context, order_code: str, payment_source: str = "se
                 if not result:
                     return False
                 
+                emails_text = "\n".join(order.get("emails", []))
+                
+                # Trừ tồn kho hiển thị (để tránh người khác mua quá mức)
+                current_stock = db.get_custom_stocks().get(product_key, 0)
+                if current_stock > 0:
+                    db.set_custom_stock(product_key, max(0, current_stock - qty))
+        
+                # Thông báo Admin
                 admin_text = (
-                    f"🚨 **[HÀNG TỰ BÁN] AUTO GIAO HÀNG HẾT KHO**\n"
+                    f"🔔 **[HÀNG TỰ BÁN] CẦN Admin DUYỆT THỦ CÔNG**\n"
                     f"━━━━━━━━━━━━━━━━━━\n"
                     f"📋 Mã: `{order_code}`\n"
                     f"👤 Khách: {format_user_link(order.get('username'), user_id)}\n"
-                    f"📦 Sản phẩm: {order.get('product_name', '?')} x{qty}\n"
-                    f"⚠️ Không đủ tài khoản trong kho để tự động giao!\n"
-                    f"⚡ Hãy ib khách và trả tài khoản tay nhé!"
+                    f"📦 {order.get('product_name', '?')} x{qty}\n"
+                    f"💰 Thu: {format_money(order['total'])}\n"
+                    f"💳 Nguồn: {payment_source}\n"
+                    f"📧 **THÔNG TIN KHÁCH GỬI:**\n"
+                    f"```\n{emails_text}\n```\n"
+                    f"⚡ Hãy chủ động nhắn tin giao tài khoản cho khách nhé!"
                 )
                 await _notify_all_admins(context, admin_text)
-                
-                try:
-                    await context.bot.send_message(user_id, f"✅ Đơn **#{order_code}** thanh toán thành công!\n\nTuy nhiên kho hàng tự động vừa hết đột xuất. Vui lòng chờ Admin xử lý giao tài khoản bù cho bạn trong chốc lát nhé!")
-                except Exception: pass
-                
-                return True
 
-            # Giao thành công — atomic set paid + items
-            result = db.complete_order_payment(order_code, {
-                "status": "paid",
-                "items": accounts,
-                "paid_at": datetime.now().isoformat(),
-                "payment_source": payment_source
-            })
-            if not result:
-                return False
-            
-            items_str = "\n".join([f"✨ `{a}`" for a in accounts])
-            
-            # Gửi cho khách
+            # Thông báo KHÁCH
             try:
                 await context.bot.send_message(
                     chat_id=user_id,
-                    text=(f"✅ **ĐƠN HÀNG #{order_code} HOÀN TẤT!**\n\n"
-                          f"🔑 **TÀI KHOẢN CỦA BẠN LÀ:**\n"
-                          f"{items_str}\n\n"
-                          f"Cảm ơn bạn đã mua hàng. Cần hỗ trợ xin liên hệ Admin!"),
+                    text=(
+                        f"✅ **GỬI THÔNG TIN THÀNH CÔNG!**\n"
+                        f"Đơn hàng **#{order_code}** của bạn đang được chuyển đến hệ thống.\n\n"
+                        f"⏳ Admin đang tiến hành duyệt và xử lý cấp quyền cho bạn.\n"
+                        f"Vui lòng đợi một lát nhé! (Cần hỗ trợ gấp: nhắn mục *Liên Hệ Admin*)"
+                    ),
                     parse_mode="Markdown"
                 )
-            except Exception: pass
-            
-            # Báo Admin
-            await _notify_all_admins(context, 
-                f"🔔 **[HÀNG TỰ BÁN] AUTO GIAO HÀNG THÀNH CÔNG**\n"
-                f"Mã: `{order_code}`\n"
-                f"👤 Khách: {format_user_link(order.get('username'), user_id)} | Mua x{qty}\n"
-                f"🔑 Đã tự động xuất {qty} tài khoản từ kho để giao cho khách:\n"
-                f"{items_str}"
-            )
+            except Exception:
+                pass
+            logger.info(f"  ✅ Order {order_code} → paid (custom_local manual)")
             return True
-            
-        else:
-            # Xử lý TAY (gửi email/info để admin duyệt)
-            result = db.complete_order_payment(order_code, {
-                "status": "paid",
-                "paid_at": datetime.now().isoformat(),
-                "payment_source": payment_source
+
+        # Mua hàng từ API đối tác
+        # KHÔNG force_refresh — dùng cache (background task giữ data tươi mỗi 90s)
+        products, _ = get_all_products_merged()
+        api_custom_local = False
+        if products and product_key in products:
+            api_custom_local = products[product_key].get("is_custom_local", False)
+
+        # Nếu cache hoàn toàn trống (hiếm — cả 2 API chết), thử refresh 1 lần
+        if not products:
+            logger.warning(f"  ⚠️ Product cache empty, attempting refresh for order {order_code}")
+            try:
+                products, _ = await async_refresh_products_cache()
+                if products and product_key in products:
+                    api_custom_local = products[product_key].get("is_custom_local", False)
+            except Exception:
+                pass
+
+        if not api_custom_local and (not products or product_key not in products):
+            # Sản phẩm đối tác đã bị xóa/đổi key → không gọi buy
+            logger.warning(f"  ❌ Product {product_key} not found in API — order {order_code}")
+            db.complete_order_payment(order_code, {
+                "status": "failed",
+                "error": f"Sản phẩm '{product_key}' không còn trên API đối tác",
+                "paid_at": datetime.now().isoformat()
             })
-            if not result:
-                return False
-            
-            emails_text = "\n".join(order.get("emails", []))
-            
-            # Trừ tồn kho hiển thị (để tránh người khác mua quá mức)
-            current_stock = db.get_custom_stocks().get(product_key, 0)
-            if current_stock > 0:
-                db.set_custom_stock(product_key, max(0, current_stock - qty))
-    
-            # Thông báo Admin
-            admin_text = (
-                f"🔔 **[HÀNG TỰ BÁN] CẦN Admin DUYỆT THỦ CÔNG**\n"
-                f"━━━━━━━━━━━━━━━━━━\n"
-                f"📋 Mã: `{order_code}`\n"
+
+            try:
+                await context.bot.send_message(
+                    chat_id=user_id,
+                    text=(
+                        f"❌ Đơn **#{order_code}** thanh toán thành công nhưng sản phẩm hiện không khả dụng!\n"
+                        f"Sản phẩm `{product_key}` đã bị đối tác thay đổi.\n\n"
+                        f"Admin sẽ xử lý hoàn tiền cho bạn sớm nhất."
+                    ),
+                    parse_mode="Markdown"
+                )
+            except Exception:
+                pass
+
+            await _notify_all_admins(context,
+                f"🚨 **SẢN PHẨM KHÔNG TỒN TẠI — CẦN HOÀN TIỀN**\n"
+                f"Mã: `{order_code}`\n"
                 f"👤 Khách: {format_user_link(order.get('username'), user_id)}\n"
-                f"📦 {order.get('product_name', '?')} x{qty}\n"
-                f"💰 Thu: {format_money(order['total'])}\n"
-                f"💳 Nguồn: {payment_source}\n"
-                f"📧 **THÔNG TIN KHÁCH GỬI:**\n"
-                f"```\n{emails_text}\n```\n"
-                f"⚡ Hãy chủ động nhắn tin giao tài khoản cho khách nhé!"
+                f"Sản phẩm: `{product_key}` — ĐÃ BỊ ĐỐI TÁC XÓA/ĐỔI KEY\n"
+                f"💰 Khách đã thanh toán {format_money(order['total'])} — cần hoàn tiền!"
             )
-            await _notify_all_admins(context, admin_text)
+            return False
 
-        # Thông báo KHÁCH
-        try:
-            await context.bot.send_message(
-                chat_id=user_id,
-                text=(
-                    f"✅ **GỬI THÔNG TIN THÀNH CÔNG!**\n"
-                    f"Đơn hàng **#{order_code}** của bạn đang được chuyển đến hệ thống.\n\n"
-                    f"⏳ Admin đang tiến hành duyệt và xử lý cấp quyền cho bạn.\n"
-                    f"Vui lòng đợi một lát nhé! (Cần hỗ trợ gấp: nhắn mục *Liên Hệ Admin*)"
-                ),
-                parse_mode="Markdown"
-            )
-        except Exception:
-            pass
-        return True
-
-    # Mua hàng từ API đối tác
-    # KHÔNG force_refresh — dùng cache (background task giữ data tươi mỗi 90s)
-    # FIX: force_refresh trước đây gây lỗi KHÔNG GIAO HÀNG:
-    #   API tạm down → products = {} → đơn bị marked 'failed' vĩnh viễn
-    products, _ = get_all_products_merged()
-    api_custom_local = False
-    if products and product_key in products:
-        api_custom_local = products[product_key].get("is_custom_local", False)
-
-    # Nếu cache hoàn toàn trống (hiếm — cả 2 API chết), thử refresh bất đồng bộ 1 lần
-    if not products:
-        try:
-            products, _ = await async_refresh_products_cache()
-            if products and product_key in products:
-                api_custom_local = products[product_key].get("is_custom_local", False)
-        except Exception:
-            pass
-
-    if not api_custom_local and (not products or product_key not in products):
-        # Sản phẩm đối tác đã bị xóa/đổi key → không gọi buy
-        db.complete_order_payment(order_code, {
-            "status": "failed",
-            "error": f"Sản phẩm '{product_key}' không còn trên API đối tác",
-            "paid_at": datetime.now().isoformat()
-        })
-
-        try:
-            await context.bot.send_message(
-                chat_id=user_id,
-                text=(
-                    f"❌ Đơn **#{order_code}** thanh toán thành công nhưng sản phẩm hiện không khả dụng!\n"
-                    f"Sản phẩm `{product_key}` đã bị đối tác thay đổi.\n\n"
-                    f"Admin sẽ xử lý hoàn tiền cho bạn sớm nhất."
-                ),
-                parse_mode="Markdown"
-            )
-        except Exception:
-            pass
-
-        await _notify_all_admins(context,
-            f"🚨 **SẢN PHẨM KHÔNG TỒN TẠI — CẦN HOÀN TIỀN**\n"
-            f"Mã: `{order_code}`\n"
-            f"👤 Khách: {format_user_link(order.get('username'), user_id)}\n"
-            f"Sản phẩm: `{product_key}` — ĐÃ BỊ ĐỐI TÁC XÓA/ĐỔI KEY\n"
-            f"💰 Khách đã thanh toán {format_money(order['total'])} — cần hoàn tiền!"
-        )
-        return False
-
-    try:
         emails = order.get("emails")
         
         # Kiểm tra xem sản phẩm thuộc API nào
         source = products[product_key].get("api_source", "CTV")
+        logger.info(f"  → Calling API {source} for {product_key} x{qty}")
+        
         # FIX: Wrap API buy trong asyncio.to_thread() để KHÔNG block event loop
-        # api.buy() có thể mất 30-180s cho sản phẩm phức tạp (slot_gpt_team)
-        # Trước đây block toàn bộ bot, không xử lý được message nào khác
         if source == "CRM":
             result = await asyncio.to_thread(
                 lambda: crm_api.buy(product_key, qty, emails=emails if emails else None, order_code=order_code)
@@ -1396,6 +1408,8 @@ async def process_paid_order(context, order_code: str, payment_source: str = "se
             result = await asyncio.to_thread(
                 lambda: api.buy(product_key, qty, emails=emails if emails else None)
             )
+
+        logger.info(f"  → API response for {order_code}: success={result.get('success')}")
 
         if result.get("success"):
             items = result.get("items", [])
@@ -1450,9 +1464,11 @@ async def process_paid_order(context, order_code: str, payment_source: str = "se
             )
             await _notify_all_admins(context, admin_text)
 
+            logger.info(f"  ✅ Order {order_code} → COMPLETED! Items delivered.")
             return True
         else:
             error_msg = result.get("error", "Lỗi không xác định")
+            logger.warning(f"  ❌ API returned error for {order_code}: {error_msg}")
             db.complete_order_payment(order_code, {
                 "status": "failed",
                 "error": error_msg,
@@ -1484,14 +1500,23 @@ async def process_paid_order(context, order_code: str, payment_source: str = "se
             return False
 
     except Exception as e:
-        logger.error(f"Error processing order {order_code}: {e}", exc_info=True)
-        db.complete_order_payment(order_code, {
-            "status": "failed",
-            "error": f"Exception: {str(e)}",
-            "paid_at": datetime.now().isoformat()
-        })
+        logger.error(f"💥 CRITICAL: Unhandled exception in process_paid_order {order_code}: {e}", exc_info=True)
+        # LUÔN set failed để order không bị treo vĩnh viễn ở pending
+        try:
+            db.complete_order_payment(order_code, {
+                "status": "failed",
+                "error": f"Exception: {str(e)}",
+                "paid_at": datetime.now().isoformat()
+            })
+        except Exception:
+            # Fallback: force update nếu complete_order_payment cũng lỗi
+            db.update_order_fields(order_code, {
+                "status": "failed",
+                "error": f"Exception: {str(e)}",
+                "paid_at": datetime.now().isoformat()
+            })
 
-        # CRITICAL: Thông báo cho khách và admin khi đơn bị lỗi exception
+        # Thông báo cho khách
         try:
             await context.bot.send_message(
                 chat_id=user_id,
@@ -1504,6 +1529,7 @@ async def process_paid_order(context, order_code: str, payment_source: str = "se
         except Exception:
             pass
 
+        # Thông báo admin
         await _notify_all_admins(context,
             f"🚨 **ĐƠN LỖI EXCEPTION — CẦN XỬ LÝ GẤP**\n"
             f"Mã: `{order_code}`\n"
@@ -1513,6 +1539,7 @@ async def process_paid_order(context, order_code: str, payment_source: str = "se
             f"💰 Khách đã thanh toán {format_money(order['total'])} — cần hoàn tiền hoặc giao tay!"
         )
         return False
+
 
 
 async def handle_admin_confirm_pay(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -3472,12 +3499,30 @@ async def _payment_processor(application):
                     await _handle_payment(application, payment)
                 except Exception as e:
                     logger.error(f"Error handling payment {tid}: {e}", exc_info=True)
-                    # Mark processed để không bị retry vô tận nếu payment data bị lỗi
+                    # Mark processed để không bị retry vô tận
                     db.mark_payment_processed(tid)
+                    
+                    # FIX: Tìm order liên quan và set failed để không bị treo ở pending
+                    try:
+                        content = payment.get("content", "")
+                        clean = content.upper().replace(" ", "").replace("-", "").replace("\n", "")
+                        order_code, order = db.find_order_by_content(clean)
+                        if order_code and order and order.get("status") in ("pending", "failed"):
+                            db.update_order_fields(order_code, {
+                                "status": "failed",
+                                "error": f"Payment processing exception: {str(e)[:200]}",
+                                "paid_at": datetime.now().isoformat()
+                            })
+                            logger.error(f"  → Set order {order_code} to failed (was stuck pending)")
+                    except Exception:
+                        pass
+                    
                     try:
                         await _notify_all_admins(application,
                             f"🚨 **LỖI XỬ LÝ THANH TOÁN**\n"
                             f"Transaction: `{tid}`\n"
+                            f"💰 Số tiền: {payment.get('transferAmount', '?'):,}đ\n"
+                            f"📝 Nội dung: {payment.get('content', '?')}\n"
                             f"Lỗi: {str(e)[:200]}\n"
                             f"⚠️ Cần kiểm tra thủ công!"
                         )
