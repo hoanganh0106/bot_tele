@@ -194,12 +194,14 @@ ALL_CATEGORIES = {
 # ============================================
 # CACHE + PARALLEL API LOADING (TỐI ƯU TỐC ĐỘ)
 # ============================================
-from concurrent.futures import ThreadPoolExecutor
 
 _api_cache = {"data": None, "expiry": 0}
-API_CACHE_TTL = 120          # 2 phút — sản phẩm không thay đổi nhanh
-API_STALE_TTL = 600          # 10 phút — cho phép trả cache cũ khi đang refresh
+API_CACHE_TTL = 120          # 2 phút — cache "tươi"
+API_STALE_TTL = 1800         # 30 phút — luôn trả cache cũ, KHÔNG BAO GIỜ block user
 _cache_refreshing = False    # Flag tránh refresh đồng thời
+
+# Thread pool cố định — tránh tạo mới mỗi lần refresh
+_api_executor = ThreadPoolExecutor(max_workers=3, thread_name_prefix="api")
 
 # Circuit breaker: tạm ngắt API liên tục bị lỗi
 _circuit_breaker = {
@@ -272,14 +274,12 @@ def invalidate_cache():
 
 def _do_refresh_products() -> tuple[dict, int]:
     """Gọi đồng thời cả 2 API, merge với custom products.
-    Chạy bởi cả foreground (khi cache trống) và background refresh.
+    Dùng persistent thread pool — không tạo mới mỗi lần.
     """
-    # Gọi 2 API song song
-    with ThreadPoolExecutor(max_workers=2, thread_name_prefix="api") as executor:
-        f1 = executor.submit(_fetch_api1)
-        f2 = executor.submit(_fetch_api2)
-        products1, balance1 = f1.result(timeout=15)
-        products2, balance2 = f2.result(timeout=15)
+    f1 = _api_executor.submit(_fetch_api1)
+    f2 = _api_executor.submit(_fetch_api2)
+    products1, balance1 = f1.result(timeout=10)
+    products2, balance2 = f2.result(timeout=10)
 
     products = products1 if products1 else {}
     balance = balance1 or 0
@@ -303,11 +303,46 @@ def _do_refresh_products() -> tuple[dict, int]:
     return products, balance
 
 
+def get_products_cached() -> tuple[dict, int]:
+    """⚡ FAST PATH: Trả cache ngay lập tức (<0.1ms), KHÔNG BAO GIỜ block.
+    Nếu cache hết hạn → trigger background refresh, vẫn trả cache cũ.
+    Dùng cho button handlers cần phản hồi nhanh.
+    """
+    global _cache_refreshing
+    
+    # Có cache → trả ngay, trigger refresh nếu cần
+    if _api_cache["data"]:
+        now = time.time()
+        if now >= _api_cache["expiry"] and not _cache_refreshing:
+            # Cache hết hạn → refresh ngầm, KHÔNG chờ
+            _cache_refreshing = True
+            def _bg():
+                global _api_cache, _cache_refreshing
+                try:
+                    products, balance = _do_refresh_products()
+                    if products:
+                        _api_cache = {
+                            "data": (products, balance),
+                            "expiry": time.time() + API_CACHE_TTL,
+                            "stale_expiry": time.time() + API_STALE_TTL,
+                        }
+                except Exception as e:
+                    logger.error(f"Background refresh error: {e}")
+                finally:
+                    _cache_refreshing = False
+            Thread(target=_bg, daemon=True).start()
+        return _api_cache["data"]
+    
+    # Không có cache → phải chờ (chỉ xảy ra lần đầu khởi động)
+    return get_all_products_merged()
+
+
 def get_all_products_merged(force_refresh: bool = False) -> tuple[dict, int]:
+    """Full refresh — dùng khi force_refresh hoặc cache trống."""
     global _api_cache, _cache_refreshing
     now = time.time()
 
-    # 1. Cache còn tươi → trả ngay (< 1ms)
+    # 1. Cache còn tươi → trả ngay (<0.1ms)
     if not force_refresh and _api_cache["data"] and now < _api_cache["expiry"]:
         return _api_cache["data"]
 
@@ -622,8 +657,8 @@ async def cmd_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = await update.message.reply_text("⏳ Đang tải sản phẩm...")
 
     try:
-        # Async: không block event loop khi cache hết hạn
-        products, balance = await asyncio.to_thread(get_all_products_merged)
+        # Fast path: trả cache ngay, không chờ API
+        products, balance = get_products_cached()
         if not products:
             await msg.edit_text("❌ Không thể tải sản phẩm lúc này. Vui lòng thử lại sau!")
             return
@@ -671,7 +706,7 @@ async def handle_product_select(update: Update, context: ContextTypes.DEFAULT_TY
     context.user_data["selected_product"] = product_key
 
     # Lấy thông tin sản phẩm (async — không block event loop)
-    products, _ = await asyncio.to_thread(get_all_products_merged)
+    products, _ = get_products_cached()
     if not products or product_key not in products:
         await query.edit_message_text("❌ Sản phẩm không tồn tại hoặc server lỗi!")
         return
@@ -1114,7 +1149,7 @@ async def handle_back_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     # Hiển thị lại menu trực tiếp trên message hiện tại
-    products, _ = await asyncio.to_thread(get_all_products_merged)
+    products, _ = get_products_cached()
     if not products:
         await query.edit_message_text("❌ Không thể tải sản phẩm. Gõ /menu để thử lại.")
         return
@@ -2263,7 +2298,7 @@ async def handle_category_click(update: Update, context: ContextTypes.DEFAULT_TY
         return
 
     cat_id = data.replace("viewcat_", "")
-    products, _ = await asyncio.to_thread(get_all_products_merged)
+    products, _ = get_products_cached()
     if not products:
         await query.edit_message_text("❌ Lỗi tải dữ liệu.")
         return
@@ -3418,13 +3453,12 @@ async def _periodic_order_cleanup(application):
 
 
 async def _periodic_product_refresh():
-    """Background refresh sản phẩm mỗi 90 giây.
+    """Background refresh sản phẩm mỗi 60 giây.
     Giữ cache luôn tươi — user không bao giờ phải chờ API.
-    FIX: Dùng asyncio.to_thread() để KHÔNG block event loop.
-    Trước đây _do_refresh_products() block 10-30s mỗi 90s → bot đơ.
+    Dùng asyncio.to_thread() để KHÔNG block event loop.
     """
     while True:
-        await asyncio.sleep(90)
+        await asyncio.sleep(60)
         try:
             products, balance = await asyncio.to_thread(_do_refresh_products)
             if products:

@@ -41,7 +41,7 @@ class CTVApi:
         Returns: (products_dict, balance) hoặc (None, 0) nếu lỗi
         """
         try:
-            r = self.session.get(f"{self.base_url}/api/dealer/stock", timeout=10)
+            r = self.session.get(f"{self.base_url}/api/dealer/stock", timeout=5)
             data = r.json()
             if data.get("success"):
                 products = data["products"]
@@ -144,7 +144,7 @@ class CrmTeacherApi:
         url = f"{self.base_url}/products"
         try:
             logger.info(f"CRM API: Fetching products from {url}")
-            r = self.session.get(url, timeout=10)
+            r = self.session.get(url, timeout=5)
             logger.info(f"CRM API: Response status={r.status_code}, length={len(r.text)}")
             data = r.json()
 
