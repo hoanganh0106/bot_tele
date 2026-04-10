@@ -3195,6 +3195,51 @@ async def handle_referral_home(update: Update, context: ContextTypes.DEFAULT_TYP
     await query.edit_message_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(buttons))
 
 
+async def cmd_referral(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Lệnh /referral hiên thị trang giới thiệu."""
+    user_id = update.effective_user.id
+    
+    bot_info = await context.bot.get_me()
+    bot_username = bot_info.username
+    ref_link = f"https://t.me/{bot_username}?start=ref_{user_id}"
+    
+    stats = db.get_referral_stats(user_id)
+    reward = db.get_setting("referral_reward", 1000)
+    new_user_rw = db.get_setting("referral_new_user_reward", 500)
+    ref_enabled = db.get_setting("referral_enabled", True)
+    
+    status = "✅ Đang hoạt động" if ref_enabled else "⏸️ Tạm dừng"
+    
+    new_user_line = ""
+    if new_user_rw > 0:
+        new_user_line = f"🎁 Bạn bè nhận: <b>{format_money(new_user_rw)}</b>\n"
+    
+    text = (
+        "🎁 <b>GIỚI THIỆU BẠN BÈ</b>\n"
+        "━━━━━━━━━━━━━━━━━━\n\n"
+        f"📎 <b>Link mời của bạn:</b>\n"
+        f"👉 <a href=\"{ref_link}\">Bấm vào đây để mở link</a>\n\n"
+        f"📋 <b>Copy link:</b>\n"
+        f"<code>{ref_link}</code>\n\n"
+        f"💰 Bạn nhận: <b>{format_money(reward)}/người</b>\n"
+        f"{new_user_line}"
+        f"📊 Trạng thái: {status}\n\n"
+        f"👥 Đã giới thiệu: <b>{stats['referral_count']}</b> người\n"
+        f"💵 Tổng thưởng: <b>{format_money(stats['referral_earnings'])}</b>\n\n"
+        "💡 <i>Bấm vào link xanh để xem, hoặc bấm vào ô code để copy!</i>"
+    )
+    
+    share_text = f"Mua tài khoản Premium giá rẻ, tự động 24/7! Bấm vào đây: {ref_link}"
+    
+    buttons = [
+        [InlineKeyboardButton("📤 Chia sẻ cho bạn bè", switch_inline_query=share_text)],
+        [InlineKeyboardButton("💰 Xem ví", callback_data="wallet_home")],
+        [InlineKeyboardButton("⬅️ Quay lại", callback_data="back_start")],
+    ]
+    
+    await update.message.reply_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(buttons))
+
+
 async def handle_copy_ref(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Gửi link ref dạng message riêng để user copy dễ dàng."""
     query = update.callback_query
@@ -3608,6 +3653,7 @@ def main():
     app.add_handler(CommandHandler("help", cmd_help))
     app.add_handler(CommandHandler("menu", cmd_menu))
     app.add_handler(CommandHandler("myorders", cmd_myorders))
+    app.add_handler(CommandHandler("referral", cmd_referral))
 
     # Admin commands
     app.add_handler(CommandHandler("admin", cmd_admin))
