@@ -72,17 +72,6 @@ class CTVApi:
             logger.error(f"API unexpected error: {e}")
             return None, 0
 
-    def get_balance(self):
-        """Lấy số dư CTV."""
-        try:
-            r = self.session.get(f"{self.base_url}/api/dealer/balance", timeout=10)
-            data = r.json()
-            if data.get("success"):
-                return data.get("balance", 0)
-            return 0
-        except Exception as e:
-            logger.error(f"Balance check error: {e}")
-            return 0
 
     def buy(self, product_key: str, qty: int, emails: list = None, order_code: str = None):
         """Mua hàng từ API.
@@ -198,20 +187,6 @@ class CrmTeacherApi:
             logger.error(f"CRMTeacher API stock error: {e}")
             return {}, 0
 
-    def get_balance(self):
-        try:
-            r = self.session.get(f"{self.base_url}/balance", timeout=10)
-            data = r.json()
-            if isinstance(data, dict):
-                # Format mới: {"success": true, "data": {"balance": 0.0}}
-                inner = data.get("data", {})
-                if isinstance(inner, dict) and "balance" in inner:
-                    return inner.get("balance", 0)
-                # Format cũ: {"balance": 0}
-                return data.get("balance", 0)
-            return 0
-        except Exception as e:
-            return 0
 
     def buy(self, product_key: str, qty: int, emails: list = None, order_code: str = None):
         try:

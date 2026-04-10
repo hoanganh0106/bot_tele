@@ -177,8 +177,6 @@ def generate_qr_url(amount: int, content: str) -> str:
 
 
 
-
-
 ALL_CATEGORIES = {
     "gpt": ["ChatGPT", "🤖"],
     "grok": ["Grok", "🔮"],
@@ -395,8 +393,9 @@ def invalidate_categories_cache():
     global _categories_cache
     _categories_cache = {"data": None, "expiry": 0}
 
-def classify_product(key: str, info: dict) -> tuple:
-    merged_cats = get_all_categories_merged()
+def classify_product(key: str, info: dict, merged_cats: dict = None) -> tuple:
+    if merged_cats is None:
+        merged_cats = get_all_categories_merged()
 
     # 1. Ưu tiên cao nhất: admin đã chỉ định danh mục thủ công
     custom_cat = db.get_custom_category(key)
@@ -424,6 +423,7 @@ def classify_product(key: str, info: dict) -> tuple:
 
 def build_category_grid(products, callback_prefix, is_admin=False):
     categories = {}
+    merged_cats = get_all_categories_merged()  # Fetch 1 lần, dùng cho tất cả products
     for key, info in products.items():
         stock = info.get("stock", 0)
         
@@ -431,7 +431,7 @@ def build_category_grid(products, callback_prefix, is_admin=False):
             if db.is_product_hidden(key) or stock == 0:
                 continue
             
-        cat_name, icon, cat_id = classify_product(key, info)
+        cat_name, icon, cat_id = classify_product(key, info, merged_cats)
         if cat_id not in categories:
             categories[cat_id] = {"name": cat_name, "icon": icon, "count": 0}
         
@@ -622,7 +622,8 @@ async def cmd_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = await update.message.reply_text("⏳ Đang tải sản phẩm...")
 
     try:
-        products, balance = get_all_products_merged()
+        # Async: không block event loop khi cache hết hạn
+        products, balance = await asyncio.to_thread(get_all_products_merged)
         if not products:
             await msg.edit_text("❌ Không thể tải sản phẩm lúc này. Vui lòng thử lại sau!")
             return
@@ -669,8 +670,8 @@ async def handle_product_select(update: Update, context: ContextTypes.DEFAULT_TY
     
     context.user_data["selected_product"] = product_key
 
-    # Lấy thông tin sản phẩm (dùng cache hiện tại, không cần force refresh)
-    products, _ = get_all_products_merged()
+    # Lấy thông tin sản phẩm (async — không block event loop)
+    products, _ = await asyncio.to_thread(get_all_products_merged)
     if not products or product_key not in products:
         await query.edit_message_text("❌ Sản phẩm không tồn tại hoặc server lỗi!")
         return
@@ -1113,7 +1114,7 @@ async def handle_back_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     # Hiển thị lại menu trực tiếp trên message hiện tại
-    products, _ = get_all_products_merged()
+    products, _ = await asyncio.to_thread(get_all_products_merged)
     if not products:
         await query.edit_message_text("❌ Không thể tải sản phẩm. Gõ /menu để thử lại.")
         return
@@ -2209,100 +2210,6 @@ async def cmd_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(buttons))
 
 
-async def cmd_wallet_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Admin chỉnh số dư ví user. Cú pháp: /wallet <user_id> <+/- số tiền>"""
-    if not is_admin(update.effective_user.id):
-        return await update.message.reply_text("⛔ Tính năng chỉ dành cho Admin.")
-    
-    args = context.args
-    if not args or len(args) < 2:
-        await update.message.reply_text(
-            "💰 **QUẢN LÝ VÍ USER**\n"
-            "━━━━━━━━━━━━━━━━━━\n\n"
-            "Cú pháp: `/wallet <user_id> <số tiền>`\n\n"
-            "📥 Cộng tiền: `/wallet 123456 +5000`\n"
-            "📤 Trừ tiền: `/wallet 123456 -3000`\n"
-            "📋 Xem ví: `/wallet 123456`",
-            parse_mode="Markdown"
-        )
-        return
-
-    try:
-        target_user_id = int(args[0])
-    except ValueError:
-        return await update.message.reply_text("❌ User ID phải là số.")
-
-    user_info = db.get_user(target_user_id)
-    current_balance = db.get_user_balance(target_user_id)
-    user_name = user_info.get("first_name") or user_info.get("username") or str(target_user_id)
-    
-    # Chỉ xem ví
-    if len(args) == 1:
-        await update.message.reply_text(
-            f"💰 **Ví của {user_name}** (ID: `{target_user_id}`)\n"
-            f"━━━━━━━━━━━━━━━━━━\n"
-            f"💵 Số dư: **{format_money(current_balance)}**\n"
-            f"💳 Đã nạp: **{format_money(user_info.get('total_deposited', 0))}**\n"
-            f"🛒 Đã chi: **{format_money(user_info.get('total_spent', 0))}**\n"
-            f"🎁 Thưởng ref: **{format_money(user_info.get('referral_earnings', 0))}**",
-            parse_mode="Markdown"
-        )
-        return
-
-    # Chỉnh ví
-    amount_str = args[1].replace(",", "").replace(".", "")
-    try:
-        amount = int(amount_str)
-    except ValueError:
-        return await update.message.reply_text("❌ Số tiền không hợp lệ. VD: `+5000` hoặc `-3000`", parse_mode="Markdown")
-
-    if amount > 0:
-        new_balance = db.add_balance(target_user_id, amount, reason="admin_add")
-        action = f"➕ Cộng **{format_money(amount)}**"
-    elif amount < 0:
-        deduct_amount = abs(amount)
-        if deduct_amount > current_balance:
-            return await update.message.reply_text(
-                f"❌ Không thể trừ {format_money(deduct_amount)} — Số dư chỉ có {format_money(current_balance)}"
-            )
-        db.deduct_balance(target_user_id, deduct_amount)
-        new_balance = db.get_user_balance(target_user_id)
-        action = f"➖ Trừ **{format_money(deduct_amount)}**"
-    else:
-        return await update.message.reply_text("❌ Số tiền phải khác 0.")
-
-    await update.message.reply_text(
-        f"✅ **ĐÃ CẬP NHẬT VÍ**\n"
-        f"━━━━━━━━━━━━━━━━━━\n"
-        f"👤 User: **{user_name}** (`{target_user_id}`)\n"
-        f"📝 Thao tác: {action}\n"
-        f"💵 Số dư mới: **{format_money(new_balance)}**",
-        parse_mode="Markdown"
-    )
-    
-    # Thông báo cho user
-    try:
-        if amount > 0:
-            await context.bot.send_message(
-                chat_id=target_user_id,
-                text=(
-                    f"💰 **Admin đã cộng {format_money(amount)} vào ví của bạn!**\n"
-                    f"💵 Số dư mới: **{format_money(new_balance)}**"
-                ),
-                parse_mode="Markdown"
-            )
-        else:
-            await context.bot.send_message(
-                chat_id=target_user_id,
-                text=(
-                    f"💰 **Admin đã trừ {format_money(abs(amount))} từ ví của bạn.**\n"
-                    f"💵 Số dư mới: **{format_money(new_balance)}**"
-                ),
-                parse_mode="Markdown"
-            )
-    except Exception:
-        pass
-
 
 async def handle_category_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -2356,7 +2263,7 @@ async def handle_category_click(update: Update, context: ContextTypes.DEFAULT_TY
         return
 
     cat_id = data.replace("viewcat_", "")
-    products, _ = get_all_products_merged()
+    products, _ = await asyncio.to_thread(get_all_products_merged)
     if not products:
         await query.edit_message_text("❌ Lỗi tải dữ liệu.")
         return
@@ -3570,10 +3477,10 @@ async def _payment_processor(application):
     
     CRITICAL: Không bao giờ chết — tự restart nếu crash.
     """
-    logger.info("💳 Payment processor started — polling every 5s")
+    logger.info("💳 Payment processor started — polling every 3s")
     while True:
         try:
-            await asyncio.sleep(5)
+            await asyncio.sleep(3)
             payments = db.get_unprocessed_payments()
             if payments:
                 logger.info(f"💳 Found {len(payments)} unprocessed payment(s)")
@@ -3826,6 +3733,11 @@ async def post_init(application):
 
     # Dọn dẹp đơn pending cũ từ lần chạy trước
     await _cleanup_stale_orders(application)
+
+    # Archive đơn cũ > 7 ngày → giữ DB nhẹ
+    archived = db.cleanup_old_orders(days=7)
+    if archived:
+        logger.info(f"🗑️ Archived {archived} old orders at startup")
 
     # Job định kỳ hủy đơn quá hạn
     asyncio.create_task(_periodic_order_cleanup(application))

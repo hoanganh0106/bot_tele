@@ -621,6 +621,67 @@ class Database:
                 data["incoming_payments"] = payments[-500:]
             self._write(data, immediate=True)
 
+    def cleanup_old_orders(self, days: int = 7) -> int:
+        """Archive đơn hàng đã hoàn tất/hủy quá N ngày.
+        Giữ DB nhẹ → find_order_by_content nhanh hơn.
+        Returns: số đơn đã archive.
+        """
+        import json as _json
+        cutoff = datetime.now()
+        archived = 0
+        
+        with self.lock:
+            data = self._read()
+            orders = data.get("orders", {})
+            to_archive = {}
+            
+            for code, order in list(orders.items()):
+                # Chỉ archive đơn đã xong (paid, cancelled, cancelled_timeout, failed đã cũ)
+                if order.get("status") not in ("paid", "cancelled", "cancelled_timeout"):
+                    continue
+                created_str = order.get("created_at", "")
+                if not created_str:
+                    continue
+                try:
+                    created = datetime.fromisoformat(created_str)
+                    if (cutoff - created).days >= days:
+                        to_archive[code] = order
+                except (ValueError, TypeError):
+                    continue
+            
+            if not to_archive:
+                return 0
+            
+            # Lưu archive ra file riêng
+            archive_path = self.filepath.replace(".json", "_archive.json")
+            existing_archive = {}
+            if os.path.exists(archive_path):
+                try:
+                    with open(archive_path, "r", encoding="utf-8") as f:
+                        existing_archive = _json.load(f)
+                except Exception:
+                    existing_archive = {}
+            
+            existing_archive.update(to_archive)
+            try:
+                with open(archive_path, "w", encoding="utf-8") as f:
+                    _json.dump(existing_archive, f, ensure_ascii=False, indent=2)
+            except Exception as e:
+                logger.error(f"Failed to write archive: {e}")
+                return 0
+            
+            # Xóa khỏi DB chính
+            for code in to_archive:
+                del orders[code]
+            
+            archived = len(to_archive)
+            self._write(data, immediate=True)
+        
+        if archived:
+            logger.info(f"🗑️ Archived {archived} old orders (>{days} days)")
+        return archived
+
+
     # === STATS ===
     def get_stats(self) -> dict:
         with self.lock:

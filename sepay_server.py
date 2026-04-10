@@ -107,20 +107,27 @@ def create_flask_app():
 
 
 def start_webhook_server(port: int, bot_db=None):
-    """Start Flask webhook server.
+    """Start webhook server (Waitress production hoặc Flask dev fallback).
 
     Args:
-        port: Port cho Flask server
+        port: Port cho server
         bot_db: Database instance từ bot.py (chia sẻ cache in-memory)
     """
     global shared_db
     shared_db = bot_db
 
     flask_app = create_flask_app()
-    logger.info(f"Starting SePay webhook server on port {port}")
-    flask_app.run(
-        host="0.0.0.0",
-        port=port,
-        debug=False,
-        use_reloader=False
-    )
+    
+    # Ưu tiên Waitress (production, multi-threaded)
+    try:
+        from waitress import serve
+        logger.info(f"Starting SePay webhook server on port {port} (Waitress)")
+        serve(flask_app, host="0.0.0.0", port=port, threads=4, _quiet=True)
+    except ImportError:
+        logger.warning("Waitress not installed, falling back to Flask dev server. Run: pip install waitress")
+        flask_app.run(
+            host="0.0.0.0",
+            port=port,
+            debug=False,
+            use_reloader=False
+        )
