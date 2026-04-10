@@ -157,6 +157,10 @@ def ui_btn(btn_key: str, text: str = None, callback_data: str = None, url: str =
     kwargs = {}
     if emoji_id:
         kwargs["api_kwargs"] = {"icon_custom_emoji_id": emoji_id}
+        # Xóa emoji mặc định ở đầu text để không hiện cả 2 icon
+        # Text nút luôn theo dạng "EMOJI TEXT", vd: "🛒 MENU SẢN PHẨM"
+        if ' ' in display_text:
+            display_text = display_text.split(' ', 1)[1]
     if url:
         return InlineKeyboardButton(display_text, url=url, **kwargs)
     return InlineKeyboardButton(display_text, callback_data=callback_data or btn_key, **kwargs)
@@ -471,8 +475,8 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Lấy welcome message tùy chỉnh hoặc dùng mặc định
     custom_welcome = db.get_welcome_message()
     if custom_welcome:
-        # Thay thế biến trong template
-        text = custom_welcome.replace("{name}", user.first_name or "bạn")
+        # Thay thế biến trong template (escape HTML cho an toàn)
+        text = custom_welcome.replace("{name}", escape_html(user.first_name or "bạn"))
         text = text.replace("{balance}", format_money(balance))
         text = text.replace("{id}", str(user.id))
         text += f"\n{welcome_bonus}" if welcome_bonus else ""
@@ -1791,7 +1795,55 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     ])
                 )
             else:
-                db.set_welcome_message(text)
+                # Chuyển đổi custom emoji entities thành HTML <tg-emoji> tags
+                # để Telegram có thể render đúng khi gửi lại cho user
+                msg = update.message
+                raw_text = msg.text or ""
+                entities = msg.entities or []
+                
+                # Tách các custom emoji entity
+                custom_emojis = [
+                    e for e in entities
+                    if e.type == "custom_emoji" and e.custom_emoji_id
+                ]
+                
+                if custom_emojis:
+                    # Build HTML text với custom emoji tags
+                    # Telegram entities dùng UTF-16 offset, cần convert
+                    utf16_text = raw_text.encode("utf-16-le")
+                    result_parts = []
+                    last_pos = 0  # Vị trí UTF-16 (tính bằng 2-byte units)
+                    
+                    # Sort entities theo offset
+                    sorted_emojis = sorted(custom_emojis, key=lambda e: e.offset)
+                    
+                    for entity in sorted_emojis:
+                        # Lấy phần text trước emoji, escape HTML
+                        before_bytes = utf16_text[last_pos * 2 : entity.offset * 2]
+                        before_text = before_bytes.decode("utf-16-le")
+                        result_parts.append(escape_html(before_text))
+                        
+                        # Lấy text của emoji
+                        emoji_bytes = utf16_text[entity.offset * 2 : (entity.offset + entity.length) * 2]
+                        emoji_text = emoji_bytes.decode("utf-16-le")
+                        
+                        # Tạo tg-emoji tag
+                        result_parts.append(
+                            f'<tg-emoji emoji-id="{entity.custom_emoji_id}">{escape_html(emoji_text)}</tg-emoji>'
+                        )
+                        last_pos = entity.offset + entity.length
+                    
+                    # Phần text còn lại sau emoji cuối cùng
+                    remaining_bytes = utf16_text[last_pos * 2:]
+                    remaining_text = remaining_bytes.decode("utf-16-le")
+                    result_parts.append(escape_html(remaining_text))
+                    
+                    html_welcome = "".join(result_parts)
+                else:
+                    # Không có custom emoji, giữ nguyên text (cho phép HTML thủ công)
+                    html_welcome = raw_text
+                
+                db.set_welcome_message(html_welcome)
                 await update.message.reply_text(
                     f"✅ Đã cập nhật lời chào /start!\n\n"
                     f"📝 Xem trước: gõ /start để kiểm tra.",
@@ -3169,36 +3221,45 @@ async def handle_back_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Quay lại màn hình /start."""
     query = update.callback_query
     await query.answer()
-    user_id = query.from_user.id
+    user = query.from_user
+    user_id = user.id
     
     balance = db.get_user_balance(user_id)
     
-    text = (
-        f"👋 Xin chào **{query.from_user.first_name}**!\n\n"
-        "Chào mừng bạn đến với hệ thống bán tài khoản Premium tự động 🤖\n\n"
-        "🔹 **Thanh toán tự động** 24/7, xác nhận trong 1 phút\n"
-        "🔹 **Nhận tài khoản ngay** sau khi thanh toán\n"
-        "🔹 **Hỗ trợ tận tình** nhanh chóng\n\n"
-        f"💰 **Số dư ví:** {format_money(balance)}\n\n"
-        "👇 Bấm vào nút bên dưới để chọn sản phẩm 👇"
-    )
+    # Lấy welcome message tùy chỉnh hoặc dùng mặc định (giống cmd_start)
+    custom_welcome = db.get_welcome_message()
+    if custom_welcome:
+        text = custom_welcome.replace("{name}", escape_html(user.first_name or "bạn"))
+        text = text.replace("{balance}", format_money(balance))
+        text = text.replace("{id}", str(user.id))
+    else:
+        text = (
+            f"👋 Xin chào <b>{escape_html(user.first_name)}</b>!\n\n"
+            "Chào mừng bạn đến với hệ thống bán tài khoản Premium tự động 🤖\n\n"
+            "🔹 <b>Thanh toán tự động</b> 24/7, xác nhận trong 1 phút\n"
+            "🔹 <b>Nhận tài khoản ngay</b> sau khi thanh toán\n"
+            "🔹 <b>Hỗ trợ tận tình</b> nhanh chóng\n\n"
+            f"💰 <b>Số dư ví:</b> {format_money(balance)}\n\n"
+            "👇 Bấm vào nút bên dưới để chọn sản phẩm 👇"
+        )
     
     buttons = [
-        [InlineKeyboardButton("🛒 MENU SẢN PHẨM", callback_data="reload_menu")],
+        [ui_btn("menu", "🛒 MENU SẢN PHẨM", callback_data="reload_menu")],
         [
-            InlineKeyboardButton(f"💰 Ví: {format_money(balance)}", callback_data="wallet_home"),
-            InlineKeyboardButton("🎁 Giới thiệu", callback_data="referral_home"),
+            ui_btn("wallet", f"💰 Ví: {format_money(balance)}", callback_data="wallet_home"),
+            ui_btn("referral", "🎁 Giới thiệu", callback_data="referral_home"),
         ],
         [
-            InlineKeyboardButton("📋 Lịch sử mua hàng", callback_data="btn_myorders"),
-            InlineKeyboardButton("📞 Liên hệ Admin", url="https://t.me/hoanganh1162")
+            ui_btn("history", "📋 Lịch sử mua hàng", callback_data="btn_myorders"),
+            ui_btn("contact", "📞 Liên hệ Admin", url="https://t.me/hoanganh1162")
         ]
     ]
     
     if is_admin(user_id):
         buttons.append([InlineKeyboardButton("⚙️ Quản trị Admin", callback_data="admin_home")])
+        text += "\n\n<i>🔑 Xin chào Admin, bảng Quản trị đã được mở khóa!</i>"
     
-    await query.edit_message_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(buttons))
+    await query.edit_message_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(buttons))
 
 
 async def handle_noop(update: Update, context: ContextTypes.DEFAULT_TYPE):
