@@ -2,12 +2,16 @@
 Database module — lưu trữ dữ liệu bot bằng JSON file.
 Thread-safe cho multi-thread access (webhook + bot).
 
-Tối ưu: dùng in-memory cache, chỉ đọc file 1 lần khi khởi tạo.
+Tối ưu:
+- In-memory cache — chỉ đọc file 1 lần khi khởi tạo
+- Debounced write — gom nhiều thao tác, chỉ flush 1 lần mỗi 2s
+- Atomic write — ghi file .tmp rồi rename để tránh corruption
 """
 
 import json
 import os
 import threading
+import tempfile
 import logging
 from datetime import datetime
 
@@ -32,11 +36,15 @@ _DEFAULT_DATA = {
     "user_list": []
 }
 
+DEBOUNCE_INTERVAL = 2.0  # Giây — gom writes trong khoảng này
+
 
 class Database:
     def __init__(self, filepath: str):
         self.filepath = filepath
         self.lock = threading.Lock()
+        self._debounce_timer = None
+        self._pending_write = False
         self._ensure_file()
         self._cache = self._read_from_disk()
 
@@ -65,21 +73,64 @@ class Database:
         """Trả về cache (không đọc file)."""
         return self._cache
 
-    def _write(self, data: dict):
-        """Ghi file + cập nhật cache."""
-        self._cache = data
+    def _flush_to_disk(self):
+        """Ghi cache hiện tại ra file (atomic write)."""
+        self._pending_write = False
         try:
-            with open(self.filepath, "w", encoding="utf-8") as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
+            dir_name = os.path.dirname(self.filepath)
+            with tempfile.NamedTemporaryFile(
+                mode="w", suffix=".tmp", dir=dir_name,
+                delete=False, encoding="utf-8"
+            ) as tmp:
+                json.dump(self._cache, tmp, ensure_ascii=False, indent=2)
+                tmp_path = tmp.name
+            os.replace(tmp_path, self.filepath)
         except Exception as e:
             logger.error(f"Failed to write database: {e}")
+            try:
+                with open(self.filepath, "w", encoding="utf-8") as f:
+                    json.dump(self._cache, f, ensure_ascii=False, indent=2)
+            except Exception as e2:
+                logger.error(f"Fallback write also failed: {e2}")
+
+    def _write(self, data: dict, immediate: bool = False):
+        """Cập nhật cache + schedule ghi file.
+        
+        immediate=True: ghi ngay (orders, payments — dữ liệu critical)
+        immediate=False: debounce 2s (settings, prices — dữ liệu ít quan trọng)
+        """
+        self._cache = data
+        
+        if immediate:
+            if self._debounce_timer:
+                self._debounce_timer.cancel()
+                self._debounce_timer = None
+            self._flush_to_disk()
+            return
+        
+        self._pending_write = True
+        if self._debounce_timer:
+            self._debounce_timer.cancel()
+        self._debounce_timer = threading.Timer(DEBOUNCE_INTERVAL, self._flush_to_disk)
+        self._debounce_timer.daemon = True
+        self._debounce_timer.start()
+
+    def flush(self):
+        """Force flush pending writes to disk. Gọi khi shutdown."""
+        with self.lock:
+            if self._debounce_timer:
+                self._debounce_timer.cancel()
+                self._debounce_timer = None
+            if self._pending_write:
+                self._flush_to_disk()
+
 
     # === ORDERS ===
     def save_order(self, order_code: str, order: dict):
         with self.lock:
             data = self._read()
             data["orders"][order_code] = order
-            self._write(data)
+            self._write(data, immediate=True)
 
     def get_order(self, order_code: str) -> dict | None:
         with self.lock:
@@ -101,6 +152,31 @@ class Database:
                 if order.get("status") == "pending"
             }
 
+    def get_retryable_orders(self, max_retries: int = 3, max_age_minutes: int = 30) -> dict:
+        """Lấy đơn failed gần đây có thể retry (lỗi API tạm thời)."""
+        with self.lock:
+            result = {}
+            for code, order in self._read().get("orders", {}).items():
+                if order.get("status") != "failed":
+                    continue
+                error = order.get("error", "")
+                # Chỉ retry các lỗi tạm thời (API timeout, connection, exception)
+                retriable_keywords = ["timeout", "kết nối", "connection", "exception", "server", "phản hồi"]
+                if not any(kw in error.lower() for kw in retriable_keywords):
+                    continue
+                if order.get("retry_count", 0) >= max_retries:
+                    continue
+                paid_at = order.get("paid_at", "")
+                if paid_at:
+                    try:
+                        created = datetime.fromisoformat(paid_at)
+                        if (datetime.now() - created).total_seconds() > max_age_minutes * 60:
+                            continue
+                    except (ValueError, TypeError):
+                        continue
+                result[code] = dict(order)
+            return result
+
     def cancel_order_if_pending(self, order_code: str) -> bool:
         """Atomic: hủy đơn CHỈ KHI status vẫn là 'pending'.
         Trả về True nếu đã hủy, False nếu đơn đã được xử lý bởi thread khác.
@@ -112,7 +188,7 @@ class Database:
             if not order or order.get("status") != "pending":
                 return False
             order["status"] = "cancelled_timeout"
-            self._write(data)
+            self._write(data, immediate=True)
             return True
 
     def complete_order_payment(self, order_code: str, updates: dict) -> dict | None:
@@ -125,12 +201,25 @@ class Database:
         with self.lock:
             data = self._read()
             order = data["orders"].get(order_code)
-            if not order or order.get("status") not in ("pending", "failed"):
+            if not order or order.get("status") not in ("pending", "failed", "cancelled_timeout"):
                 return None
             # Apply tất cả updates (status, paid_at, items, etc.) trong 1 lock
             order.update(updates)
-            self._write(data)
+            self._write(data, immediate=True)
             return dict(order)  # Trả bản sao an toàn
+
+    def update_order_fields(self, order_code: str, updates: dict) -> bool:
+        """Cập nhật các trường trong đơn hàng (không kiểm tra status).
+        Dùng cho partial payment update, retry count, v.v.
+        """
+        with self.lock:
+            data = self._read()
+            order = data["orders"].get(order_code)
+            if not order:
+                return False
+            order.update(updates)
+            self._write(data, immediate=True)
+            return True
 
     def recover_stuck_orders(self) -> int:
         """Chuyển đơn kẹt 'processing' về 'pending' (phòng crash cũ)."""
@@ -420,7 +509,7 @@ class Database:
             
             popped = current_list[:qty]
             inv[product_key] = current_list[qty:]
-            self._write(data)
+            self._write(data, immediate=True)
             return popped
             
     def clear_custom_accounts(self, product_key: str):
@@ -492,7 +581,7 @@ class Database:
                 # Giữ tối đa 1000 giao dịch gần nhất
                 if len(txns) > 1000:
                     data["processed_transactions"] = txns[-1000:]
-                self._write(data)
+                self._write(data, immediate=True)
 
     # === INCOMING PAYMENTS (webhook store-then-poll) ===
     def store_incoming_payment(self, payment: dict) -> bool:
@@ -506,7 +595,7 @@ class Database:
                     if str(existing.get("id", "")) == tid:
                         return False
             payments.append(payment)
-            self._write(data)
+            self._write(data, immediate=True)
             return True
 
     def get_unprocessed_payments(self) -> list:
@@ -530,7 +619,7 @@ class Database:
             payments = data.get("incoming_payments", [])
             if len(payments) > 500:
                 data["incoming_payments"] = payments[-500:]
-            self._write(data)
+            self._write(data, immediate=True)
 
     # === STATS ===
     def get_stats(self) -> dict:
@@ -683,7 +772,7 @@ class Database:
             if reason == "deposit":
                 users[uid]["total_deposited"] = users[uid].get("total_deposited", 0) + amount
             new_balance = users[uid]["balance"]
-            self._write(data)
+            self._write(data, immediate=True)
             return new_balance
 
     def deduct_balance(self, user_id: int, amount: int) -> bool:
@@ -697,7 +786,7 @@ class Database:
                 return False
             users[uid]["balance"] = current - amount
             users[uid]["total_spent"] = users[uid].get("total_spent", 0) + amount
-            self._write(data)
+            self._write(data, immediate=True)
             return True
 
     # === DEPOSITS ===

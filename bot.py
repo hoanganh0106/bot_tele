@@ -353,12 +353,47 @@ def get_all_products_merged(force_refresh: bool = False) -> tuple[dict, int]:
             return _api_cache["data"]
         return {}, 0
 
+
+async def async_refresh_products_cache() -> tuple:
+    """Refresh cache sản phẩm bất đồng bộ — KHÔNG block event loop.
+    Dùng thay cho get_all_products_merged(force_refresh=True) trong async handlers.
+    """
+    global _api_cache
+    try:
+        products, balance = await asyncio.to_thread(_do_refresh_products)
+        if products:
+            _api_cache = {
+                "data": (products, balance),
+                "expiry": time.time() + API_CACHE_TTL,
+                "stale_expiry": time.time() + API_STALE_TTL,
+            }
+            return products, balance
+    except Exception as e:
+        logger.error(f"Async refresh failed: {e}")
+    # Fallback: trả cache cũ nếu có
+    if _api_cache["data"]:
+        return _api_cache["data"]
+    return {}, 0
+
+
+_categories_cache = {"data": None, "expiry": 0}
+
 def get_all_categories_merged() -> dict:
+    global _categories_cache
+    now = time.time()
+    if _categories_cache["data"] and now < _categories_cache["expiry"]:
+        return _categories_cache["data"]
     cats = dict(ALL_CATEGORIES)
     custom_cats = db.get_custom_category_defs()
     for cat_id, val in custom_cats.items():
         cats[cat_id] = val
+    _categories_cache = {"data": cats, "expiry": now + 60}
     return cats
+
+def invalidate_categories_cache():
+    """Xóa cache danh mục khi admin thay đổi."""
+    global _categories_cache
+    _categories_cache = {"data": None, "expiry": 0}
 
 def classify_product(key: str, info: dict) -> tuple:
     merged_cats = get_all_categories_merged()
@@ -1017,19 +1052,13 @@ async def handle_pay_partial(update: Update, context: ContextTypes.DEFAULT_TYPE)
     remain = total - wallet_amount
     new_balance = db.get_user_balance(user_id)
     
-    # Cập nhật đơn hàng: ghi nhận đã trả 1 phần
-    order_update = {
+    # Cập nhật đơn hàng: ghi nhận đã trả 1 phần (dùng method encapsulated)
+    db.update_order_fields(order_code, {
         "wallet_paid": wallet_amount,
         "remaining_amount": remain,
-    }
-    with db.lock:
-        data = db._read()
-        if order_code in data["orders"]:
-            data["orders"][order_code].update(order_update)
-            # Cập nhật total thành phần còn lại cần CK
-            data["orders"][order_code]["original_total"] = total
-            data["orders"][order_code]["total"] = remain
-            db._write(data)
+        "original_total": total,
+        "total": remain,
+    })
 
     qr_url = generate_qr_url(remain, order_code)
 
@@ -1304,12 +1333,23 @@ async def process_paid_order(context, order_code: str, payment_source: str = "se
         return True
 
     # Mua hàng từ API đối tác
-    # Validate product_key còn tồn tại trên API không
-    products, _ = get_all_products_merged(force_refresh=True)
+    # KHÔNG force_refresh — dùng cache (background task giữ data tươi mỗi 90s)
+    # FIX: force_refresh trước đây gây lỗi KHÔNG GIAO HÀNG:
+    #   API tạm down → products = {} → đơn bị marked 'failed' vĩnh viễn
+    products, _ = get_all_products_merged()
     api_custom_local = False
     if products and product_key in products:
         api_custom_local = products[product_key].get("is_custom_local", False)
-    
+
+    # Nếu cache hoàn toàn trống (hiếm — cả 2 API chết), thử refresh bất đồng bộ 1 lần
+    if not products:
+        try:
+            products, _ = await async_refresh_products_cache()
+            if products and product_key in products:
+                api_custom_local = products[product_key].get("is_custom_local", False)
+        except Exception:
+            pass
+
     if not api_custom_local and (not products or product_key not in products):
         # Sản phẩm đối tác đã bị xóa/đổi key → không gọi buy
         db.complete_order_payment(order_code, {
@@ -1345,10 +1385,17 @@ async def process_paid_order(context, order_code: str, payment_source: str = "se
         
         # Kiểm tra xem sản phẩm thuộc API nào
         source = products[product_key].get("api_source", "CTV")
+        # FIX: Wrap API buy trong asyncio.to_thread() để KHÔNG block event loop
+        # api.buy() có thể mất 30-180s cho sản phẩm phức tạp (slot_gpt_team)
+        # Trước đây block toàn bộ bot, không xử lý được message nào khác
         if source == "CRM":
-            result = crm_api.buy(product_key, qty, emails=emails if emails else None, order_code=order_code)
+            result = await asyncio.to_thread(
+                lambda: crm_api.buy(product_key, qty, emails=emails if emails else None, order_code=order_code)
+            )
         else:
-            result = api.buy(product_key, qty, emails=emails if emails else None)
+            result = await asyncio.to_thread(
+                lambda: api.buy(product_key, qty, emails=emails if emails else None)
+            )
 
         if result.get("success"):
             items = result.get("items", [])
@@ -1437,12 +1484,34 @@ async def process_paid_order(context, order_code: str, payment_source: str = "se
             return False
 
     except Exception as e:
-        logger.error(f"Error processing order {order_code}: {e}")
+        logger.error(f"Error processing order {order_code}: {e}", exc_info=True)
         db.complete_order_payment(order_code, {
             "status": "failed",
             "error": f"Exception: {str(e)}",
             "paid_at": datetime.now().isoformat()
         })
+
+        # CRITICAL: Thông báo cho khách và admin khi đơn bị lỗi exception
+        try:
+            await context.bot.send_message(
+                chat_id=user_id,
+                text=(
+                    f"❌ Đơn **#{order_code}** thanh toán thành công nhưng xử lý gặp lỗi!\n"
+                    f"Admin sẽ xử lý và giao hàng/hoàn tiền cho bạn sớm nhất."
+                ),
+                parse_mode="Markdown"
+            )
+        except Exception:
+            pass
+
+        await _notify_all_admins(context,
+            f"🚨 **ĐƠN LỖI EXCEPTION — CẦN XỬ LÝ GẤP**\n"
+            f"Mã: `{order_code}`\n"
+            f"👤 Khách: {format_user_link(order.get('username'), user_id)}\n"
+            f"Sản phẩm: {order.get('product_name', '?')} x{qty}\n"
+            f"Lỗi: `{str(e)[:200]}`\n"
+            f"💰 Khách đã thanh toán {format_money(order['total'])} — cần hoàn tiền hoặc giao tay!"
+        )
         return False
 
 
@@ -1693,6 +1762,7 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 cat_id, name, icon = parts
                 cat_id = cat_id.lower().replace(" ", "")
                 db.add_custom_category_def(cat_id, name, icon)
+                invalidate_categories_cache()
                 await update.message.reply_text(f"✅ Đã thêm danh mục: {icon} {name}")
             else:
                 await update.message.reply_text("❌ Sai cú pháp. Vui lòng thử lại theo mẫu: `msoffice | Microsoft Office | 💻`", parse_mode="Markdown")
@@ -1709,6 +1779,7 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 name, icon = parts
                 db.add_custom_category_def(cat_id, name, icon)
                 invalidate_cache()
+                invalidate_categories_cache()
                 await update.message.reply_text(
                     f"✅ Đã đổi tên danh mục `{cat_id}` thành: {icon} {name}",
                     parse_mode="Markdown",
@@ -2212,7 +2283,7 @@ async def handle_category_click(update: Update, context: ContextTypes.DEFAULT_TY
     data = query.data
     
     if data == "reload_menu":
-        products, _ = get_all_products_merged(force_refresh=True)
+        products, _ = await async_refresh_products_cache()
         if not products:
             await query.edit_message_text("❌ Không thể tải sản phẩm. Gõ /menu để thử lại.")
             return
@@ -3195,51 +3266,6 @@ async def handle_referral_home(update: Update, context: ContextTypes.DEFAULT_TYP
     await query.edit_message_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(buttons))
 
 
-async def cmd_referral(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Lệnh /referral hiên thị trang giới thiệu."""
-    user_id = update.effective_user.id
-    
-    bot_info = await context.bot.get_me()
-    bot_username = bot_info.username
-    ref_link = f"https://t.me/{bot_username}?start=ref_{user_id}"
-    
-    stats = db.get_referral_stats(user_id)
-    reward = db.get_setting("referral_reward", 1000)
-    new_user_rw = db.get_setting("referral_new_user_reward", 500)
-    ref_enabled = db.get_setting("referral_enabled", True)
-    
-    status = "✅ Đang hoạt động" if ref_enabled else "⏸️ Tạm dừng"
-    
-    new_user_line = ""
-    if new_user_rw > 0:
-        new_user_line = f"🎁 Bạn bè nhận: <b>{format_money(new_user_rw)}</b>\n"
-    
-    text = (
-        "🎁 <b>GIỚI THIỆU BẠN BÈ</b>\n"
-        "━━━━━━━━━━━━━━━━━━\n\n"
-        f"📎 <b>Link mời của bạn:</b>\n"
-        f"👉 <a href=\"{ref_link}\">Bấm vào đây để mở link</a>\n\n"
-        f"📋 <b>Copy link:</b>\n"
-        f"<code>{ref_link}</code>\n\n"
-        f"💰 Bạn nhận: <b>{format_money(reward)}/người</b>\n"
-        f"{new_user_line}"
-        f"📊 Trạng thái: {status}\n\n"
-        f"👥 Đã giới thiệu: <b>{stats['referral_count']}</b> người\n"
-        f"💵 Tổng thưởng: <b>{format_money(stats['referral_earnings'])}</b>\n\n"
-        "💡 <i>Bấm vào link xanh để xem, hoặc bấm vào ô code để copy!</i>"
-    )
-    
-    share_text = f"Mua tài khoản Premium giá rẻ, tự động 24/7! Bấm vào đây: {ref_link}"
-    
-    buttons = [
-        [InlineKeyboardButton("📤 Chia sẻ cho bạn bè", switch_inline_query=share_text)],
-        [InlineKeyboardButton("💰 Xem ví", callback_data="wallet_home")],
-        [InlineKeyboardButton("⬅️ Quay lại", callback_data="back_start")],
-    ]
-    
-    await update.message.reply_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(buttons))
-
-
 async def handle_copy_ref(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Gửi link ref dạng message riêng để user copy dễ dàng."""
     query = update.callback_query
@@ -3336,15 +3362,24 @@ async def _cleanup_stale_orders(application):
         
         elapsed = (now - created).total_seconds()
         if elapsed > ORDER_TIMEOUT_SECONDS:
+            # Kiểm tra partial wallet payment trước khi hủy
+            wallet_paid = order.get("wallet_paid", 0)
+            
             # CRITICAL: Dùng cancel_order_if_pending (atomic) để tránh
             # ghi đè đơn đã được webhook xử lý (paid) trong lúc cleanup
             cancelled = db.cancel_order_if_pending(code)
             if cancelled:
                 cancelled_count += 1
+                # Hoàn tiền ví nếu đã trả partial
+                refund_text = ""
+                if wallet_paid > 0:
+                    db.add_balance(order["user_id"], wallet_paid, reason="refund")
+                    new_balance = db.get_user_balance(order["user_id"])
+                    refund_text = f"\n💰 Đã hoàn {format_money(wallet_paid)} vào ví (Số dư: {format_money(new_balance)})"
                 try:
                     await application.bot.send_message(
                         chat_id=order["user_id"],
-                        text=f"⏰ Đơn hàng **#{code}** đã tự động hủy do quá thời gian thanh toán.",
+                        text=f"⏰ Đơn hàng **#{code}** đã tự động hủy do quá thời gian thanh toán.{refund_text}",
                         parse_mode="Markdown"
                     )
                 except Exception:
@@ -3367,11 +3402,13 @@ async def _periodic_order_cleanup(application):
 async def _periodic_product_refresh():
     """Background refresh sản phẩm mỗi 90 giây.
     Giữ cache luôn tươi — user không bao giờ phải chờ API.
+    FIX: Dùng asyncio.to_thread() để KHÔNG block event loop.
+    Trước đây _do_refresh_products() block 10-30s mỗi 90s → bot đơ.
     """
     while True:
         await asyncio.sleep(90)
         try:
-            products, balance = _do_refresh_products()
+            products, balance = await asyncio.to_thread(_do_refresh_products)
             if products:
                 global _api_cache
                 _api_cache = {
@@ -3382,6 +3419,39 @@ async def _periodic_product_refresh():
                 logger.debug(f"🔄 Periodic refresh: {len(products)} products")
         except Exception as e:
             logger.error(f"Periodic product refresh error: {e}")
+
+
+async def _retry_failed_orders(application):
+    """Tự động retry đơn hàng failed do lỗi API tạm thời.
+    Chạy mỗi 2 phút, tối đa 3 lần retry/đơn, chỉ retry đơn trong 30 phút gần đây.
+    """
+    await asyncio.sleep(60)  # Chờ bot ổn định trước khi bắt đầu retry
+    while True:
+        try:
+            retryable = db.get_retryable_orders()
+            for code, order in retryable.items():
+                retry_count = order.get("retry_count", 0)
+                logger.info(f"🔄 Retrying failed order {code} (attempt {retry_count + 1}/3)")
+
+                # Ghi nhận lần retry (giữ status=failed — process_paid_order chấp nhận cả failed)
+                db.update_order_fields(code, {"retry_count": retry_count + 1})
+
+                result = await process_paid_order(application, code, order.get("payment_source", "sepay"))
+                if result:
+                    logger.info(f"✅ Retry successful for order {code}")
+                    await _notify_all_admins(application,
+                        f"✅ **ĐƠN RETRY THÀNH CÔNG**\n"
+                        f"Mã: `{code}` | Lần thử: {retry_count + 1}\n"
+                        f"📦 {order.get('product_name', '?')} x{order.get('qty', 1)}"
+                    )
+                else:
+                    logger.warning(f"❌ Retry still failed for order {code}")
+
+                await asyncio.sleep(5)  # Tránh spam API liên tục
+        except Exception as e:
+            logger.error(f"Retry failed orders error: {e}")
+
+        await asyncio.sleep(120)  # Mỗi 2 phút
 
 
 async def _payment_processor(application):
@@ -3508,7 +3578,19 @@ async def _handle_payment(application, payment: dict):
         return
 
     # Kiểm tra trạng thái đơn
-    if order.get("status") not in ("pending", "failed"):
+    # FIX: Phục hồi đơn cancelled_timeout khi tiền vào muộn
+    if order.get("status") == "cancelled_timeout":
+        logger.info(f"⚡ Recovering cancelled_timeout order {order_code} — late payment received!")
+        db.update_order_fields(order_code, {"status": "pending"})
+        order["status"] = "pending"
+        # Thông báo admin phục hồi
+        await _notify_all_admins(application,
+            f"⚡ **PHỤC HỒI ĐƠN TIMEOUT**\n"
+            f"📋 Mã: `{order_code}`\n"
+            f"💰 Tiền vào (chậm): {transfer_amount:,}đ\n"
+            f"✅ Đang xử lý giao hàng..."
+        )
+    elif order.get("status") not in ("pending", "failed"):
         logger.info(f"Payment for already-processed order {order_code} (status={order.get('status')})")
         db.mark_payment_processed(transaction_id)
         db.mark_transaction_processed(transaction_id)
@@ -3598,6 +3680,9 @@ async def post_init(application):
     # 💳 Payment processor — poll DB mỗi 5 giây để xử lý thanh toán
     asyncio.create_task(_payment_processor(application))
 
+    # 🔄 Retry failed orders — tự động retry đơn lỗi API tạm thời
+    asyncio.create_task(_retry_failed_orders(application))
+
     # Webhook server — CHỈ lưu giao dịch vào DB, không cần event loop hay telegram app
     webhook_thread = Thread(
         target=start_webhook_server,
@@ -3653,7 +3738,6 @@ def main():
     app.add_handler(CommandHandler("help", cmd_help))
     app.add_handler(CommandHandler("menu", cmd_menu))
     app.add_handler(CommandHandler("myorders", cmd_myorders))
-    app.add_handler(CommandHandler("referral", cmd_referral))
 
     # Admin commands
     app.add_handler(CommandHandler("admin", cmd_admin))
@@ -3685,6 +3769,10 @@ def main():
     # Run bot
     logger.info("🤖 Bot started!")
     app.run_polling(drop_pending_updates=True)
+
+    # Flush pending DB writes khi bot tắt
+    logger.info("💾 Flushing database before shutdown...")
+    db.flush()
 
 
 if __name__ == "__main__":
