@@ -194,6 +194,7 @@ ALL_CATEGORIES = {
 # ============================================
 # CACHE + PARALLEL API LOADING (TỐI ƯU TỐC ĐỘ)
 # ============================================
+from concurrent.futures import ThreadPoolExecutor
 
 _api_cache = {"data": None, "expiry": 0}
 API_CACHE_TTL = 120          # 2 phút — cache "tươi"
