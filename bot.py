@@ -2241,6 +2241,7 @@ def _build_admin_dashboard():
          InlineKeyboardButton("🎁 Giới thiệu", callback_data="admin_referral")],
         [InlineKeyboardButton("📢 Broadcast", callback_data="admin_broadcast"),
          InlineKeyboardButton("🎨 Giao diện", callback_data="admin_ui_custom")],
+        [InlineKeyboardButton("📋 Xuất đơn giá", callback_data="admin_export_prices")],
     ]
     return text, buttons
 
@@ -3068,6 +3069,57 @@ async def handle_admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Hủy", callback_data="admin_home")]])
         )
+
+    elif data == "admin_export_prices":
+        # Xuất đơn giá theo biểu mẫu
+        products, _ = get_products_cached()
+        if not products:
+            products, _ = get_all_products_merged(force_refresh=True)
+        if not products:
+            await query.edit_message_text("❌ Không thể tải sản phẩm.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Quay lại", callback_data="admin_home")]]))
+            return
+
+        merged_cats = get_all_categories_merged()
+        # Nhóm sản phẩm theo danh mục
+        cat_products = {}
+        for key, info in products.items():
+            if db.is_product_hidden(key) or info.get("stock", 0) == 0:
+                continue
+            cat_name, cat_icon, cat_id = classify_product(key, info, merged_cats)
+            if cat_id not in cat_products:
+                cat_products[cat_id] = {"name": cat_name, "icon": cat_icon, "items": []}
+            sell_price = get_sell_price(key, info["price"], info.get("is_custom_local", False))
+            dname = db.get_custom_name(key) or info["name"]
+            cat_products[cat_id]["items"].append((dname, sell_price))
+
+        # Sắp xếp theo thứ tự danh mục chuẩn
+        order = ["gpt", "grok", "capcut", "gemini", "meitu", "netflix", "discord", "vpn", "spotify", "crm_partner", "khac"]
+        sorted_cats = []
+        for o in order:
+            if o in cat_products:
+                sorted_cats.append((o, cat_products[o]))
+        for k, v in cat_products.items():
+            if k not in order:
+                sorted_cats.append((k, v))
+
+        lines = ["📢 THÔNG BÁO CÁC MẶT HÀNG MÌNH ĐANG CÓ\n"]
+        for cat_id, cat_data in sorted_cats:
+            lines.append(f"{cat_data['icon']} {cat_data['name']}")
+            for pname, pprice in cat_data["items"]:
+                lines.append(f"  🔹 {pname} — {format_money(pprice)}")
+            lines.append("")  # Dòng trống giữa các danh mục
+
+        lines.append("BOT AUTO ORDER: @hoanganhshop_bot")
+        lines.append("Admin: @hoanganh1162")
+
+        export_text = "\n".join(lines)
+
+        # Gửi tin nhắn mới (không edit) để admin dễ copy/forward
+        await context.bot.send_message(
+            chat_id=query.from_user.id,
+            text=export_text
+        )
+        await query.answer("✅ Đã xuất đơn giá!")
 
     elif data == "admin_ui_custom":
         buttons = [
