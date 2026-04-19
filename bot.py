@@ -3087,8 +3087,7 @@ async def handle_admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
             cat_icon_html = fmt_icon(cat_id, cat_data['icon'])
             lines.append(f"{cat_icon_html} <b>{escape_html(cat_data['name'])}</b>")
             for pname, pprice in cat_data["items"]:
-                prod_icon_html = fmt_icon(cat_id, "🔹")
-                lines.append(f"  {prod_icon_html} {escape_html(pname)} — {format_money(pprice)}")
+                lines.append(f"  • {escape_html(pname)} — {format_money(pprice)}")
             lines.append("")  # Dòng trống giữa các danh mục
 
         lines.append("BOT AUTO ORDER: @hoanganhshop_bot")
