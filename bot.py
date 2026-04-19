@@ -775,7 +775,7 @@ async def handle_product_select(update: Update, context: ContextTypes.DEFAULT_TY
     
     desc_block = ""
     if desc:
-        desc_block = f"\n<pre>{escape_html(desc)}</pre>\n"
+        desc_block = f"\n<blockquote>{escape_html(desc)}</blockquote>\n"
     
     # Chỉ hiển thị "Nhận tự động" nếu sản phẩm THẬT SỰ có kho auto-delivery
     if db.has_custom_accounts_enabled(product_key):
@@ -2777,9 +2777,7 @@ async def handle_admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if current_desc:
             desc_block = (
                 f"\n{desc_source}:\n"
-                f"━━━━━━━━━━━━━━━━━━\n"
-                f"{escape_md(current_desc)}\n"
-                f"━━━━━━━━━━━━━━━━━━\n"
+                f"```\n{current_desc}\n```\n"
             )
         else:
             desc_block = "\n⚠️ _Chưa có mô tả nào_\n"
