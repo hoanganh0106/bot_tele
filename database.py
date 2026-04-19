@@ -28,7 +28,7 @@ _DEFAULT_DATA = {
     "custom_stocks": {},
     "custom_accounts_inventory": {},
     "custom_hiddens": [],
-    "settings": {"default_markup_percent": 30, "referral_reward": 1000, "referral_new_user_reward": 500, "referral_enabled": True, "min_deposit": 5000},
+    "settings": {"default_markup_fixed": 10000, "referral_reward": 1000, "referral_new_user_reward": 500, "referral_enabled": True, "min_deposit": 5000},
     "processed_transactions": [],
     "incoming_payments": [],
     "users": {},
@@ -268,28 +268,43 @@ class Database:
     def find_user_orders_by_query(self, query: str) -> tuple[int|None, str, dict]:
         """Tìm user_id, username và các đơn hàng liên quan từ query (ID hoặc Username)."""
         with self.lock:
-            orders = self._read()["orders"]
+            data = self._read()
+            orders = data.get("orders", {})
+            users = data.get("users", {})
             target_id = None
             target_username = ""
             user_orders = {}
 
             query_lower = str(query).lower().replace("@", "")
 
-            # Bước 1: Tìm user_id và username
-            for code, order in orders.items():
-                uid = order.get("user_id")
-                uname = order.get("username", "")
+            # Bước 1a: Tìm trong users dict (bao gồm cả user chỉ /start chưa mua)
+            for uid_str, uinfo in users.items():
+                uname = uinfo.get("username", "") or ""
+                fname = uinfo.get("first_name", "") or ""
                 
-                # Trùng ID chính xác
-                if str(uid) == query_lower:
-                    target_id = uid
+                if uid_str == query_lower:
+                    target_id = int(uid_str)
                     target_username = uname
                     break
-                # Trùng Username
                 if uname and uname.lower().replace("@", "") == query_lower:
-                    target_id = uid
+                    target_id = int(uid_str)
                     target_username = uname
                     break
+
+            # Bước 1b: Fallback tìm trong orders (nếu users dict chưa có)
+            if target_id is None:
+                for code, order in orders.items():
+                    uid = order.get("user_id")
+                    uname = order.get("username", "")
+                    
+                    if str(uid) == query_lower:
+                        target_id = uid
+                        target_username = uname
+                        break
+                    if uname and uname.lower().replace("@", "") == query_lower:
+                        target_id = uid
+                        target_username = uname
+                        break
             
             # Bước 2: Gom đơn của user đó
             if target_id is not None:

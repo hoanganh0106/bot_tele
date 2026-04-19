@@ -89,9 +89,9 @@ def get_sell_price(product_key: str, base_price: int, is_custom_local: bool = Fa
     if is_custom_local:
         return base_price
         
-    # Hàng API: Mặc định markup 30% nếu không cấu hình markup khác
-    default_markup = db.get_setting("default_markup_percent", 30)
-    return int(base_price * (1 + default_markup / 100))
+    # Hàng API: Mặc định markup cộng giá trị cố định
+    default_markup = db.get_setting("default_markup_fixed", 10000)
+    return base_price + default_markup
 
 
 def generate_order_code() -> str:
@@ -439,20 +439,8 @@ def classify_product(key: str, info: dict, merged_cats: dict = None) -> tuple:
         name, icon = merged_cats[custom_cat]
         return name, icon, custom_cat
 
-    # 2. Phân loại tự động theo tên sản phẩm (áp dụng cho CẢ API1 và API2)
-    k = key.lower()
-    n = info.get("name", "").lower()
-    if "gpt" in k or "gpt" in n or "openai" in n or "chatgpt" in n: return "ChatGPT", "🤖", "gpt"
-    if "grok" in k or "grok" in n: return "Grok", "🔮", "grok"
-    if "cc" in k or "capcut" in n: return "CapCut", "🎬", "capcut"
-    if "gemini" in k or "gemini" in n: return "Gemini", "✨", "gemini"
-    if "meitu" in k or "meitu" in n: return "Meitu", "📸", "meitu"
-    if "netflix" in k or "netflix" in n or "yt" in k or "youtube" in n: return "Netflix / YT", "🍿", "netflix"
-    if "discord" in k or "discord" in n: return "Discord", "💬", "discord"
-    if "vpn" in k or "vpn" in n or "warp" in k or "1.1.1.1" in n: return "VPN", "🛡️", "vpn"
-    if "spotify" in k or "spotify" in n or "music" in n: return "Spotify", "🎵", "spotify"
-
-    # 3. Fallback: sản phẩm CRM không khớp tên → "Đối Tác 2", sản phẩm CTV → "Khác"
+    # 2. Không tự động phân loại — sản phẩm mới sẽ vào "Khác" để admin tự chọn danh mục
+    # Fallback: sản phẩm CRM → "Đối Tác 2", còn lại → "Khác"
     if info.get("api_source") == "CRM":
         return "Đối Tác 2", "🚀", "crm_partner"
     return "Khác", "📦", "khac"
@@ -553,25 +541,28 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text += f"\n{welcome_bonus}" if welcome_bonus else ""
     else:
         text = (
-            f"👋 Xin chào <b>{escape_html(user.first_name)}</b>!\n\n"
-            "Chào mừng bạn đến với hệ thống bán tài khoản Premium tự động 🤖\n\n"
-            "🔹 <b>Thanh toán tự động</b> 24/7, xác nhận trong 1 phút\n"
-            "🔹 <b>Nhận tài khoản ngay</b> sau khi thanh toán\n"
-            "🔹 <b>Hỗ trợ tận tình</b> nhanh chóng\n\n"
+            f"✨ Xin chào <b>{escape_html(user.first_name)}</b>! ✨\n\n"
+            "🏪 <b>SHOP TÀI KHOẢN PREMIUM</b>\n\n"
+            "<blockquote>"
+            "⚡ Thanh toán → Xác nhận <b>1 phút</b>\n"
+            "📦 Nhận tài khoản <b>ngay lập tức</b>\n"
+            "💬 Hỗ trợ <b>nhanh chóng</b>\n"
+            "🤖 Tự động <b>24/7</b>"
+            "</blockquote>\n\n"
             f"{welcome_bonus}"
             f"💰 <b>Số dư ví:</b> {format_money(balance)}\n\n"
-            "👇 Bấm vào nút bên dưới để chọn sản phẩm 👇"
+            "👇 <i>Chọn chức năng bên dưới</i> 👇"
         )
     
     buttons = [
-        [ui_btn("menu", "🛒 MENU SẢN PHẨM", callback_data="reload_menu")],
+        [ui_btn("menu", "🛍️ MENU SẢN PHẨM", callback_data="reload_menu")],
         [
-            ui_btn("wallet", f"💰 Ví: {format_money(balance)}", callback_data="wallet_home"),
+            ui_btn("wallet", f"💳 Ví: {format_money(balance)}", callback_data="wallet_home"),
             ui_btn("referral", "🎁 Giới thiệu", callback_data="referral_home"),
         ],
         [
-            ui_btn("history", "📋 Lịch sử mua hàng", callback_data="btn_myorders"),
-            ui_btn("contact", "📞 Liên hệ Admin", url="https://t.me/hoanganh1162")
+            ui_btn("history", "📋 Lịch sử", callback_data="btn_myorders"),
+            ui_btn("contact", "☎️ Liên hệ Admin", url="https://t.me/hoanganh1162")
         ]
     ]
     
@@ -589,9 +580,8 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await context.bot.send_message(
                 chat_id=referred_by,
                 text=(
-                    f"🎉 **THƯỞNG GIỚI THIỆU!**\n"
-                    f"━━━━━━━━━━━━━━━━━━\n"
-                    f"👤 **{user.first_name}** đã tham gia qua link mời của bạn!\n"
+                    f"🎉 **THƯỞNG GIỚI THIỆU!**\n\n"
+                    f"👤 **{user.first_name}** đã tham gia qua link mời của bạn!\n\n"
                     f"💰 Bạn nhận được: **+{format_money(reward)}**\n"
                     f"💵 Số dư ví hiện tại: **{format_money(ref_balance)}**"
                 ),
@@ -670,20 +660,20 @@ async def cmd_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         # Nút ví + giới thiệu
         buttons.append([
-            ui_btn("wallet", f"💰 Ví: {format_money(user_balance)}", callback_data="wallet_home"),
-            ui_btn("referral", "🎁 Giới thiệu bạn bè", callback_data="referral_home"),
+            ui_btn("wallet", f"� Ví: {format_money(user_balance)}", callback_data="wallet_home"),
+            ui_btn("referral", "🎁 Giới thiệu", callback_data="referral_home"),
         ])
         # Thêm nút cố định
         buttons.append([
-            ui_btn("contact", "📞 Liên hệ Admin", url="https://t.me/hoanganh1162"),
+            ui_btn("contact", "☎️ Liên hệ Admin", url="https://t.me/hoanganh1162"),
             ui_btn("reload", "🔄 Cập nhật", callback_data="reload_menu")
         ])
 
         await msg.edit_text(
-            "🛒 <b>MENU SẢN PHẨM</b>\n"
-            "━━━━━━━━━━━━━━━━━━\n"
-            f"💰 Số dư ví: <b>{format_money(user_balance)}</b>\n"
-            "Chọn danh mục sản phẩm bạn muốn xem:",
+            "🛍️ <b>MENU SẢN PHẨM</b>\n"
+            "════════════════════\n\n"
+            f"💰 Số dư ví: <b>{format_money(user_balance)}</b>\n\n"
+            "👇 <i>Chọn danh mục sản phẩm</i>:",
             parse_mode="HTML",
             reply_markup=InlineKeyboardMarkup(buttons)
         )
@@ -782,11 +772,11 @@ async def handle_product_select(update: Update, context: ContextTypes.DEFAULT_TY
     
     desc_block = ""
     if desc:
-        desc_block = f"\n📝 {escape_html(desc)}\n"
+        desc_block = f"\n<blockquote>{escape_html(desc)}</blockquote>\n"
     
     # Chỉ hiển thị "Nhận tự động" nếu sản phẩm THẬT SỰ có kho auto-delivery
     if db.has_custom_accounts_enabled(product_key):
-        desc_block += "\n⚡ Nhận tự động sau thanh toán\n"
+        desc_block += "\n⚡ <i>Nhận tự động sau thanh toán</i>\n"
     
     # Icon danh mục (custom emoji nếu có)
     _, icon, cid_for_icon = classify_product(product_key, info)
@@ -794,10 +784,9 @@ async def handle_product_select(update: Update, context: ContextTypes.DEFAULT_TY
     pname = escape_html(info['name'])
     
     await query.edit_message_text(
-        f"{cat_icon} <b>{pname}</b>\n"
-        f"━━━━━━━━━━━━━━━━━━\n"
+        f"{cat_icon} <b>{pname}</b>\n\n"
         f"💰 Giá: <b>{format_money(sell_price)}</b> / cái\n"
-        f"📊 Kho: <b>{info['stock']}</b> còn lại\n"
+        f"📦 Kho: <b>{info['stock']}</b> còn lại\n"
         f"{desc_block}{note}\n"
         f"👇 Chọn số lượng muốn mua:",
         parse_mode="HTML",
@@ -911,23 +900,24 @@ async def handle_qty_select(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     wallet_line = ""
     if user_balance > 0:
-        wallet_line = f"💰 Số dư ví: **{format_money(user_balance)}**\n\n"
+        wallet_line = f"💰 Số dư ví: <b>{format_money(user_balance)}</b>\n\n"
 
     text = (
-        f"🧾 **ĐƠN HÀNG #{order_code}**\n"
-        f"━━━━━━━━━━━━━━━━━━\n"
-        f"📦 {info.get('name', product_key)}\n"
-        f"🔢 Số lượng: **{qty}**\n"
-        f"💰 Đơn giá: **{format_money(sell_price)}**\n"
-        f"💰 Tổng: **{format_money(total)}**\n\n"
+        f"🛒 <b>ĐƠN HÀNG #{order_code}</b>\n\n"
+        "<blockquote>"
+        f"📦 {escape_html(info.get('name', product_key))}\n"
+        f"🔢 Số lượng: <b>{qty}</b>\n"
+        f"💰 Đơn giá: <b>{format_money(sell_price)}</b>\n"
+        f"💵 Tổng: <u><b>{format_money(total)}</b></u>"
+        "</blockquote>\n\n"
         f"{wallet_line}"
-        f"🔽 **Chọn phương thức thanh toán:**\n\n"
-        f"⏰ Đơn hàng tự hủy sau **5 phút**"
+        f"🔽 <b>Chọn phương thức thanh toán:</b>\n\n"
+        f"⏰ Đơn hàng tự hủy sau <b>5 phút</b>"
     )
 
     await query.edit_message_text(
         text,
-        parse_mode="Markdown",
+        parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup(buttons)
     )
 
@@ -982,20 +972,20 @@ async def handle_pay_bank(update: Update, context: ContextTypes.DEFAULT_TYPE):
     qr_url = generate_qr_url(total, order_code)
 
     text = (
-        f"🧾 **ĐƠN HÀNG #{order_code}**\n"
-        f"━━━━━━━━━━━━━━━━━━\n"
-        f"📦 {order.get('product_name', '?')}\n"
-        f"💰 Tổng: **{format_money(total)}**\n\n"
-        f"🏦 **CHUYỂN KHOẢN:**\n"
-        f"Ngân hàng: **{BANK_NAME}**\n"
-        f"STK: `{BANK_ACCOUNT_NUMBER}`\n"
-        f"Tên: **{BANK_ACCOUNT_NAME}**\n"
-        f"Số tiền: **{format_money(total)}**\n"
-        f"Nội dung: `{order_code}`\n\n"
+        f"🛒 <b>ĐƠN HÀNG #{order_code}</b>\n\n"
+        f"📦 {escape_html(order.get('product_name', '?'))}\n"
+        f"💵 Tổng: <u><b>{format_money(total)}</b></u>\n\n"
+        "<blockquote>"
+        f"🏦 Ngân hàng: <b>{escape_html(BANK_NAME)}</b>\n"
+        f"💳 STK: <code>{escape_html(BANK_ACCOUNT_NUMBER)}</code>\n"
+        f"👤 Tên: <b>{escape_html(BANK_ACCOUNT_NAME)}</b>\n"
+        f"💰 Số tiền: <b>{format_money(total)}</b>\n"
+        f"📝 Nội dung: <code>{order_code}</code>"
+        "</blockquote>\n\n"
         f"📱 Quét QR bên dưới để thanh toán nhanh:\n"
-        f"[QR Thanh toán]({qr_url})\n\n"
-        f"⏰ Đơn hàng tự hủy sau **5 phút**\n"
-        f"✅ Thanh toán sẽ được xác nhận **TỰ ĐỘNG**"
+        f"<a href=\"{qr_url}\">QR Thanh toán</a>\n\n"
+        f"⏰ Đơn hàng tự hủy sau <b>5 phút</b>\n"
+        f"✅ Thanh toán sẽ được xác nhận <b>TỰ ĐỘNG</b>"
     )
 
     buttons = [
@@ -1005,7 +995,7 @@ async def handle_pay_bank(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await query.edit_message_text(
         text,
-        parse_mode="Markdown",
+        parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup(buttons),
         disable_web_page_preview=False
     )
@@ -1102,12 +1092,12 @@ async def handle_pay_partial(update: Update, context: ContextTypes.DEFAULT_TYPE)
     await query.edit_message_text(
         f"✅ Đã trừ **{format_money(wallet_amount)}** từ ví!\n"
         f"💰 Số dư còn lại: **{format_money(new_balance)}**\n\n"
-        f"🏦 **Chuyển khoản phần còn lại:**\n"
-        f"Ngân hàng: **{BANK_NAME}**\n"
-        f"STK: `{BANK_ACCOUNT_NUMBER}`\n"
-        f"Tên: **{BANK_ACCOUNT_NAME}**\n"
-        f"Số tiền: **{format_money(remain)}**\n"
-        f"Nội dung: `{order_code}`\n\n"
+        f"🏦 **CHUYỂN KHOẢN PHẦN CÒN LẠI:**\n\n"
+        f"🏦 Ngân hàng: **{BANK_NAME}**\n"
+        f"💳 STK: `{BANK_ACCOUNT_NUMBER}`\n"
+        f"👤 Tên: **{BANK_ACCOUNT_NAME}**\n"
+        f"💰 Số tiền: **{format_money(remain)}**\n"
+        f"📝 Nội dung: `{order_code}`\n\n"
         f"📱 Quét QR:\n"
         f"[QR Thanh toán]({qr_url})\n\n"
         f"⏰ Đơn tự hủy sau **5 phút** (hoàn tiền ví nếu hủy)\n"
@@ -1156,13 +1146,13 @@ async def handle_back_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     buttons, _ = build_category_grid(products, "viewcat", is_admin=False)
     buttons.append([
-        ui_btn("contact", "📞 Liên hệ Admin", url="https://t.me/hoanganh1162"),
-        ui_btn("reload", "🔄 Cập nhật sản phẩm", callback_data="reload_menu")
+        ui_btn("contact", "☎️ Liên hệ Admin", url="https://t.me/hoanganh1162"),
+        ui_btn("reload", "🔄 Cập nhật", callback_data="reload_menu")
     ])
     await query.edit_message_text(
-        "🛒 <b>MENU SẢN PHẨM</b>\n"
-        "━━━━━━━━━━━━━━━━━━\n"
-        "Chọn danh mục sản phẩm bạn muốn xem:",
+        "🛍️ <b>MENU SẢN PHẨM</b>\n"
+        "════════════════════\n\n"
+        "👇 <i>Chọn danh mục sản phẩm</i>:",
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup(buttons)
     )
@@ -1180,7 +1170,7 @@ async def cmd_myorders(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Lấy 10 đơn gần nhất
     recent = sorted(orders.items(), key=lambda x: x[1].get("created_at", ""), reverse=True)[:10]
 
-    text = "📋 **LỊCH SỬ ĐƠN HÀNG** (10 gần nhất)\n━━━━━━━━━━━━━━━━━━\n\n"
+    text = "📋 **LỊCH SỬ ĐƠN HÀNG** (10 gần nhất)\n\n"
     for code, order in recent:
         status_icon = {
             "pending": "⏳",
@@ -1310,14 +1300,22 @@ async def process_paid_order(context, order_code: str, payment_source: str = "se
                 
                 items_str = "\n".join([f"✨ `{a}`" for a in accounts])
                 
+                # Lấy mô tả sản phẩm
+                _desc = db.get_custom_description(product_key)
+                if not _desc:
+                    _p = db.get_products().get(product_key, {})
+                    _desc = _p.get("description") or _p.get("desc")
+                desc_block = f"\n📝 _{_desc}_\n" if _desc else ""
+                
                 # Gửi cho khách
                 try:
                     await context.bot.send_message(
                         chat_id=user_id,
-                        text=(f"✅ **ĐƠN HÀNG #{order_code} HOÀN TẤT!**\n\n"
-                              f"🔑 **TÀI KHOẢN CỦA BẠN LÀ:**\n"
-                              f"{items_str}\n\n"
-                              f"Cảm ơn bạn đã mua hàng. Cần hỗ trợ xin liên hệ Admin!"),
+                        text=(f"🎉 **ĐƠN HÀNG #{order_code} HOÀN TẤT!**\n\n"
+                              f"🔑 **TÀI KHOẢN CỦA BẠN:**\n"
+                              f"{items_str}\n"
+                              f"{desc_block}\n"
+                              f"💬 _Cảm ơn bạn! Cần hỗ trợ xin liên hệ Admin._"),
                         parse_mode="Markdown"
                     )
                 except Exception: pass
@@ -1470,17 +1468,24 @@ async def process_paid_order(context, order_code: str, payment_source: str = "se
             # Format items cho khách
             items_text = "\n".join([f"```\n{item}\n```" for item in items])
 
+            # Lấy mô tả sản phẩm
+            _desc2 = db.get_custom_description(product_key)
+            if not _desc2:
+                _p2 = db.get_products().get(product_key, {})
+                _desc2 = _p2.get("description") or _p2.get("desc")
+            desc_block2 = f"\n📝 _{_desc2}_\n" if _desc2 else ""
+
             try:
                 await context.bot.send_message(
                     chat_id=user_id,
                     text=(
-                        f"✅ **ĐƠN HÀNG #{order_code} THÀNH CÔNG!**\n"
-                        f"━━━━━━━━━━━━━━━━━━\n"
+                        f"🎉 **ĐƠN HÀNG #{order_code} THÀNH CÔNG!**\n\n"
                         f"📦 {order.get('product_name', product_key)}\n"
                         f"🔢 Số lượng: {qty}\n\n"
                         f"🔑 **TÀI KHOẢN CỦA BẠN:**\n"
-                        f"{items_text}\n\n"
-                        f"⚠️ Vui lòng lưu lại thông tin ngay!"
+                        f"{items_text}\n"
+                        f"{desc_block2}\n"
+                        f"⚠️ _Vui lòng lưu lại thông tin ngay!_"
                     ),
                     parse_mode="Markdown"
                 )
@@ -1637,7 +1642,7 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
             db.remove_custom_price(product_key)
             invalidate_cache()  # Xóa cache để cập nhật giá mới
             del context.user_data["awaiting_price_for"]
-            await update.message.reply_text(f"✅ Đã reset giá `{product_key}` về markup mặc định.", parse_mode="Markdown")
+            await update.message.reply_text(f"✅ Đã reset giá `{product_key}` về markup mặc định.", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Quay lại cài đặt", callback_data=f"admin_price_{product_key}"), InlineKeyboardButton("🏠 Thoát", callback_data="admin_home")]]))
             return
             
         try:
@@ -1765,12 +1770,13 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         f"⚠️ **Mã `{prod_id}` đã tồn tại!**\n"
                         f"Sản phẩm hiện tại: {existing_name}\n\n"
                         f"Vui lòng chọn mã khác (VD: `{prod_id}_2`).",
-                        parse_mode="Markdown"
+                        parse_mode="Markdown",
+                        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Quản trị", callback_data="admin_home")]])
                     )
                     return
                 db.add_custom_product(prod_id, name, int(price))
                 invalidate_cache()
-                await update.message.reply_text(f"✅ Đã thêm sản phẩm `{prod_id}`. Hãy vào Quản lý sản phẩm để đổi danh mục và cập nhật kho cho nó!", parse_mode="Markdown")
+                await update.message.reply_text(f"✅ Đã thêm sản phẩm `{prod_id}`. Hãy vào Quản lý sản phẩm để đổi danh mục và cập nhật kho cho nó!", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⚙️ Cài đặt sản phẩm", callback_data=f"admin_price_{prod_id}"), InlineKeyboardButton("⬅️ Quản trị", callback_data="admin_home")]]))
             else:
                 await update.message.reply_text("❌ Sai cú pháp. Mẫu: `ytb_1m | Youtube Premium 1T | 35000`", parse_mode="Markdown")
         except Exception:
@@ -1827,7 +1833,7 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 cat_id = cat_id.lower().replace(" ", "")
                 db.add_custom_category_def(cat_id, name, icon)
                 invalidate_categories_cache()
-                await update.message.reply_text(f"✅ Đã thêm danh mục: {icon} {name}")
+                await update.message.reply_text(f"✅ Đã thêm danh mục: {icon} {name}", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Quản trị", callback_data="admin_home")]]))
             else:
                 await update.message.reply_text("❌ Sai cú pháp. Vui lòng thử lại theo mẫu: `msoffice | Microsoft Office | 💻`", parse_mode="Markdown")
         except Exception:
@@ -2051,7 +2057,7 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
         del context.user_data["awaiting_desc_for"]
         if text.lower() == "reset":
             db.set_custom_description(key, None)
-            await update.message.reply_text(f"✅ Đã xóa mô tả cho sản phẩm `{key}`.", parse_mode="Markdown")
+            await update.message.reply_text(f"✅ Đã xóa mô tả cho sản phẩm `{key}`.", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Quay lại cài đặt", callback_data=f"admin_price_{key}"), InlineKeyboardButton("🏠 Thoát", callback_data="admin_home")]]))
         else:
             db.set_custom_description(key, text)
             await update.message.reply_text(f"✅ Đã cập nhật mô tả cho sản phẩm `{key}`.", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Quay lại cài đặt", callback_data=f"admin_price_{key}"), InlineKeyboardButton("🏠 Thoát", callback_data="admin_home")]]))
@@ -2064,7 +2070,7 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         if text.lower() == "reset":
             db.set_custom_name(key, None)
-            await update.message.reply_text(f"✅ Đã reset tên sản phẩm `{key}` về gốc.", parse_mode="Markdown")
+            await update.message.reply_text(f"✅ Đã reset tên sản phẩm `{key}` về gốc.", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Quay lại cài đặt", callback_data=f"admin_price_{key}"), InlineKeyboardButton("🏠 Thoát", callback_data="admin_home")]]))
         else:
             db.set_custom_name(key, text)
             await update.message.reply_text(f"✅ Đã đổi tên sản phẩm `{key}` thành:\n**{text}**", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Quay lại cài đặt", callback_data=f"admin_price_{key}"), InlineKeyboardButton("🏠 Thoát", callback_data="admin_home")]]))
@@ -2073,14 +2079,14 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # 2. Check nếu đang chờ setup markup
     if context.user_data.get("awaiting_markup"):
         try:
-            percent = int(text)
-            if percent < 0 or percent > 500: raise ValueError
-            db.set_setting("default_markup_percent", percent)
+            amount = int(text)
+            if amount < 0 or amount > 10000000: raise ValueError
+            db.set_setting("default_markup_fixed", amount)
             invalidate_cache()  # Xóa cache để tính lại giá tất cả sản phẩm
             del context.user_data["awaiting_markup"]
-            await update.message.reply_text(f"✅ Đã cập nhật Markup mặc định thành **{percent}%**", parse_mode="Markdown")
+            await update.message.reply_text(f"✅ Đã cập nhật Markup mặc định thành **+{format_money(amount)}**", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Quản trị", callback_data="admin_home")]]))
         except ValueError:
-            await update.message.reply_text("❌ Vui lòng nhập số từ 0 đến 500.")
+            await update.message.reply_text("❌ Vui lòng nhập số từ 0 đến 10.000.000.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Quản trị", callback_data="admin_home")]]))
         return
 
     # 3. Check nếu đang chờ gửi thông báo broadcast
@@ -2107,7 +2113,7 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except Exception:
                 pass
                 
-        await status_msg.edit_text(f"✅ Đã gửi thành công đến **{success_count}/{len(users)}** người dùng.", parse_mode="Markdown")
+        await status_msg.edit_text(f"✅ Đã gửi thành công đến **{success_count}/{len(users)}** người dùng.", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Quản trị", callback_data="admin_home")]]))
         return
 
     # 4. Tra cứu người dùng (ĐẶT TRƯỚC email handler để không bị chặn bởi return)
@@ -2119,7 +2125,8 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(
                 f"❌ Không tìm thấy thông tin khách hàng nào khớp với `{text}`.\n"
                 f"Vui lòng kiểm tra lại Username hoặc ID.",
-                parse_mode="Markdown"
+                parse_mode="Markdown",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔄 Thử lại", callback_data="admin_lookup"), InlineKeyboardButton("⬅️ Quản trị", callback_data="admin_home")]])
             )
             return
 
@@ -2127,12 +2134,19 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
         total_spent = sum(o.get("total", 0) for o in user_orders.values() if o.get("status") == "paid")
         user_info = db.get_user(target_id)
         user_balance = db.get_user_balance(target_id)
+        display_username = target_username or user_info.get("username") or "Không có"
+        display_name = user_info.get("first_name") or "Không rõ"
+        joined_at = user_info.get("joined_at", "Không rõ")
+        if joined_at and joined_at != "Không rõ":
+            joined_at = joined_at[:16]
         
         msg = (
             f"🔍 **THÔNG TIN KHÁCH HÀNG**\n"
             f"━━━━━━━━━━━━━━━━━━\n"
             f"👤 ID: `{target_id}`\n"
-            f"👤 Username: {target_username if target_username else 'Không có'}\n"
+            f"👤 Tên: {display_name}\n"
+            f"👤 Username: {display_username}\n"
+            f"📅 Tham gia: {joined_at}\n"
             f"💰 Số dư ví: **{format_money(user_balance)}**\n"
             f"💳 Đã chi (đơn thành công): **{format_money(total_spent)}**\n"
             f"📦 Tổng số đơn: **{len(user_orders)}**\n"
@@ -2213,17 +2227,20 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await process_paid_order(context, order_code, order.get("payment_source", "sepay"))
 
 def _build_admin_dashboard():
-    """Trả về (text, buttons) cho admin dashboard."""
-    text = "🛠 **ADMIN DASHBOARD**\nChọn chức năng quản lý bên dưới:"
+    """Được gọi khi hiển thị admin dashboard."""
+    text = (
+        "🛠 **ADMIN DASHBOARD**\n\n"
+        "👇 _Chọn chức năng quản lý:_"
+    )
     buttons = [
-        [InlineKeyboardButton("📊 Thống kê doanh thu", callback_data="admin_stats")],
-        [InlineKeyboardButton("👥 Thống kê người dùng", callback_data="admin_users")],
-        [InlineKeyboardButton("🔍 Tra cứu khách hàng", callback_data="admin_user_lookup")],
-        [InlineKeyboardButton("⚙️ Quản lý sản phẩm", callback_data="admin_products")],
-        [InlineKeyboardButton("⚙️ Set Markup mặc định", callback_data="admin_markup")],
-        [InlineKeyboardButton("🎁 Cấu hình giới thiệu", callback_data="admin_referral")],
-        [InlineKeyboardButton("📢 Gửi thông báo (Broadcast)", callback_data="admin_broadcast")],
-        [InlineKeyboardButton("🎨 Tùy chỉnh giao diện", callback_data="admin_ui_custom")],
+        [InlineKeyboardButton("📊 Doanh thu", callback_data="admin_stats"),
+         InlineKeyboardButton("👥 Người dùng", callback_data="admin_users")],
+        [InlineKeyboardButton("🔍 Tra cứu khách", callback_data="admin_user_lookup"),
+         InlineKeyboardButton("📦 Sản phẩm", callback_data="admin_products")],
+        [InlineKeyboardButton("⚙️ Markup", callback_data="admin_markup"),
+         InlineKeyboardButton("🎁 Giới thiệu", callback_data="admin_referral")],
+        [InlineKeyboardButton("📢 Broadcast", callback_data="admin_broadcast"),
+         InlineKeyboardButton("🎨 Giao diện", callback_data="admin_ui_custom")],
     ]
     return text, buttons
 
@@ -2260,18 +2277,18 @@ async def handle_category_click(update: Update, context: ContextTypes.DEFAULT_TY
         user_balance = db.get_user_balance(query.from_user.id)
         buttons, _ = build_category_grid(products, "viewcat", is_admin=False)
         buttons.append([
-            ui_btn("wallet", f"💰 Ví: {format_money(user_balance)}", callback_data="wallet_home"),
-            ui_btn("referral", "🎁 Giới thiệu bạn bè", callback_data="referral_home"),
+            ui_btn("wallet", f"� Ví: {format_money(user_balance)}", callback_data="wallet_home"),
+            ui_btn("referral", "🎁 Giới thiệu", callback_data="referral_home"),
         ])
         buttons.append([
-            ui_btn("contact", "📞 Liên hệ Admin", url="https://t.me/hoanganh1162"),
+            ui_btn("contact", "☎️ Liên hệ Admin", url="https://t.me/hoanganh1162"),
             ui_btn("reload", "🔄 Cập nhật", callback_data="reload_menu")
         ])
         await query.edit_message_text(
-            "🛒 <b>MENU SẢN PHẨM</b>\n"
-            "━━━━━━━━━━━━━━━━━━\n"
-            f"💰 Số dư ví: <b>{format_money(user_balance)}</b>\n"
-            "Chọn danh mục sản phẩm bạn muốn xem:",
+            "🛍️ <b>MENU SẢN PHẨM</b>\n"
+            "════════════════════\n\n"
+            f"💰 Số dư ví: <b>{format_money(user_balance)}</b>\n\n"
+            "👇 <i>Chọn danh mục sản phẩm</i>:",
             parse_mode="HTML",
             reply_markup=InlineKeyboardMarkup(buttons)
         )
@@ -2284,7 +2301,7 @@ async def handle_category_click(update: Update, context: ContextTypes.DEFAULT_TY
             await query.edit_message_text("📭 Bạn chưa có đơn hàng nào.")
             return
         recent = sorted(orders.items(), key=lambda x: x[1].get("created_at", ""), reverse=True)[:10]
-        text = "📋 **LỊCH SỬ ĐƠN HÀNG** (10 gần nhất)\n━━━━━━━━━━━━━━━━━━\n\n"
+        text = "📋 **LỊCH SỬ ĐƠN HÀNG** (10 gần nhất)\n\n"
         for code, order in recent:
             status_icon = {
                 "pending": "⏳", "paid": "✅", "cancelled": "❌",
@@ -2334,7 +2351,7 @@ async def handle_category_click(update: Update, context: ContextTypes.DEFAULT_TY
     cat_icon_html = fmt_icon(cat_id, cat_emoji)
     
     await query.edit_message_text(
-        f"{cat_icon_html} <b>{escape_html(cat_name)}</b>\n━━━━━━━━━━━━━━━━━━\n<i>💡 Giá | ✅Còn hàng | ❌Hết | 🔄Đang cập nhật</i>",
+        f"{cat_icon_html} <b>{escape_html(cat_name)}</b>\n\n<i>💰 Giá  │  ✅Còn hàng  │  ❌Hết  │  🔄Đang cập nhật</i>",
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup(buttons)
     )
@@ -3034,10 +3051,10 @@ async def handle_admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif data == "admin_markup":
         context.user_data["awaiting_markup"] = True
-        current = db.get_setting("default_markup_percent", 30)
+        current = db.get_setting("default_markup_fixed", 10000)
         await query.edit_message_text(
-            f"⚙️ Markup mặc định hiện tại: **{current}%**\n\n"
-            f"Vui lòng **nhắn tin số % mới** (VD: nhắn 50 = giá bán sẽ cao hơn giá gốc 50%).",
+            f"⚙️ Markup mặc định hiện tại: **+{format_money(current)}**\n\n"
+            f"Vui lòng **nhắn tin số tiền mới** (VD: nhắn 10000 = giá bán sẽ cao hơn giá gốc 10.000đ).",
             parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Hủy thay đổi", callback_data="admin_home")]])
         )
@@ -3132,14 +3149,14 @@ async def handle_wallet_home(update: Update, context: ContextTypes.DEFAULT_TYPE)
     referral_earnings = user_info.get("referral_earnings", 0)
     
     text = (
-        "💰 **VÍ CỦA BẠN**\n"
-        "━━━━━━━━━━━━━━━━━━\n\n"
-        f"💵 **Số dư:** {format_money(balance)}\n\n"
-        f"📊 **Thống kê:**\n"
-        f"   💳 Đã nạp: {format_money(total_deposited)}\n"
-        f"   🛒 Đã chi: {format_money(total_spent)}\n"
-        f"   🎁 Thưởng giới thiệu: {format_money(referral_earnings)}\n\n"
-        "💡 _Bạn có thể dùng số dư ví để mua sản phẩm mà không cần chuyển khoản._"
+        "💳 <b>VÍ CỦA BẠN</b>\n\n"
+        f"💵 <b>Số dư:</b> <u>{format_money(balance)}</u>\n\n"
+        "<blockquote>"
+        f"💳 Đã nạp: {format_money(total_deposited)}\n"
+        f"🛒 Đã chi: {format_money(total_spent)}\n"
+        f"🎁 Thưởng giới thiệu: {format_money(referral_earnings)}"
+        "</blockquote>\n\n"
+        "💡 <i>Dùng số dư ví để mua hàng không cần CK.</i>"
     )
     
     buttons = [
@@ -3149,7 +3166,7 @@ async def handle_wallet_home(update: Update, context: ContextTypes.DEFAULT_TYPE)
         [InlineKeyboardButton("⬅️ Quay lại", callback_data="back_start")],
     ]
     
-    await query.edit_message_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(buttons))
+    await query.edit_message_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(buttons))
 
 
 async def handle_deposit_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -3164,16 +3181,17 @@ async def handle_deposit_start(update: Update, context: ContextTypes.DEFAULT_TYP
     qr_url = generate_qr_url(0, dep_code)
     
     text = (
-        "💳 **NẠP TIỀN VÀO VÍ**\n"
-        "━━━━━━━━━━━━━━━━━━\n\n"
-        f"🏦 Ngân hàng: **{BANK_NAME}**\n"
-        f"💳 Số TK: `{BANK_ACCOUNT_NUMBER}`\n"
-        f"👤 Tên: **{BANK_ACCOUNT_NAME}**\n"
-        f"📝 Nội dung: `{dep_code}`\n\n"
-        f"💰 Số tiền: **Tùy ý** (tối thiểu {format_money(min_deposit)})\n\n"
+        "💳 <b>NẠP TIỀN VÀO VÍ</b>\n\n"
+        "<blockquote>"
+        f"🏦 Ngân hàng: <b>{escape_html(BANK_NAME)}</b>\n"
+        f"💳 Số TK: <code>{escape_html(BANK_ACCOUNT_NUMBER)}</code>\n"
+        f"👤 Tên: <b>{escape_html(BANK_ACCOUNT_NAME)}</b>\n"
+        f"📝 Nội dung: <code>{dep_code}</code>"
+        "</blockquote>\n\n"
+        f"💰 Số tiền: <b>Tùy ý</b> (tối thiểu {format_money(min_deposit)})\n\n"
         f"📱 Quét QR bên dưới:\n"
-        f"[QR Nạp tiền]({qr_url})\n\n"
-        "✅ Tiền sẽ **tự động cộng** vào ví sau 1-2 phút.\n"
+        f"<a href=\"{qr_url}\">QR Nạp tiền</a>\n\n"
+        "✅ Tiền sẽ <b>tự động cộng</b> vào ví sau 1-2 phút.\n"
         "🔔 Bạn sẽ nhận thông báo khi nạp thành công!"
     )
     
@@ -3183,7 +3201,7 @@ async def handle_deposit_start(update: Update, context: ContextTypes.DEFAULT_TYP
     ]
     
     await query.edit_message_text(
-        text, parse_mode="Markdown",
+        text, parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup(buttons),
         disable_web_page_preview=False
     )
@@ -3211,15 +3229,16 @@ async def handle_referral_home(update: Update, context: ContextTypes.DEFAULT_TYP
         new_user_line = f"🎁 Bạn bè nhận: <b>{format_money(new_user_rw)}</b>\n"
     
     text = (
-        "🎁 <b>GIỚI THIỆU BẠN BÈ</b>\n"
-        "━━━━━━━━━━━━━━━━━━\n\n"
-        f"📎 <b>Link mời của bạn:</b>\n"
+        "🎁 <b>GIỚI THIỆU BẠN BÈ</b>\n\n"
+        f"🔗 <b>Link mời của bạn:</b>\n"
         f"👉 <a href=\"{ref_link}\">Bấm vào đây để mở link</a>\n\n"
         f"📋 <b>Copy link:</b>\n"
         f"<code>{ref_link}</code>\n\n"
+        "<blockquote>"
         f"💰 Bạn nhận: <b>{format_money(reward)}/người</b>\n"
         f"{new_user_line}"
-        f"📊 Trạng thái: {status}\n\n"
+        f"📡 Trạng thái: {status}"
+        "</blockquote>\n\n"
         f"👥 Đã giới thiệu: <b>{stats['referral_count']}</b> người\n"
         f"💵 Tổng thưởng: <b>{format_money(stats['referral_earnings'])}</b>\n\n"
         "💡 <i>Bấm vào link xanh để xem, hoặc bấm vào ô code để copy!</i>"
@@ -3275,24 +3294,27 @@ async def handle_back_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text = text.replace("{id}", str(user.id))
     else:
         text = (
-            f"👋 Xin chào <b>{escape_html(user.first_name)}</b>!\n\n"
-            "Chào mừng bạn đến với hệ thống bán tài khoản Premium tự động 🤖\n\n"
-            "🔹 <b>Thanh toán tự động</b> 24/7, xác nhận trong 1 phút\n"
-            "🔹 <b>Nhận tài khoản ngay</b> sau khi thanh toán\n"
-            "🔹 <b>Hỗ trợ tận tình</b> nhanh chóng\n\n"
+            f"✨ Xin chào <b>{escape_html(user.first_name)}</b>! ✨\n\n"
+            "🏪 <b>SHOP TÀI KHOẢN PREMIUM</b>\n\n"
+            "<blockquote>"
+            "⚡ Thanh toán → Xác nhận <b>1 phút</b>\n"
+            "📦 Nhận tài khoản <b>ngay lập tức</b>\n"
+            "💬 Hỗ trợ <b>nhanh chóng</b>\n"
+            "🤖 Tự động <b>24/7</b>"
+            "</blockquote>\n\n"
             f"💰 <b>Số dư ví:</b> {format_money(balance)}\n\n"
-            "👇 Bấm vào nút bên dưới để chọn sản phẩm 👇"
+            "👇 <i>Chọn chức năng bên dưới</i> 👇"
         )
     
     buttons = [
-        [ui_btn("menu", "🛒 MENU SẢN PHẨM", callback_data="reload_menu")],
+        [ui_btn("menu", "🛍️ MENU SẢN PHẨM", callback_data="reload_menu")],
         [
-            ui_btn("wallet", f"💰 Ví: {format_money(balance)}", callback_data="wallet_home"),
+            ui_btn("wallet", f"💳 Ví: {format_money(balance)}", callback_data="wallet_home"),
             ui_btn("referral", "🎁 Giới thiệu", callback_data="referral_home"),
         ],
         [
-            ui_btn("history", "📋 Lịch sử mua hàng", callback_data="btn_myorders"),
-            ui_btn("contact", "📞 Liên hệ Admin", url="https://t.me/hoanganh1162")
+            ui_btn("history", "📋 Lịch sử", callback_data="btn_myorders"),
+            ui_btn("contact", "☎️ Liên hệ Admin", url="https://t.me/hoanganh1162")
         ]
     ]
     
