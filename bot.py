@@ -775,7 +775,7 @@ async def handle_product_select(update: Update, context: ContextTypes.DEFAULT_TY
     
     desc_block = ""
     if desc:
-        desc_block = f"\n<blockquote>{escape_html(desc)}</blockquote>\n"
+        desc_block = f"\n<pre>{escape_html(desc)}</pre>\n"
     
     # Chỉ hiển thị "Nhận tự động" nếu sản phẩm THẬT SỰ có kho auto-delivery
     if db.has_custom_accounts_enabled(product_key):
@@ -793,6 +793,7 @@ async def handle_product_select(update: Update, context: ContextTypes.DEFAULT_TY
         f"{desc_block}{note}\n"
         f"👇 Chọn số lượng muốn mua:",
         parse_mode="HTML",
+        disable_web_page_preview=True,
         reply_markup=InlineKeyboardMarkup(qty_buttons)
     )
 
@@ -1301,7 +1302,7 @@ async def process_paid_order(context, order_code: str, payment_source: str = "se
                 if not result:
                     return False
                 
-                items_str = "\n".join([f"✨ `{a}`" for a in accounts])
+                items_str = "```\n" + "\n".join(accounts) + "\n```"
                 
                 # Lấy mô tả sản phẩm
                 _desc = db.get_custom_description(product_key)
@@ -1466,7 +1467,7 @@ async def process_paid_order(context, order_code: str, payment_source: str = "se
                 return False
 
             # Format items cho khách
-            items_text = "\n".join([f"```\n{item}\n```" for item in items])
+            items_text = "```\n" + "\n".join(items) + "\n```"
 
             # Lấy mô tả sản phẩm
             _desc2 = db.get_custom_description(product_key)
