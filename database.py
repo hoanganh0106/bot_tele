@@ -315,10 +315,6 @@ class Database:
             return target_id, target_username, user_orders
 
     # === HIDDEN PRODUCTS ===
-    def get_hidden_products(self) -> list:
-        with self.lock:
-            return list(self._read().get("custom_hiddens", []))
-
     def is_product_hidden(self, key: str) -> bool:
         with self.lock:
             return key in self._read().get("custom_hiddens", [])
@@ -411,14 +407,6 @@ class Database:
             data = self._read()
             data.setdefault("custom_category_defs", {})[cat_id] = [name, icon]
             self._write(data)
-
-    def remove_custom_category_def(self, cat_id: str):
-        with self.lock:
-            data = self._read()
-            defs = data.get("custom_category_defs", {})
-            if cat_id in defs:
-                del defs[cat_id]
-                self._write(data)
 
     # === CATEGORY CUSTOM EMOJI IDS ===
     def get_category_emoji_id(self, cat_id: str) -> str | None:

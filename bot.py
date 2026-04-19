@@ -12,7 +12,7 @@ import logging
 import re
 import uuid
 from datetime import datetime
-from threading import Thread
+from threading import Thread, Lock
 
 from dotenv import load_dotenv
 from telegram import (
@@ -64,6 +64,9 @@ DB_PATH = os.path.join(DATA_DIR, "bot_data.json")
 api = CTVApi(CTV_API_URL, CTV_API_KEY)
 crm_api = CrmTeacherApi(CRMTEACHER_API_URL, CRMTEACHER_API_KEY)
 db = Database(DB_PATH)
+
+# Cache bot username — set 1 lần khi khởi động, dùng mãi
+_bot_username: str = ""
 
 
 
@@ -144,9 +147,6 @@ UI_BUTTONS = {
     "history": "📋 Lịch sử mua hàng",
     "contact": "📞 Liên hệ Admin",
     "reload": "🔄 Cập nhật",
-    "back": "⬅️ Quay lại",
-    "home": "🏠 Thoát",
-    "game": "🎮 CHƠI GAME",
 }
 
 
@@ -203,6 +203,7 @@ _cache_refreshing = False    # Flag tránh refresh đồng thời
 
 # Thread pool cố định — tránh tạo mới mỗi lần refresh
 _api_executor = ThreadPoolExecutor(max_workers=3, thread_name_prefix="api")
+_cache_lock = Lock()  # Thread-safe guard cho _cache_refreshing
 
 # Circuit breaker: tạm ngắt API liên tục bị lỗi
 _circuit_breaker = {
@@ -314,24 +315,26 @@ def get_products_cached() -> tuple[dict, int]:
     # Có cache → trả ngay, trigger refresh nếu cần
     if _api_cache["data"]:
         now = time.time()
-        if now >= _api_cache["expiry"] and not _cache_refreshing:
-            # Cache hết hạn → refresh ngầm, KHÔNG chờ
-            _cache_refreshing = True
-            def _bg():
-                global _api_cache, _cache_refreshing
-                try:
-                    products, balance = _do_refresh_products()
-                    if products:
-                        _api_cache = {
-                            "data": (products, balance),
-                            "expiry": time.time() + API_CACHE_TTL,
-                            "stale_expiry": time.time() + API_STALE_TTL,
-                        }
-                except Exception as e:
-                    logger.error(f"Background refresh error: {e}")
-                finally:
-                    _cache_refreshing = False
-            Thread(target=_bg, daemon=True).start()
+        if now >= _api_cache["expiry"]:
+            with _cache_lock:
+                if not _cache_refreshing:
+                    _cache_refreshing = True
+                    def _bg():
+                        global _api_cache, _cache_refreshing
+                        try:
+                            products, balance = _do_refresh_products()
+                            if products:
+                                _api_cache = {
+                                    "data": (products, balance),
+                                    "expiry": time.time() + API_CACHE_TTL,
+                                    "stale_expiry": time.time() + API_STALE_TTL,
+                                }
+                        except Exception as e:
+                            logger.error(f"Background refresh error: {e}")
+                        finally:
+                            with _cache_lock:
+                                _cache_refreshing = False
+                    Thread(target=_bg, daemon=True).start()
         return _api_cache["data"]
     
     # Không có cache → phải chờ (chỉ xảy ra lần đầu khởi động)
@@ -808,8 +811,8 @@ async def handle_qty_select(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("❌ Lỗi phiên (Sản phẩm bị thất lạc). Vui lòng /menu lại.")
         return
 
-    # LUÔN lấy lại thông tin sản phẩm mới nhất để đảm bảo giá đồng nhất
-    products, _ = get_all_products_merged()
+    # Lấy thông tin sản phẩm từ cache (instant, không block event loop)
+    products, _ = get_products_cached()
     if not products or product_key not in products:
         await query.edit_message_text("❌ Lỗi: Sản phẩm không còn tồn tại. Vui lòng /menu lại.")
         return
@@ -1302,9 +1305,6 @@ async def process_paid_order(context, order_code: str, payment_source: str = "se
                 
                 # Lấy mô tả sản phẩm
                 _desc = db.get_custom_description(product_key)
-                if not _desc:
-                    _p = db.get_products().get(product_key, {})
-                    _desc = _p.get("description") or _p.get("desc")
                 desc_block = f"\n📝 _{_desc}_\n" if _desc else ""
                 
                 # Gửi cho khách
@@ -1470,9 +1470,6 @@ async def process_paid_order(context, order_code: str, payment_source: str = "se
 
             # Lấy mô tả sản phẩm
             _desc2 = db.get_custom_description(product_key)
-            if not _desc2:
-                _p2 = db.get_products().get(product_key, {})
-                _desc2 = _p2.get("description") or _p2.get("desc")
             desc_block2 = f"\n📝 _{_desc2}_\n" if _desc2 else ""
 
             try:
@@ -2456,7 +2453,10 @@ async def handle_admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data == "admin_stats":
         stats = db.get_stats()
-        _, balance = api.get_stock()
+        try:
+            _, balance = await asyncio.to_thread(api.get_stock)
+        except Exception:
+            balance = 0
         text = (
             "📊 **THỐNG KÊ**\n━━━━━━━━━━━━━━━━━━\n\n"
             f"💰 Số dư CTV API: **{format_money(balance or 0)}**\n\n"
@@ -2606,26 +2606,6 @@ async def handle_admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Hủy", callback_data="admin_home")]])
         )
 
-    elif data == "admin_pending":
-        pending = db.get_pending_orders()
-        if not pending:
-            return await query.edit_message_text("✅ Không có đơn hàng nào đang chờ.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Thoát (Về đầu)", callback_data="admin_home")]]))
-            
-        text = "⏳ **ĐƠN CHỜ THANH TOÁN**\n━━━━━━━━━━━━━━━━━━\n"
-        buttons = []
-        for code, order in pending.items():
-            text += f"📋 `{code}` - {format_money(order['total'])}\n"
-            buttons.append([
-                InlineKeyboardButton(f"✅ Duyệt {code[-6:]}", callback_data=f"adminpay_{code}"),
-                InlineKeyboardButton(f"❌ Hủy", callback_data=f"admincx_{code}")
-            ])
-            if len(buttons) >= 8: break
-            
-        buttons.append([InlineKeyboardButton("➕ Thêm sản phẩm tự bán", callback_data="admin_add_prod")])
-        buttons.append([InlineKeyboardButton("➕ Thêm danh mục mới", callback_data="admin_add_cat")])
-        buttons.append([InlineKeyboardButton("⬅️ Quay lại", callback_data="admin_home")])
-        await query.edit_message_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(buttons))
-        
     elif data == "admin_products":
         products, _ = get_all_products_merged()
         if not products:
@@ -2699,7 +2679,7 @@ async def handle_admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 parse_mode="Markdown",
                 reply_markup=InlineKeyboardMarkup([
                     [InlineKeyboardButton("📥 Thêm vào kho", callback_data=f"admin_stock_add_items_{key}")],
-                    [InlineKeyboardButton("⬅️ Quay lại", callback_data=f"admin_stock_{key}")]
+                    [InlineKeyboardButton("⬅️ Quay lại", callback_data=f"admin_do_stock_{key}")]
                 ])
             )
             return
@@ -2726,7 +2706,7 @@ async def handle_admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("📥 Thêm tiếp", callback_data=f"admin_stock_add_items_{key}")],
                 [InlineKeyboardButton("🗑️ Xóa sạch kho", callback_data=f"admin_stock_reset_{key}")],
-                [InlineKeyboardButton("⬅️ Quay lại", callback_data=f"admin_stock_{key}"),
+                [InlineKeyboardButton("⬅️ Quay lại", callback_data=f"admin_do_stock_{key}"),
                  InlineKeyboardButton("🏠 Thoát", callback_data="admin_home")]
             ])
         )
@@ -3104,9 +3084,11 @@ async def handle_admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         lines = ["📢 THÔNG BÁO CÁC MẶT HÀNG MÌNH ĐANG CÓ\n"]
         for cat_id, cat_data in sorted_cats:
-            lines.append(f"{cat_data['icon']} {cat_data['name']}")
+            cat_icon_html = fmt_icon(cat_id, cat_data['icon'])
+            lines.append(f"{cat_icon_html} <b>{escape_html(cat_data['name'])}</b>")
             for pname, pprice in cat_data["items"]:
-                lines.append(f"  🔹 {pname} — {format_money(pprice)}")
+                prod_icon_html = fmt_icon(cat_id, "🔹")
+                lines.append(f"  {prod_icon_html} {escape_html(pname)} — {format_money(pprice)}")
             lines.append("")  # Dòng trống giữa các danh mục
 
         lines.append("BOT AUTO ORDER: @hoanganhshop_bot")
@@ -3117,7 +3099,8 @@ async def handle_admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Gửi tin nhắn mới (không edit) để admin dễ copy/forward
         await context.bot.send_message(
             chat_id=query.from_user.id,
-            text=export_text
+            text=export_text,
+            parse_mode="HTML"
         )
         await query.answer("✅ Đã xuất đơn giá!")
 
@@ -3265,8 +3248,7 @@ async def handle_referral_home(update: Update, context: ContextTypes.DEFAULT_TYP
     await query.answer()
     user_id = query.from_user.id
     
-    bot_info = await context.bot.get_me()
-    bot_username = bot_info.username
+    bot_username = _bot_username or (await context.bot.get_me()).username
     ref_link = f"https://t.me/{bot_username}?start=ref_{user_id}"
     
     stats = db.get_referral_stats(user_id)
@@ -3305,28 +3287,6 @@ async def handle_referral_home(update: Update, context: ContextTypes.DEFAULT_TYP
     ]
     
     await query.edit_message_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(buttons))
-
-
-async def handle_copy_ref(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Gửi link ref dạng message riêng để user copy dễ dàng."""
-    query = update.callback_query
-    await query.answer()
-    user_id = query.from_user.id
-    
-    bot_info = await context.bot.get_me()
-    bot_username = bot_info.username
-    ref_link = f"https://t.me/{bot_username}?start=ref_{user_id}"
-    
-    # Gửi message riêng để user dễ copy
-    await context.bot.send_message(
-        chat_id=user_id,
-        text=(
-            f"📋 **Link giới thiệu của bạn:**\n\n"
-            f"`{ref_link}`\n\n"
-            "👆 _Bấm vào link trên để copy!_"
-        ),
-        parse_mode="Markdown"
-    )
 
 
 async def handle_back_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -3452,7 +3412,7 @@ async def _periodic_product_refresh():
     Dùng asyncio.to_thread() để KHÔNG block event loop.
     """
     while True:
-        await asyncio.sleep(60)
+        await asyncio.sleep(30)
         try:
             products, balance = await asyncio.to_thread(_do_refresh_products)
             if products:
@@ -3730,6 +3690,15 @@ async def post_init(application):
     ]
     await application.bot.set_my_commands(commands)
 
+    # Cache bot username 1 lần duy nhất
+    global _bot_username
+    try:
+        me = await application.bot.get_me()
+        _bot_username = me.username
+        logger.info(f"✅ Bot username cached: @{_bot_username}")
+    except Exception as e:
+        logger.error(f"❌ Failed to cache bot username: {e}")
+
     # === DIAGNOSTIC: Kiểm tra kết nối API khi khởi động ===
     logger.info(f"📂 Database path: {DB_PATH}")
     logger.info(f"📂 Database file exists: {os.path.exists(DB_PATH)}")
@@ -3854,7 +3823,6 @@ def main():
     app.add_handler(CallbackQueryHandler(handle_wallet_home, pattern="^wallet_home$"))
     app.add_handler(CallbackQueryHandler(handle_deposit_start, pattern="^deposit_start$"))
     app.add_handler(CallbackQueryHandler(handle_referral_home, pattern="^referral_home$"))
-    app.add_handler(CallbackQueryHandler(handle_copy_ref, pattern="^copy_ref_"))
     app.add_handler(CallbackQueryHandler(handle_admin_confirm_pay, pattern="^adminpay_"))
     app.add_handler(CallbackQueryHandler(handle_admin_cancel, pattern="^admincx_"))
     app.add_handler(CallbackQueryHandler(handle_admin_cb, pattern="^admin_"))
