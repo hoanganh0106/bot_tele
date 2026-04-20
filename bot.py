@@ -2095,23 +2095,38 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ Chưa có người dùng nào để thống báo.")
             return
 
+        total = len(users)
+        status_msg = await update.message.reply_text(f"⏳ Đang gửi thông báo đến {total} người dùng...")
+
+        # Gửi song song với semaphore để không bị rate-limit Telegram (~30 msg/s)
+        sem = asyncio.Semaphore(25)
         success_count = 0
-        status_msg = await update.message.reply_text(f"⏳ Bắt đầu gửi thông báo đến {len(users)} người dùng...")
-        
-        # Gửi header + copy tin nhắn gốc (giữ custom emoji, format...)
-        for uid in users:
-            try:
-                await context.bot.send_message(chat_id=uid, text="📢 **THÔNG BÁO TỪ ADMIN:**", parse_mode="Markdown")
-                await context.bot.copy_message(
-                    chat_id=uid,
-                    from_chat_id=update.effective_chat.id,
-                    message_id=update.message.message_id
-                )
-                success_count += 1
-            except Exception:
-                pass
-                
-        await status_msg.edit_text(f"✅ Đã gửi thành công đến **{success_count}/{len(users)}** người dùng.", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Quản trị", callback_data="admin_home")]]))
+        failed_count = 0
+        lock = asyncio.Lock()
+
+        async def _send_one(uid):
+            nonlocal success_count, failed_count
+            async with sem:
+                try:
+                    await context.bot.copy_message(
+                        chat_id=uid,
+                        from_chat_id=update.effective_chat.id,
+                        message_id=update.message.message_id
+                    )
+                    async with lock:
+                        success_count += 1
+                except Exception:
+                    async with lock:
+                        failed_count += 1
+
+        await asyncio.gather(*[_send_one(uid) for uid in users])
+
+        await status_msg.edit_text(
+            f"✅ Đã gửi thành công đến **{success_count}/{total}** người dùng."
+            + (f"\n❌ Thất bại: {failed_count}" if failed_count else ""),
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Quản trị", callback_data="admin_home")]])
+        )
         return
 
     # 4. Tra cứu người dùng (ĐẶT TRƯỚC email handler để không bị chặn bởi return)
