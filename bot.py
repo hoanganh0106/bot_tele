@@ -83,12 +83,17 @@ def format_money(amount: int) -> str:
 
 
 def get_sell_price(product_key: str, base_price: int, is_custom_local: bool = False) -> int:
-    """Lấy giá bán (giá gốc + markup admin đã set)."""
-    custom = db.get_custom_price(product_key)
-    if custom is not None:
-        return custom
+    """Lấy giá bán = giá gốc + delta (mức chênh lệch admin đã set).
+    
+    Khi đối tác tăng giá gốc, giá bán tự động tăng theo vì delta cố định.
+    VD: delta = +10.000đ → giá gốc 40K → bán 50K, giá gốc tăng lên 60K → bán 70K.
+    """
+    # Ưu tiên 1: Admin đã set mức chênh lệch (delta) cho sản phẩm này
+    delta = db.get_price_delta(product_key)
+    if delta is not None:
+        return base_price + delta
         
-    # Nếu là hàng tự bán tay, lấy thẳng giá gốc (giá lúc tự thêm), KHÔNG cộng %
+    # Nếu là hàng tự bán tay, lấy thẳng giá gốc (giá lúc tự thêm), KHÔNG cộng markup
     if is_custom_local:
         return base_price
         
@@ -1637,18 +1642,45 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if context.user_data.get("awaiting_price_for"):
         product_key = context.user_data["awaiting_price_for"]
         if text.lower() == "reset":
-            db.remove_custom_price(product_key)
-            invalidate_cache()  # Xóa cache để cập nhật giá mới
+            db.remove_price_delta(product_key)
+            db.remove_custom_price(product_key)  # Xóa cả legacy custom_price nếu còn
+            invalidate_cache()
             del context.user_data["awaiting_price_for"]
             await update.message.reply_text(f"✅ Đã reset giá `{product_key}` về markup mặc định.", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Quay lại cài đặt", callback_data=f"admin_price_{product_key}"), InlineKeyboardButton("🏠 Thoát", callback_data="admin_home")]]))
             return
             
         try:
             new_price = int(text.replace(",", "").replace(".", ""))
-            db.set_custom_price(product_key, new_price)
-            invalidate_cache()  # Xóa cache để cập nhật giá mới
+            
+            # Lấy giá gốc hiện tại từ API để tính delta
+            products, _ = get_products_cached()
+            base_price = 0
+            if products and product_key in products:
+                base_price = products[product_key].get("price", 0)
+            
+            if base_price <= 0:
+                await update.message.reply_text(
+                    f"❌ Không tìm thấy giá gốc cho `{product_key}`. "
+                    "Vui lòng thử lại sau khi API cập nhật.",
+                    parse_mode="Markdown"
+                )
+                return
+            
+            delta = new_price - base_price
+            db.set_price_delta(product_key, delta)
+            invalidate_cache()
             del context.user_data["awaiting_price_for"]
-            await update.message.reply_text(f"✅ Đã cập nhật giá bán mới cho `{product_key}` là **{format_money(new_price)}**", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Quay lại cài đặt", callback_data=f"admin_price_{product_key}"), InlineKeyboardButton("🏠 Thoát", callback_data="admin_home")]]))
+            
+            delta_str = f"+{format_money(delta)}" if delta >= 0 else f"-{format_money(abs(delta))}"
+            await update.message.reply_text(
+                f"✅ Đã cập nhật giá bán cho `{product_key}`\n\n"
+                f"💰 Giá bán: **{format_money(new_price)}**\n"
+                f"📊 Giá gốc hiện tại: {format_money(base_price)}\n"
+                f"📐 Mức chênh lệch: **{delta_str}**\n\n"
+                f"⚡ _Khi đối tác tăng giá gốc, giá bán sẽ tự động tăng theo mức chênh lệch này._",
+                parse_mode="Markdown",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Quay lại cài đặt", callback_data=f"admin_price_{product_key}"), InlineKeyboardButton("🏠 Thoát", callback_data="admin_home")]])
+            )
         except ValueError:
             await update.message.reply_text("❌ Giá không hợp lệ. Vui lòng nhập số (VD: 50000) hoặc chữ `reset`.")
         return
@@ -2409,6 +2441,16 @@ async def render_admin_product_detail(update, context, key):
         hide_status = "🔴 ĐÃ ẨN VỚI KHÁCH"
         hide_btn_txt = "👀 [Giao diện] HIỆN SẢN PHẨM"
 
+    # Thông tin chênh lệch giá (delta)
+    delta = db.get_price_delta(key)
+    base_price = info['price'] if info else 0
+    if delta is not None:
+        delta_str = f"+{format_money(delta)}" if delta >= 0 else f"-{format_money(abs(delta))}"
+        price_mode = f"📐 Chênh lệch đã set: **{delta_str}**"
+    else:
+        default_markup = db.get_setting("default_markup_fixed", 10000)
+        price_mode = f"📐 Markup mặc định: +{format_money(default_markup)}"
+
     text = (
         f"⚙️ **Cài đặt Sản Phẩm**\n"
         f"ID: `{key}`\n"
@@ -2417,8 +2459,10 @@ async def render_admin_product_detail(update, context, key):
         f"Số lượng kho: **{stock_status}**\n"
         f"Tên hiển thị: **{current_name}**\n"
         f"Danh mục: {current_icon} {current_cat}\n"
-        f"Giá gốc (từ đối tác): {format_money(info['price'] if info else 0)}\n"
-        f"Giá bán hiện tại: {format_money(sell_price)}\n\n"
+        f"Giá gốc (từ đối tác): {format_money(base_price)}\n"
+        f"{price_mode}\n"
+        f"💰 Giá bán hiện tại: **{format_money(sell_price)}**\n\n"
+        f"⚡ _Khi đối tác tăng giá, giá bán tự tăng theo._\n\n"
         f"Vui lòng chọn thao tác bên dưới:"
     )
     
@@ -2959,9 +3003,25 @@ async def handle_admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data.startswith("admin_do_price_"):
         key = data.replace("admin_do_price_", "")
         context.user_data["awaiting_price_for"] = key
+        
+        # Lấy giá gốc hiện tại để hiển thị cho admin
+        products, _ = get_products_cached()
+        base_price = 0
+        if products and key in products:
+            base_price = products[key].get("price", 0)
+        
+        current_delta = db.get_price_delta(key)
+        delta_info = ""
+        if current_delta is not None:
+            delta_str = f"+{format_money(current_delta)}" if current_delta >= 0 else f"-{format_money(abs(current_delta))}"
+            delta_info = f"\n📐 Chênh lệch hiện tại: **{delta_str}**"
+        
         await query.edit_message_text(
-            f"📝 Vui lòng **nhắn tin gửi GIÁ BÁN MỚI** (VND) cho `{key}` (VD: 50000).\n\n"
-            f"Nhắn chữ `reset` nếu muốn xóa giá cài tay (đưa về tự động cộng Markup).",
+            f"📝 **SỬA GIÁ BÁN** — `{key}`\n\n"
+            f"📊 Giá gốc đối tác: **{format_money(base_price)}**{delta_info}\n\n"
+            f"👉 Nhắn **GIÁ BÁN MỚI** (VND) bạn muốn (VD: `50000`).\n\n"
+            f"💡 _Hệ thống sẽ tự tính mức chênh lệch. Khi đối tác tăng giá, giá bán sẽ tự tăng theo._\n\n"
+            f"Nhắn `reset` để xóa và dùng markup mặc định.",
             parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("⬅️ Quay lại", callback_data=f"admin_price_{key}"),
@@ -3807,6 +3867,11 @@ def main():
 
     # Tạo thư mục data (DATA_DIR đã được tạo ở trên)
     os.makedirs(DATA_DIR, exist_ok=True)
+
+    # Migration: xóa custom_prices cũ (giá tuyệt đối) → dùng price_deltas (chênh lệch) thay thế
+    cleared = db.clear_all_custom_prices()
+    if cleared:
+        logger.info(f"🔄 Đã xóa {cleared} custom_prices cũ. Admin cần set lại giá nếu muốn.")
 
     # Build bot
     app = ApplicationBuilder().token(BOT_TOKEN).post_init(post_init).build()

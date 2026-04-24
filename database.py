@@ -20,6 +20,7 @@ logger = logging.getLogger(__name__)
 _DEFAULT_DATA = {
     "orders": {},
     "custom_prices": {},
+    "price_deltas": {},
     "custom_names": {},
     "custom_categories": {},
     "custom_descriptions": {},
@@ -352,6 +353,44 @@ class Database:
                 del prices[product_key]
                 self._write(data)
 
+    # === PRICE DELTAS (chênh lệch giá — chống lỗ khi đối tác tăng giá) ===
+    def get_price_delta(self, product_key: str) -> int | None:
+        """Lấy mức chênh lệch giá admin đã set cho sản phẩm."""
+        with self.lock:
+            return self._read().get("price_deltas", {}).get(product_key)
+
+    def set_price_delta(self, product_key: str, delta: int):
+        """Lưu mức chênh lệch giá (delta = giá_bán - giá_gốc tại thời điểm set)."""
+        with self.lock:
+            data = self._read()
+            data.setdefault("price_deltas", {})[product_key] = delta
+            # Xóa custom_price cũ (nếu có) để tránh xung đột
+            if product_key in data.get("custom_prices", {}):
+                del data["custom_prices"][product_key]
+            self._write(data)
+
+    def remove_price_delta(self, product_key: str):
+        """Xóa mức chênh lệch → quay về dùng default markup."""
+        with self.lock:
+            data = self._read()
+            deltas = data.get("price_deltas", {})
+            if product_key in deltas:
+                del deltas[product_key]
+                self._write(data)
+
+    def clear_all_custom_prices(self):
+        """Xóa trắng tất cả custom_prices cũ (migration sang price_deltas)."""
+        with self.lock:
+            data = self._read()
+            old_prices = data.get("custom_prices", {})
+            if old_prices:
+                count = len(old_prices)
+                data["custom_prices"] = {}
+                self._write(data)
+                logger.info(f"🔄 Migration: cleared {count} old custom_prices")
+                return count
+            return 0
+
     # === CUSTOM NAMES ===
     def get_custom_name(self, product_key: str) -> str | None:
         with self.lock:
@@ -548,7 +587,7 @@ class Database:
                 del data["custom_products"][key]
             
             # Xóa các thiết lập liên quan
-            for prop in ["custom_prices", "custom_names", "custom_categories", "custom_descriptions", "custom_stocks", "custom_accounts_inventory"]:
+            for prop in ["custom_prices", "price_deltas", "custom_names", "custom_categories", "custom_descriptions", "custom_stocks", "custom_accounts_inventory"]:
                 if prop in data and key in data[prop]:
                     del data[prop][key]
                     
