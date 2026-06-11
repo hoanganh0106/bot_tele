@@ -27,7 +27,7 @@ mkdir -p $PROJECT_DIR
 # Tự động copy files từ thư mục chạy script vào PROJECT_DIR nếu khác nhau
 if [ "$SCRIPT_DIR" != "$PROJECT_DIR" ]; then
     echo "🚚 Đang sao chép files từ $SCRIPT_DIR sang $PROJECT_DIR..."
-    FILES_TO_COPY=("bot.py" "ctv_api.py" "database.py" "sepay_server.py" "config.env" "requirements.txt" "ctv-bot.service")
+    FILES_TO_COPY=("bot.py" "ctv_api.py" "database.py" "sepay_server.py" "config.env" "config.env.example" "requirements.txt" "ctv-bot.service")
     for file in "${FILES_TO_COPY[@]}"; do
         if [ -f "$SCRIPT_DIR/$file" ]; then
             cp "$SCRIPT_DIR/$file" "$PROJECT_DIR/"
@@ -40,14 +40,27 @@ fi
 
 cd $PROJECT_DIR
 
+# Tạo config.env từ template nếu chưa tồn tại
+if [ ! -f "$PROJECT_DIR/config.env" ]; then
+    if [ -f "$PROJECT_DIR/config.env.example" ]; then
+        echo "📝 Tạo config.env từ config.env.example..."
+        cp "$PROJECT_DIR/config.env.example" "$PROJECT_DIR/config.env"
+        echo "⚠️ CẢNH BÁO: Vui lòng sửa config.env tại $PROJECT_DIR với thông tin cấu hình thực tế của bạn!"
+    else
+        echo "❌ Thiếu file cấu hình config.env hoặc config.env.example!"
+        echo "   Vui lòng tạo file config.env tại $PROJECT_DIR trước khi tiếp tục."
+        exit 1
+    fi
+fi
+
 # 4. Tạo virtual environment
 echo "🔧 Tạo virtual environment..."
 python3 -m venv venv
 source venv/bin/activate
 
-# 5. Kiểm tra files sau khi copy
+# 5. Kiểm tra các file code bắt buộc sau khi copy
 echo "📋 Kiểm tra files..."
-REQUIRED_FILES=("bot.py" "ctv_api.py" "database.py" "sepay_server.py" "config.env" "requirements.txt")
+REQUIRED_FILES=("bot.py" "ctv_api.py" "database.py" "sepay_server.py" "requirements.txt")
 for file in "${REQUIRED_FILES[@]}"; do
     if [ ! -f "$file" ]; then
         echo "❌ Thiếu file: $file"
