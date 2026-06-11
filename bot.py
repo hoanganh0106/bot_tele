@@ -24,7 +24,7 @@ from telegram.ext import (
     ContextTypes, MessageHandler, filters
 )
 
-from ctv_api import CTVApi, CrmTeacherApi
+from ctv_api import CTVApi
 from database import Database
 from sepay_server import start_webhook_server
 
@@ -37,9 +37,6 @@ BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 ADMIN_IDS = [int(x.strip()) for x in os.getenv("ADMIN_TELEGRAM_IDS", "").split(",") if x.strip().isdigit()]
 CTV_API_URL = os.getenv("CTV_API_URL", "http://103.69.87.202:5000")
 CTV_API_KEY = os.getenv("CTV_API_KEY", "")
-
-CRMTEACHER_API_URL = os.getenv("CRMTEACHER_API_URL", "https://api.crmteacher.org/openapi/v1")
-CRMTEACHER_API_KEY = os.getenv("CRMTEACHER_API_KEY", "")
 WEBHOOK_PORT = int(os.getenv("WEBHOOK_PORT", "8443"))
 BANK_NAME = os.getenv("BANK_NAME", "Vietcombank")
 BANK_ACCOUNT_NUMBER = os.getenv("BANK_ACCOUNT_NUMBER", "")
@@ -62,7 +59,6 @@ DB_PATH = os.path.join(DATA_DIR, "bot_data.json")
 
 # Init
 api = CTVApi(CTV_API_URL, CTV_API_KEY)
-crm_api = CrmTeacherApi(CRMTEACHER_API_URL, CRMTEACHER_API_KEY)
 db = Database(DB_PATH)
 
 # Cache bot username — set 1 lần khi khởi động, dùng mãi
@@ -192,7 +188,6 @@ ALL_CATEGORIES = {
     "discord": ["Discord", "💬"],
     "vpn": ["VPN", "🛡️"],
     "spotify": ["Spotify", "🎵"],
-    "crm_partner": ["Đối Tác 2", "🚀"],
 }
 
 
@@ -213,7 +208,6 @@ _cache_lock = Lock()  # Thread-safe guard cho _cache_refreshing
 # Circuit breaker: tạm ngắt API liên tục bị lỗi
 _circuit_breaker = {
     "CTV": {"failures": 0, "last_fail": 0, "cooldown": 60},
-    "CRM": {"failures": 0, "last_fail": 0, "cooldown": 60},
 }
 CIRCUIT_BREAKER_THRESHOLD = 3  # Sau 3 lần lỗi liên tiếp → tạm ngắt
 
@@ -258,21 +252,6 @@ def _fetch_api1():
         return None, 0
 
 
-def _fetch_api2():
-    """Gọi API 2 (CRM) — chạy trong thread."""
-    if _is_circuit_open("CRM"):
-        logger.debug("⚡ API 2 (CRM) circuit OPEN — skipping")
-        return {}, 0
-    try:
-        products, balance = crm_api.get_stock()
-        _record_api_result("CRM", bool(products))
-        return products, balance
-    except Exception as e:
-        _record_api_result("CRM", False)
-        logger.error(f"API 2 fetch error: {e}")
-        return {}, 0
-
-
 def invalidate_cache():
     """Xóa cache để lần gọi tiếp theo lấy dữ liệu mới."""
     global _api_cache
@@ -280,19 +259,14 @@ def invalidate_cache():
 
 
 def _do_refresh_products() -> tuple[dict, int]:
-    """Gọi đồng thời cả 2 API, merge với custom products.
+    """Gọi API 1 (CTV), merge với custom products.
     Dùng persistent thread pool — không tạo mới mỗi lần.
     """
     f1 = _api_executor.submit(_fetch_api1)
-    f2 = _api_executor.submit(_fetch_api2)
     products1, balance1 = f1.result(timeout=10)
-    products2, balance2 = f2.result(timeout=10)
 
     products = products1 if products1 else {}
     balance = balance1 or 0
-    if products2:
-        products.update(products2)
-        balance += balance2
 
     # Merge custom products từ DB
     custom_products = db.get_custom_products()
@@ -448,9 +422,6 @@ def classify_product(key: str, info: dict, merged_cats: dict = None) -> tuple:
         return name, icon, custom_cat
 
     # 2. Không tự động phân loại — sản phẩm mới sẽ vào "Khác" để admin tự chọn danh mục
-    # Fallback: sản phẩm CRM → "Đối Tác 2", còn lại → "Khác"
-    if info.get("api_source") == "CRM":
-        return "Đối Tác 2", "🚀", "crm_partner"
     return "Khác", "📦", "khac"
 
 def build_category_grid(products, callback_prefix, is_admin=False):
@@ -676,6 +647,9 @@ async def cmd_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ui_btn("contact", "☎️ Liên hệ Admin", url="https://t.me/hoanganh1162"),
             ui_btn("reload", "🔄 Cập nhật", callback_data="reload_menu")
         ])
+        buttons.append([
+            ui_btn("back", "⬅️ Quay lại trang chủ", callback_data="back_start")
+        ])
 
         await msg.edit_text(
             "🛍️ <b>MENU SẢN PHẨM</b>\n"
@@ -731,7 +705,8 @@ async def handle_product_select(update: Update, context: ContextTypes.DEFAULT_TY
             parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("⬅️ Quay lại", callback_data=f"viewcat_{cid}"),
-                 InlineKeyboardButton("🏠 Thoát", callback_data="reload_menu")]
+                 InlineKeyboardButton("🛍️ Danh mục", callback_data="back_menu"),
+                 InlineKeyboardButton("🏠 Trang chủ", callback_data="back_start")]
             ])
         )
         return
@@ -744,7 +719,8 @@ async def handle_product_select(update: Update, context: ContextTypes.DEFAULT_TY
             parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("⬅️ Quay lại", callback_data=f"viewcat_{cid}"),
-                 InlineKeyboardButton("🏠 Thoát", callback_data="reload_menu")]
+                 InlineKeyboardButton("🛍️ Danh mục", callback_data="back_menu"),
+                 InlineKeyboardButton("🏠 Trang chủ", callback_data="back_start")]
             ])
         )
         return
@@ -765,7 +741,8 @@ async def handle_product_select(update: Update, context: ContextTypes.DEFAULT_TY
     _, _, cid = classify_product(product_key, info)
     qty_buttons.append([
         InlineKeyboardButton("⬅️ Quay lại", callback_data=f"viewcat_{cid}"),
-        InlineKeyboardButton("🏠 Thoát", callback_data="reload_menu")
+        InlineKeyboardButton("🛍️ Danh mục", callback_data="back_menu"),
+        InlineKeyboardButton("🏠 Trang chủ", callback_data="back_start")
     ])
 
     # Nếu là slot_gpt_team, thông báo cần email
@@ -905,7 +882,7 @@ async def handle_qty_select(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"💳 Chuyển khoản {format_money(total)}",
         callback_data=f"paybank_{order_code}"
     )])
-    buttons.append([InlineKeyboardButton("❌ Hủy đơn", callback_data=f"cancel_{order_code}")])
+    buttons.append([InlineKeyboardButton("⬅️ Quay lại & Hủy đơn", callback_data=f"cancel_{order_code}")])
 
     wallet_line = ""
     if user_balance > 0:
@@ -999,7 +976,7 @@ async def handle_pay_bank(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     buttons = [
         [InlineKeyboardButton("✅ Đã chuyển khoản", callback_data=f"paid_{order_code}")],
-        [InlineKeyboardButton("❌ Hủy đơn", callback_data=f"cancel_{order_code}")],
+        [InlineKeyboardButton("⬅️ Hủy đơn & Quay lại", callback_data=f"cancel_{order_code}")],
     ]
 
     await query.edit_message_text(
@@ -1098,6 +1075,11 @@ async def handle_pay_partial(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     qr_url = generate_qr_url(remain, order_code)
 
+    buttons = [
+        [InlineKeyboardButton("✅ Đã chuyển khoản", callback_data=f"paid_{order_code}")],
+        [InlineKeyboardButton("⬅️ Hủy đơn & Quay lại", callback_data=f"cancel_{order_code}")],
+    ]
+
     await query.edit_message_text(
         f"✅ Đã trừ **{format_money(wallet_amount)}** từ ví!\n"
         f"💰 Số dư còn lại: **{format_money(new_balance)}**\n\n"
@@ -1112,6 +1094,7 @@ async def handle_pay_partial(update: Update, context: ContextTypes.DEFAULT_TYPE)
         f"⏰ Đơn tự hủy sau **5 phút** (hoàn tiền ví nếu hủy)\n"
         f"✅ Hệ thống tự xác nhận sau khi nhận được CK",
         parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup(buttons),
         disable_web_page_preview=False
     )
 
@@ -1125,6 +1108,7 @@ async def handle_cancel_order(update: Update, context: ContextTypes.DEFAULT_TYPE
     # Kiểm tra có trả ví partial không
     order = db.get_order(order_code)
     wallet_paid = order.get("wallet_paid", 0) if order else 0
+    product_key = order.get("product_key") if order else None
 
     # CRITICAL: Dùng cancel_order_if_pending (atomic) thay vì read-check-write
     cancelled = db.cancel_order_if_pending(order_code)
@@ -1135,10 +1119,19 @@ async def handle_cancel_order(update: Update, context: ContextTypes.DEFAULT_TYPE
             new_balance = db.get_user_balance(order.get("user_id"))
             refund_text = f"\n💰 Đã hoàn **{format_money(wallet_paid)}** vào ví (Số dư: {format_money(new_balance)})"
         
+        # Tạo dòng nút điều hướng thông minh quay lại
+        buttons = []
+        row = []
+        if product_key:
+            row.append(InlineKeyboardButton("⬅️ Xem lại sản phẩm", callback_data=f"prod_{product_key}"))
+        row.append(InlineKeyboardButton("🛍️ Menu sản phẩm", callback_data="back_menu"))
+        buttons.append(row)
+        buttons.append([InlineKeyboardButton("🏠 Trang chủ", callback_data="back_start")])
+
         await query.edit_message_text(
-            f"❌ Đơn **#{order_code}** đã được hủy.{refund_text}\n"
-            "Gõ /menu để mua sản phẩm khác.",
-            parse_mode="Markdown"
+            f"❌ Đơn **#{order_code}** đã được hủy.{refund_text}",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup(buttons)
         )
     else:
         await query.edit_message_text("Đơn hàng này đã được xử lý hoặc không tồn tại.")
@@ -1157,6 +1150,9 @@ async def handle_back_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     buttons.append([
         ui_btn("contact", "☎️ Liên hệ Admin", url="https://t.me/hoanganh1162"),
         ui_btn("reload", "🔄 Cập nhật", callback_data="reload_menu")
+    ])
+    buttons.append([
+        ui_btn("back", "⬅️ Quay lại trang chủ", callback_data="back_start")
     ])
     await query.edit_message_text(
         "🛍️ <b>MENU SẢN PHẨM</b>\n"
@@ -1436,27 +1432,18 @@ async def process_paid_order(context, order_code: str, payment_source: str = "se
 
         emails = order.get("emails")
         
-        # Kiểm tra xem sản phẩm thuộc API nào
-        source = products[product_key].get("api_source", "CTV")
-        logger.info(f"  → Calling API {source} for {product_key} x{qty}")
+        # Gọi API đối tác (CTV) mua hàng
+        logger.info(f"  → Calling CTV API for {product_key} x{qty}")
         
         # FIX: Wrap API buy trong asyncio.to_thread() để KHÔNG block event loop
-        if source == "CRM":
-            result = await asyncio.to_thread(
-                lambda: crm_api.buy(product_key, qty, emails=emails if emails else None, order_code=order_code)
-            )
-        else:
-            result = await asyncio.to_thread(
-                lambda: api.buy(product_key, qty, emails=emails if emails else None)
-            )
+        result = await asyncio.to_thread(
+            lambda: api.buy(product_key, qty, emails=emails if emails else None)
+        )
 
         logger.info(f"  → API response for {order_code}: success={result.get('success')}")
 
         if result.get("success"):
             items = result.get("items", [])
-            # Trường hợp CRM API trả về data khác chút
-            if source == "CRM" and "data" in result and "items" in result["data"]:
-                items = result["data"]["items"]
 
             # Atomic: pending → paid + lưu kết quả API
             saved = db.complete_order_payment(order_code, {
@@ -2330,6 +2317,9 @@ async def handle_category_click(update: Update, context: ContextTypes.DEFAULT_TY
             ui_btn("contact", "☎️ Liên hệ Admin", url="https://t.me/hoanganh1162"),
             ui_btn("reload", "🔄 Cập nhật", callback_data="reload_menu")
         ])
+        buttons.append([
+            ui_btn("back", "⬅️ Quay lại trang chủ", callback_data="back_start")
+        ])
         await query.edit_message_text(
             "🛍️ <b>MENU SẢN PHẨM</b>\n"
             "════════════════════\n\n"
@@ -2423,11 +2413,7 @@ async def render_admin_product_detail(update, context, key):
         is_custom_local = info.get("is_custom_local", False)
         
     has_auto_accs = db.has_custom_accounts_enabled(key)
-    source_txt = "🌐 Hàng đối tác (API gốc)"
-    if info and info.get("api_source") == "CRM":
-        source_txt = "🌐 Hàng đối tác (CRMTeacher)"
-    elif info and info.get("api_source") == "CTV":
-        source_txt = "🌐 Hàng đối tác (CTV Gốc)"
+    source_txt = "🌐 Hàng đối tác (CTV Gốc)"
 
     if is_custom_local:
         if has_auto_accs:
@@ -3147,7 +3133,7 @@ async def handle_admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
             cat_products[cat_id]["items"].append((dname, sell_price))
 
         # Sắp xếp theo thứ tự danh mục chuẩn
-        order = ["gpt", "grok", "capcut", "gemini", "meitu", "netflix", "discord", "vpn", "spotify", "crm_partner", "khac"]
+        order = ["gpt", "grok", "capcut", "gemini", "meitu", "netflix", "discord", "vpn", "spotify", "khac"]
         sorted_cats = []
         for o in order:
             if o in cat_products:
@@ -3787,11 +3773,8 @@ async def post_init(application):
         })
         # Log kết quả
         api1_count = sum(1 for v in products.values() if v.get("api_source") == "CTV")
-        api2_count = sum(1 for v in products.values() if v.get("api_source") == "CRM")
         custom_count = sum(1 for v in products.values() if v.get("is_custom_local"))
-        logger.info(f"✅ Cache pre-warmed: {len(products)} products (API1: {api1_count}, API2: {api2_count}, Custom: {custom_count})")
-        if api2_count == 0:
-            logger.warning(f"⚠️ API 2 (CRM) returned 0 products — URL: {CRMTEACHER_API_URL}")
+        logger.info(f"✅ Cache pre-warmed: {len(products)} products (API1: {api1_count}, Custom: {custom_count})")
     except Exception as e:
         logger.error(f"❌ Cache pre-warm failed: {e}")
 

@@ -17,19 +17,35 @@ sudo apt update && sudo apt upgrade -y
 echo "🐍 Cài đặt Python..."
 sudo apt install -y python3 python3-pip python3-venv
 
-# 3. Tạo thư mục project
+# 3. Xác định thư mục chứa script và tạo thư mục project
+SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
 PROJECT_DIR="/home/ubuntu/ctv-bot"
-mkdir -p $PROJECT_DIR
-cd $PROJECT_DIR
 
-echo "📂 Project directory: $PROJECT_DIR"
+echo "📂 Tạo thư mục project: $PROJECT_DIR"
+mkdir -p $PROJECT_DIR
+
+# Tự động copy files từ thư mục chạy script vào PROJECT_DIR nếu khác nhau
+if [ "$SCRIPT_DIR" != "$PROJECT_DIR" ]; then
+    echo "🚚 Đang sao chép files từ $SCRIPT_DIR sang $PROJECT_DIR..."
+    FILES_TO_COPY=("bot.py" "ctv_api.py" "database.py" "sepay_server.py" "config.env" "requirements.txt" "ctv-bot.service")
+    for file in "${FILES_TO_COPY[@]}"; do
+        if [ -f "$SCRIPT_DIR/$file" ]; then
+            cp "$SCRIPT_DIR/$file" "$PROJECT_DIR/"
+            echo "   -> Đã copy $file"
+        else
+            echo "   ⚠️ Cảnh báo: Không tìm thấy $file tại $SCRIPT_DIR"
+        fi
+    done
+fi
+
+cd $PROJECT_DIR
 
 # 4. Tạo virtual environment
 echo "🔧 Tạo virtual environment..."
 python3 -m venv venv
 source venv/bin/activate
 
-# 5. Copy files (nếu chưa copy)
+# 5. Kiểm tra files sau khi copy
 echo "📋 Kiểm tra files..."
 REQUIRED_FILES=("bot.py" "ctv_api.py" "database.py" "sepay_server.py" "config.env" "requirements.txt")
 for file in "${REQUIRED_FILES[@]}"; do
