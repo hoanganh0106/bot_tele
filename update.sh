@@ -40,20 +40,45 @@ if [ -f "$DB_FILE" ]; then
     ls -t "$BACKUP_DIR"/bot_data_*.json 2>/dev/null | tail -n +31 | xargs rm -f 2>/dev/null || true
 fi
 
-# 4. Pull code mới
+# 4. Pull code mới từ git repository hiện tại và copy sang PROJECT_DIR
+SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
+if [ -d "$SCRIPT_DIR/.git" ] || git -C "$SCRIPT_DIR" rev-parse --is-inside-work-tree &>/dev/null; then
+    cd "$SCRIPT_DIR"
+    echo "📥 Pulling code mới tại $SCRIPT_DIR..."
+    git pull origin main || {
+        echo "⚠️ Git pull conflict, force reset..."
+        git fetch origin main
+        git reset --hard origin/main
+    }
+    
+    # Dọn file data cũ trong git (nếu có)
+    git rm -f data/bot_data.json 2>/dev/null || true
+    rm -f data/bot_data.json 2>/dev/null || true
+else
+    echo "⚠️ Thư mục hiện tại ($SCRIPT_DIR) không phải là git repository. Bỏ qua git pull."
+fi
+
+# Sao chép code mới từ SCRIPT_DIR sang PROJECT_DIR
+if [ "$SCRIPT_DIR" != "$PROJECT_DIR" ]; then
+    echo "🚚 Đang sao chép code mới sang $PROJECT_DIR..."
+    FILES_TO_COPY=("bot.py" "ctv_api.py" "database.py" "sepay_server.py" "config.env.example" "requirements.txt" "ctv-bot.service")
+    for file in "${FILES_TO_COPY[@]}"; do
+        if [ -f "$SCRIPT_DIR/$file" ]; then
+            cp "$SCRIPT_DIR/$file" "$PROJECT_DIR/"
+            echo "   -> Đã copy $file"
+        fi
+    done
+    
+    # Chỉ copy config.env nếu bên PROJECT_DIR chưa có
+    if [ -f "$SCRIPT_DIR/config.env" ] && [ ! -f "$PROJECT_DIR/config.env" ]; then
+        cp "$SCRIPT_DIR/config.env" "$PROJECT_DIR/"
+        echo "   -> Đã copy config.env"
+    fi
+fi
+
 cd "$PROJECT_DIR"
-echo "📥 Pulling code mới..."
-git pull origin main || {
-    echo "⚠️ Git pull conflict, force reset..."
-    git fetch origin main
-    git reset --hard origin/main
-}
 
-# Dọn file data cũ trong git (đã chuyển ra DATA_DIR)
-git rm -f data/bot_data.json 2>/dev/null || true
-rm -f data/bot_data.json 2>/dev/null || true
-
-# 5. Cài dependencies mới (dùng python -m pip để an toàn hơn)
+# 5. Cài dependencies mới
 echo "📦 Cập nhật dependencies..."
 if [ -f "$PROJECT_DIR/venv/bin/python" ]; then
     "$PROJECT_DIR/venv/bin/python" -m pip install -r requirements.txt -q
@@ -61,10 +86,15 @@ else
     echo "⚠️ Không tìm thấy venv tại $PROJECT_DIR/venv. Bỏ qua cài đặt pip."
 fi
 
-# 6. Đảm bảo config.env KHÔNG bị ghi đè
+# 6. Đảm bảo config.env không bị thiếu
 if [ ! -f "config.env" ]; then
-    echo "⚠️ config.env bị thiếu! Khôi phục từ git..."
-    git checkout config.env 2>/dev/null || echo "❌ Không tìm thấy config.env trong git"
+    if [ -f "config.env.example" ]; then
+        echo "📝 Tạo config.env từ config.env.example..."
+        cp config.env.example config.env
+        echo "⚠️ CẢNH BÁO: Vui lòng sửa config.env tại $PROJECT_DIR với thông tin cấu hình thực tế của bạn!"
+    else
+        echo "❌ config.env bị thiếu!"
+    fi
 fi
 
 # 7. Đảm bảo biến DATA_DIR được set trong service
