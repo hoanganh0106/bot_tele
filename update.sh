@@ -16,6 +16,19 @@ DATA_DIR="/home/ubuntu/ctv-bot-data"
 DB_FILE="$DATA_DIR/bot_data.json"
 BACKUP_DIR="$DATA_DIR/backups"
 
+ensure_https_remote_for_token() {
+    local remote_url
+    remote_url="$(git config --get remote.origin.url || true)"
+
+    if [[ "$remote_url" == git@github.com:* ]]; then
+        local repo_path="${remote_url#git@github.com:}"
+        local https_url="https://github.com/${repo_path}"
+
+        echo "🔑 Đang đổi git remote sang HTTPS để dùng access token: $https_url"
+        git remote set-url origin "$https_url"
+    fi
+}
+
 echo "🔄 Bắt đầu cập nhật bot..."
 
 # 1. Tạo thư mục data ngoài git (nếu chưa có)
@@ -45,11 +58,22 @@ SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
 if [ -d "$SCRIPT_DIR/.git" ] || git -C "$SCRIPT_DIR" rev-parse --is-inside-work-tree &>/dev/null; then
     cd "$SCRIPT_DIR"
     echo "📥 Pulling code mới tại $SCRIPT_DIR..."
-    git pull origin main || {
-        echo "⚠️ Git pull conflict, force reset..."
-        git fetch origin main
-        git reset --hard origin/main
-    }
+    GIT_TOKEN="${GITHUB_TOKEN:-${GH_TOKEN:-}}"
+    GIT_TOKEN="$(printf '%s' "$GIT_TOKEN" | tr -d '\r\n')"
+    if [ -n "$GIT_TOKEN" ]; then
+        ensure_https_remote_for_token
+        git -c credential.helper= -c http.extraHeader="Authorization: Bearer $GIT_TOKEN" pull origin main || {
+            echo "⚠️ Git pull conflict, force reset..."
+            git -c credential.helper= -c http.extraHeader="Authorization: Bearer $GIT_TOKEN" fetch origin main
+            git reset --hard origin/main
+        }
+    else
+        git pull origin main || {
+            echo "⚠️ Git pull conflict, force reset..."
+            git fetch origin main
+            git reset --hard origin/main
+        }
+    fi
     
     # Dọn file data cũ trong git (nếu có)
     git rm -f data/bot_data.json 2>/dev/null || true
