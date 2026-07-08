@@ -102,18 +102,6 @@ def generate_order_code() -> str:
     return f"BOT{int(time.time())}{uuid.uuid4().hex[:6].upper()}"
 
 
-def format_user_link(username: str = None, user_id: int = None) -> str:
-    """Tạo link clickable đến user Telegram.
-    Ưu tiên @username (click được), fallback về tg://user?id (deep link).
-    """
-    if username and username != '?':
-        clean = username.lstrip('@')
-        return f"[@{clean}](https://t.me/{clean})"
-    if user_id:
-        return f"[User {user_id}](tg://user?id={user_id})"
-    return "Không rõ"
-
-
 def escape_md(text: str) -> str:
     """Escape ký tự đặc biệt Markdown v1 cho Telegram."""
     if not text:
@@ -122,6 +110,41 @@ def escape_md(text: str) -> str:
     for ch in ['\\', '_', '*', '`', '[']:
         text = text.replace(ch, f'\\{ch}')
     return text
+
+
+def format_user_link(username: str = None, user_id: int = None) -> str:
+    """Tạo link clickable đến user Telegram.
+    Ưu tiên @username (click được), fallback về tg://user?id (deep link).
+    """
+    if username and username != '?':
+        clean = username.lstrip('@')
+        return f"[@{escape_md(clean)}](https://t.me/{clean})"
+    if user_id:
+        return f"[User {user_id}](tg://user?id={user_id})"
+    return escape_md("Không rõ")
+
+
+def _is_api_balance_error(error_msg: str) -> bool:
+    """Nhận diện lỗi do tài khoản API đối tác không đủ số dư."""
+    if not error_msg:
+        return False
+    msg = str(error_msg).lower()
+    keywords = [
+        "số dư", "so du", "khong du", "không đủ", "insufficient",
+        "balance", "hết tiền", "het tien",
+    ]
+    return any(keyword in msg for keyword in keywords)
+
+
+def _paid_order_customer_error_text(order_code: str) -> str:
+    """Thông báo lỗi xử lý đơn cho khách, không lộ nguyên nhân nội bộ."""
+    return (
+        f"⚠️ Đơn **#{order_code}** gặp lỗi trong quá trình xử lý.\n\n"
+        f"✅ Thanh toán của bạn **đã được ghi nhận** — Admin đã nhận thông báo "
+        f"và sẽ giao hàng hoặc hoàn tiền cho bạn sớm nhất.\n\n"
+        f"🚫 **Vui lòng KHÔNG chuyển khoản lại lần nữa.**\n"
+        f"💬 Cần hỗ trợ nhanh, hãy liên hệ admin kèm mã đơn `#{order_code}`."
+    )
 
 
 def escape_html(text: str) -> str:
@@ -1411,11 +1434,7 @@ async def process_paid_order(context, order_code: str, payment_source: str = "se
             try:
                 await context.bot.send_message(
                     chat_id=user_id,
-                    text=(
-                        f"❌ Đơn **#{order_code}** thanh toán thành công nhưng sản phẩm hiện không khả dụng!\n"
-                        f"Sản phẩm `{product_key}` đã bị đối tác thay đổi.\n\n"
-                        f"Admin sẽ xử lý hoàn tiền cho bạn sớm nhất."
-                    ),
+                    text=_paid_order_customer_error_text(order_code),
                     parse_mode="Markdown"
                 )
             except Exception:
@@ -1499,7 +1518,7 @@ async def process_paid_order(context, order_code: str, payment_source: str = "se
             logger.info(f"  ✅ Order {order_code} → COMPLETED! Items delivered.")
             return True
         else:
-            error_msg = result.get("error", "Lỗi không xác định")
+            error_msg = str(result.get("error") or "Lỗi không xác định")
             logger.warning(f"  ❌ API returned error for {order_code}: {error_msg}")
             db.complete_order_payment(order_code, {
                 "status": "failed",
@@ -1510,24 +1529,34 @@ async def process_paid_order(context, order_code: str, payment_source: str = "se
             try:
                 await context.bot.send_message(
                     chat_id=user_id,
-                    text=(
-                        f"❌ Đơn **#{order_code}** thanh toán thành công nhưng mua hàng thất bại!\n"
-                        f"Lỗi: {error_msg}\n\n"
-                        f"Vui lòng liên hệ admin để được hoàn tiền."
-                    ),
+                    text=_paid_order_customer_error_text(order_code),
                     parse_mode="Markdown"
                 )
             except Exception:
                 pass
 
-            await _notify_all_admins(context,
-                f"🚨 **ĐƠN LỖI — CẦN XỬ LÝ**\n"
-                f"Mã: `{order_code}`\n"
-                f"👤 Khách: {format_user_link(order.get('username'), user_id)}\n"
-                f"Sản phẩm: {order.get('product_name', '?')} x{qty}\n"
-                f"Lỗi API: {error_msg}\n"
-                f"💰 Khách đã thanh toán {format_money(order['total'])} — cần hoàn tiền!"
-            )
+            if _is_api_balance_error(error_msg):
+                admin_alert = (
+                    f"🔴🔴 **API HẾT SỐ DƯ — NẠP TIỀN GẤP!** 🔴🔴\n"
+                    f"━━━━━━━━━━━━━━━━━━\n"
+                    f"Mã đơn: `{order_code}`\n"
+                    f"👤 Khách: {format_user_link(order.get('username'), user_id)}\n"
+                    f"Sản phẩm: {order.get('product_name', '?')} x{qty}\n"
+                    f"💰 Khách đã thanh toán {format_money(order['total'])}.\n\n"
+                    f"➡️ Nạp tiền vào tài khoản CTV API rồi xử lý lại đơn.\n"
+                    f"Đã báo khách là đơn lỗi và dặn KHÔNG chuyển khoản lại.\n"
+                    f"Lỗi gốc: {escape_md(error_msg)}"
+                )
+            else:
+                admin_alert = (
+                    f"🚨 **ĐƠN LỖI — CẦN XỬ LÝ**\n"
+                    f"Mã: `{order_code}`\n"
+                    f"👤 Khách: {format_user_link(order.get('username'), user_id)}\n"
+                    f"Sản phẩm: {order.get('product_name', '?')} x{qty}\n"
+                    f"Lỗi API: {escape_md(error_msg)}\n"
+                    f"💰 Khách đã thanh toán {format_money(order['total'])} — cần hoàn tiền!"
+                )
+            await _notify_all_admins(context, admin_alert)
 
             return False
 
@@ -1552,10 +1581,7 @@ async def process_paid_order(context, order_code: str, payment_source: str = "se
         try:
             await context.bot.send_message(
                 chat_id=user_id,
-                text=(
-                    f"❌ Đơn **#{order_code}** thanh toán thành công nhưng xử lý gặp lỗi!\n"
-                    f"Admin sẽ xử lý và giao hàng/hoàn tiền cho bạn sớm nhất."
-                ),
+                text=_paid_order_customer_error_text(order_code),
                 parse_mode="Markdown"
             )
         except Exception:
@@ -1618,6 +1644,32 @@ async def handle_admin_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE
             f"⚠️ Đơn `{order_code}` không thể hủy (trạng thái: {order.get('status', '?')}).",
             parse_mode="Markdown"
         )
+
+
+async def collect_broadcast_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    """Gom 1 tin broadcast vào queue. Trả về True nếu đang ở chế độ broadcast."""
+    if not context.user_data.get("awaiting_broadcast"):
+        return False
+    if not is_admin(update.effective_user.id):
+        return False
+
+    message = update.effective_message
+    if not message:
+        return False
+
+    queue = context.user_data.setdefault("broadcast_queue", [])
+    queue.append(message.message_id)
+    count = len(queue)
+    await message.reply_text(
+        f"📝 Đã nhận **{count}** tin. Gửi thêm hoặc bấm nút bên dưới.",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton(f"📤 Gửi ngay ({count} tin)", callback_data="broadcast_send"),
+            InlineKeyboardButton("🗑 Hủy bỏ", callback_data="broadcast_cancel"),
+        ]])
+    )
+    return True
+
 
 async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Xử lý nhập text (email, sửa giá, sửa markup, v.v.)."""
@@ -2107,45 +2159,7 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     # 3. Check nếu đang chờ gửi thông báo broadcast
-    if context.user_data.get("awaiting_broadcast"):
-        del context.user_data["awaiting_broadcast"]
-        users = db.get_all_users()
-        if not users:
-            await update.message.reply_text("❌ Chưa có người dùng nào để thống báo.")
-            return
-
-        total = len(users)
-        status_msg = await update.message.reply_text(f"⏳ Đang gửi thông báo đến {total} người dùng...")
-
-        # Gửi song song với semaphore để không bị rate-limit Telegram (~30 msg/s)
-        sem = asyncio.Semaphore(25)
-        success_count = 0
-        failed_count = 0
-        lock = asyncio.Lock()
-
-        async def _send_one(uid):
-            nonlocal success_count, failed_count
-            async with sem:
-                try:
-                    await context.bot.copy_message(
-                        chat_id=uid,
-                        from_chat_id=update.effective_chat.id,
-                        message_id=update.message.message_id
-                    )
-                    async with lock:
-                        success_count += 1
-                except Exception:
-                    async with lock:
-                        failed_count += 1
-
-        await asyncio.gather(*[_send_one(uid) for uid in users])
-
-        await status_msg.edit_text(
-            f"✅ Đã gửi thành công đến **{success_count}/{total}** người dùng."
-            + (f"\n❌ Thất bại: {failed_count}" if failed_count else ""),
-            parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Quản trị", callback_data="admin_home")]])
-        )
+    if await collect_broadcast_message(update, context):
         return
 
     # 4. Tra cứu người dùng (ĐẶT TRƯỚC email handler để không bị chặn bởi return)
@@ -2258,6 +2272,12 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("⏳ Đang xử lý ghi nhận thông tin...")
     await process_paid_order(context, order_code, order.get("payment_source", "sepay"))
 
+
+async def handle_media_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Nhận ảnh/video/file; hiện chỉ phục vụ gom tin broadcast của admin."""
+    await collect_broadcast_message(update, context)
+
+
 def _build_admin_dashboard():
     """Được gọi khi hiển thị admin dashboard."""
     text = (
@@ -2269,6 +2289,7 @@ def _build_admin_dashboard():
          InlineKeyboardButton("👥 Người dùng", callback_data="admin_users")],
         [InlineKeyboardButton("🔍 Tra cứu khách", callback_data="admin_user_lookup"),
          InlineKeyboardButton("📦 Sản phẩm", callback_data="admin_products")],
+        [InlineKeyboardButton("👥 Khách gần đây", callback_data="admin_recent_users")],
         [InlineKeyboardButton("⚙️ Markup", callback_data="admin_markup"),
          InlineKeyboardButton("🎁 Giới thiệu", callback_data="admin_referral")],
         [InlineKeyboardButton("📢 Broadcast", callback_data="admin_broadcast"),
@@ -2471,6 +2492,23 @@ async def render_admin_product_detail(update, context, key):
         InlineKeyboardButton("🏠 Thoát", callback_data="admin_home")
     ])
     await query.edit_message_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(buttons))
+
+
+def _clear_admin_state(context: ContextTypes.DEFAULT_TYPE):
+    """Xóa các state nhập liệu tạm trong dashboard admin."""
+    for key_to_clear in [
+        "awaiting_price_for", "awaiting_markup", "awaiting_broadcast",
+        "broadcast_queue", "awaiting_user_lookup",
+        "awaiting_stock_items_for", "awaiting_stock_manual_for",
+        "awaiting_ref_reward", "awaiting_ref_newuser", "awaiting_min_deposit",
+        "awaiting_wallet_adjust", "awaiting_desc_for", "awaiting_name_for",
+        "awaiting_new_cat", "awaiting_new_prod", "awaiting_rename_cat",
+        "awaiting_set_emoji",
+        "awaiting_welcome_msg", "awaiting_ui_emoji",
+    ]:
+        context.user_data.pop(key_to_clear, None)
+
+
 async def handle_admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Xử lý click trong Admin Dashboard."""
     query = update.callback_query
@@ -2481,21 +2519,73 @@ async def handle_admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = query.data
 
     if data == "admin_home":
+        _clear_admin_state(context)
         text, buttons = _build_admin_dashboard()
         await query.edit_message_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(buttons))
         return
 
+    if data == "broadcast_send":
+        queue = context.user_data.get("broadcast_queue") or []
+        context.user_data.pop("awaiting_broadcast", None)
+        context.user_data.pop("broadcast_queue", None)
+        if not queue:
+            await query.edit_message_text("❌ Chưa có tin nào để gửi.")
+            return
+
+        users = [uid for uid in db.get_all_users() if not is_admin(uid)]
+        if not users:
+            await query.edit_message_text("❌ Chưa có người dùng nào để thông báo.")
+            return
+
+        total = len(users)
+        await query.edit_message_text(f"⏳ Đang gửi {len(queue)} tin đến {total} người dùng...")
+
+        sem = asyncio.Semaphore(25)
+        success_count = 0
+        failed_count = 0
+        lock = asyncio.Lock()
+        admin_chat_id = query.message.chat_id
+
+        async def _send_all_to_user(uid):
+            nonlocal success_count, failed_count
+            async with sem:
+                try:
+                    for message_id in queue:
+                        await context.bot.copy_message(
+                            chat_id=uid,
+                            from_chat_id=admin_chat_id,
+                            message_id=message_id
+                        )
+                    async with lock:
+                        success_count += 1
+                except Exception:
+                    async with lock:
+                        failed_count += 1
+
+        await asyncio.gather(*[_send_all_to_user(uid) for uid in users])
+
+        await context.bot.send_message(
+            chat_id=admin_chat_id,
+            text=(
+                f"✅ Đã gửi **{len(queue)} tin** thành công đến **{success_count}/{total}** người dùng."
+                + (f"\n❌ Thất bại: {failed_count}" if failed_count else "")
+            ),
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Quản trị", callback_data="admin_home")]])
+        )
+        return
+
+    if data == "broadcast_cancel":
+        context.user_data.pop("awaiting_broadcast", None)
+        context.user_data.pop("broadcast_queue", None)
+        await query.edit_message_text(
+            "🗑 Đã hủy broadcast.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Quản trị", callback_data="admin_home")]])
+        )
+        return
+
     # Clear awaiting state just in case
-    for key_to_clear in [
-        "awaiting_price_for", "awaiting_markup", "awaiting_broadcast",
-        "awaiting_user_lookup", "awaiting_stock_items_for", "awaiting_stock_manual_for",
-        "awaiting_ref_reward", "awaiting_ref_newuser", "awaiting_min_deposit",
-        "awaiting_wallet_adjust", "awaiting_desc_for", "awaiting_name_for",
-        "awaiting_new_cat", "awaiting_new_prod", "awaiting_rename_cat",
-        "awaiting_set_emoji",
-        "awaiting_welcome_msg", "awaiting_ui_emoji",
-    ]:
-        context.user_data.pop(key_to_clear, None)
+    _clear_admin_state(context)
 
     if data == "admin_stats":
         stats = db.get_stats()
@@ -2524,6 +2614,35 @@ async def handle_admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "⚠️ _Hoặc bấm 'Hủy' để thoát._",
             parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Hủy", callback_data="admin_home")]])
+        )
+
+    elif data == "admin_recent_users":
+        recent = [(uid, info) for uid, info in db.get_recent_users(limit=20) if not is_admin(uid)][:10]
+        if not recent:
+            await query.edit_message_text(
+                "❌ Chưa có khách hàng nào.",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Quản trị", callback_data="admin_home")]])
+            )
+            return
+
+        lines = ["👥 **KHÁCH GẦN ĐÂY NHẤT**", "━━━━━━━━━━━━━━━━━━"]
+        for index, (uid, info) in enumerate(recent, 1):
+            name = escape_md(info.get("first_name") or "Không rõ")
+            joined = (info.get("joined_at") or "")[:16].replace("T", " ") or "Không rõ"
+            lines.append(
+                f"{index}. {format_user_link(info.get('username'), uid)} — {name}\n"
+                f"   🆔 `{uid}` | 📅 {escape_md(joined)}\n"
+                f"   💰 Ví: {format_money(info.get('balance') or 0)} | 🛒 Đã mua: {format_money(info.get('total_spent') or 0)}"
+            )
+        lines.append("\n💡 _Xem chi tiết đơn hàng của khách: dùng 🔍 Tra cứu khách._")
+
+        await query.edit_message_text(
+            "\n".join(lines),
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔍 Tra cứu khách", callback_data="admin_user_lookup")],
+                [InlineKeyboardButton("⬅️ Quản trị", callback_data="admin_home")],
+            ])
         )
 
     elif data == "admin_users":
@@ -3102,10 +3221,12 @@ async def handle_admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif data == "admin_broadcast":
         context.user_data["awaiting_broadcast"] = True
+        context.user_data["broadcast_queue"] = []
         await query.edit_message_text(
             "📢 **GỬI THÔNG BÁO CHO TẤT CẢ NGƯỜI DÙNG**\n\n"
-            "Vui lòng **nhắn tin nội dung** thông báo mà bạn muốn trải rộng đến tất cả người dùng vào khung chat.\n\n"
-            "⚠️ _Hoặc bấm 'Hủy' để thoát._",
+            "Gửi lần lượt các tin nhắn bạn muốn broadcast — **văn bản, ảnh, video đều được**.\n"
+            "Có thể gửi nhiều tin, bot sẽ gom lại.\n\n"
+            "Khi xong, bấm **📤 Gửi ngay** để phát đến tất cả khách.",
             parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Hủy", callback_data="admin_home")]])
         )
@@ -3886,11 +4007,15 @@ def main():
     app.add_handler(CallbackQueryHandler(handle_referral_home, pattern="^referral_home$"))
     app.add_handler(CallbackQueryHandler(handle_admin_confirm_pay, pattern="^adminpay_"))
     app.add_handler(CallbackQueryHandler(handle_admin_cancel, pattern="^admincx_"))
-    app.add_handler(CallbackQueryHandler(handle_admin_cb, pattern="^admin_"))
+    app.add_handler(CallbackQueryHandler(handle_admin_cb, pattern="^(admin_|broadcast_)"))
     app.add_handler(CallbackQueryHandler(handle_category_click, pattern="^viewcat_|^reload_menu$|^btn_myorders$"))
 
     # Text input handler
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_input))
+    app.add_handler(MessageHandler(
+        (filters.PHOTO | filters.VIDEO | filters.ANIMATION | filters.Document.ALL) & ~filters.COMMAND,
+        handle_media_input
+    ))
 
     # Run bot
     logger.info("🤖 Bot started!")

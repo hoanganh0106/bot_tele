@@ -802,6 +802,16 @@ class Database:
                 user_dict_ids = set()
             return list(user_list | user_dict_ids)
 
+    def get_recent_users(self, limit: int = 10) -> list:
+        """Danh sách user mới nhất theo joined_at giảm dần."""
+        with self.lock:
+            data = self._read()
+            self._migrate_users(data)
+            users = data.get("users", {})
+            items = [(int(uid), info) for uid, info in users.items() if isinstance(info, dict)]
+            items.sort(key=lambda item: item[1].get("joined_at") or "", reverse=True)
+            return items[:limit]
+
     def register_user(self, user_id: int, username: str = None, first_name: str = None, referred_by: int = None):
         """Đăng ký user mới với thông tin đầy đủ + xử lý referral."""
         with self.lock:
