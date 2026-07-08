@@ -608,6 +608,69 @@ class Database:
             data.setdefault("settings", {})[key] = value
             self._write(data)
 
+    # === BROADCAST BLOCKLIST ===
+    def get_broadcast_blocklist(self) -> list:
+        """Danh sách user_id bị chặn nhận broadcast (list int)."""
+        with self.lock:
+            raw = self._read().get("settings", {}).get("broadcast_blocklist", [])
+        result = []
+        for uid in raw:
+            try:
+                result.append(int(uid))
+            except (TypeError, ValueError):
+                continue
+        return result
+
+    def is_broadcast_blocked(self, user_id: int) -> bool:
+        try:
+            uid = int(user_id)
+        except (TypeError, ValueError):
+            return False
+        return uid in set(self.get_broadcast_blocklist())
+
+    def add_broadcast_block(self, user_id: int) -> bool:
+        """Thêm 1 ID vào blocklist. Trả về True nếu vừa được thêm mới."""
+        try:
+            uid = int(user_id)
+        except (TypeError, ValueError):
+            return False
+        with self.lock:
+            data = self._read()
+            blocklist = data.setdefault("settings", {}).setdefault("broadcast_blocklist", [])
+            existing = {int(x) for x in blocklist if str(x).lstrip("-").isdigit()}
+            if uid in existing:
+                return False
+            blocklist.append(uid)
+            self._write(data, immediate=True)
+            return True
+
+    def remove_broadcast_block(self, user_id: int) -> bool:
+        """Bỏ 1 ID khỏi blocklist. Trả về True nếu vừa được gỡ."""
+        try:
+            uid = int(user_id)
+        except (TypeError, ValueError):
+            return False
+        with self.lock:
+            data = self._read()
+            blocklist = data.setdefault("settings", {}).setdefault("broadcast_blocklist", [])
+            new_list = [x for x in blocklist if str(x).lstrip("-").isdigit() and int(x) != uid]
+            if len(new_list) == len(blocklist):
+                return False
+            data["settings"]["broadcast_blocklist"] = new_list
+            self._write(data, immediate=True)
+            return True
+
+    def clear_broadcast_blocklist(self) -> int:
+        """Xóa toàn bộ blocklist. Trả về số lượng ID đã xóa."""
+        with self.lock:
+            data = self._read()
+            blocklist = data.setdefault("settings", {}).setdefault("broadcast_blocklist", [])
+            count = len(blocklist)
+            if count:
+                data["settings"]["broadcast_blocklist"] = []
+                self._write(data, immediate=True)
+            return count
+
     # === TRANSACTION DEDUP ===
     def is_transaction_processed(self, transaction_id) -> bool:
         with self.lock:

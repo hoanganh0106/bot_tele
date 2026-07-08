@@ -2158,6 +2158,43 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ Vui lòng nhập số từ 0 đến 10.000.000.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Quản trị", callback_data="admin_home")]]))
         return
 
+    # 2b. Check nếu đang chờ nhập ID để chặn broadcast (ĐẶT TRƯỚC broadcast)
+    if context.user_data.get("awaiting_block_id"):
+        if not is_admin(user_id):
+            context.user_data.pop("awaiting_block_id", None)
+            return
+        context.user_data.pop("awaiting_block_id", None)
+        # Tách nhiều ID theo dấu phẩy, khoảng trắng, xuống dòng
+        tokens = re.split(r"[\s,;]+", text.strip())
+        added, duplicated, invalid = [], [], []
+        for tok in tokens:
+            if not tok:
+                continue
+            try:
+                uid = int(tok)
+            except ValueError:
+                invalid.append(tok)
+                continue
+            if is_admin(uid):
+                invalid.append(f"{tok}(admin)")
+                continue
+            if db.add_broadcast_block(uid):
+                added.append(uid)
+            else:
+                duplicated.append(uid)
+        lines = []
+        if added:
+            lines.append("✅ Đã chặn: " + ", ".join(f"`{x}`" for x in added))
+        if duplicated:
+            lines.append("ℹ️ Đã bị chặn từ trước: " + ", ".join(f"`{x}`" for x in duplicated))
+        if invalid:
+            lines.append("❌ Không hợp lệ (bỏ qua): " + ", ".join(f"`{x}`" for x in invalid))
+        if not lines:
+            lines.append("❌ Không nhận được ID hợp lệ nào.")
+        text_out, markup = _build_block_menu(extra="\n".join(lines))
+        await update.message.reply_text(text_out, parse_mode="Markdown", reply_markup=markup)
+        return
+
     # 3. Check nếu đang chờ gửi thông báo broadcast
     if await collect_broadcast_message(update, context):
         return
@@ -2276,6 +2313,31 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_media_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Nhận ảnh/video/file; hiện chỉ phục vụ gom tin broadcast của admin."""
     await collect_broadcast_message(update, context)
+
+
+def _build_block_menu(extra: str = ""):
+    """Xây màn hình quản lý danh sách ID bị chặn nhận broadcast."""
+    blocklist = db.get_broadcast_blocklist()
+    lines = [
+        "🚫 **CHẶN BROADCAST THEO ID**\n",
+        "Các ID trong danh sách sẽ **không** nhận tin broadcast.",
+    ]
+    if blocklist:
+        lines.append(f"\n📋 Đang chặn **{len(blocklist)}** ID:")
+        lines.append("\n".join(f"• `{uid}`" for uid in blocklist))
+    else:
+        lines.append("\n_Chưa chặn ID nào._")
+    if extra:
+        lines.append("\n" + extra)
+
+    buttons = [[InlineKeyboardButton("➕ Thêm ID chặn", callback_data="broadcast_block_add")]]
+    # Mỗi ID 1 nút gỡ chặn (tối đa 20 nút cho gọn)
+    for uid in blocklist[:20]:
+        buttons.append([InlineKeyboardButton(f"❌ Bỏ chặn {uid}", callback_data=f"broadcast_unblock_{uid}")])
+    if blocklist:
+        buttons.append([InlineKeyboardButton("🧹 Bỏ chặn tất cả", callback_data="broadcast_block_clear")])
+    buttons.append([InlineKeyboardButton("⬅️ Về Broadcast", callback_data="admin_broadcast")])
+    return "\n".join(lines), InlineKeyboardMarkup(buttons)
 
 
 def _build_admin_dashboard():
@@ -2505,6 +2567,7 @@ def _clear_admin_state(context: ContextTypes.DEFAULT_TYPE):
         "awaiting_new_cat", "awaiting_new_prod", "awaiting_rename_cat",
         "awaiting_set_emoji",
         "awaiting_welcome_msg", "awaiting_ui_emoji",
+        "awaiting_block_id",
     ]:
         context.user_data.pop(key_to_clear, None)
 
@@ -2532,13 +2595,15 @@ async def handle_admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text("❌ Chưa có tin nào để gửi.")
             return
 
-        users = [uid for uid in db.get_all_users() if not is_admin(uid)]
+        blocklist = set(db.get_broadcast_blocklist())
+        users = [uid for uid in db.get_all_users() if not is_admin(uid) and uid not in blocklist]
         if not users:
             await query.edit_message_text("❌ Chưa có người dùng nào để thông báo.")
             return
 
         total = len(users)
-        await query.edit_message_text(f"⏳ Đang gửi {len(queue)} tin đến {total} người dùng...")
+        blocked_note = f" (bỏ qua {len(blocklist)} ID bị chặn)" if blocklist else ""
+        await query.edit_message_text(f"⏳ Đang gửi {len(queue)} tin đến {total} người dùng{blocked_note}...")
 
         sem = asyncio.Semaphore(25)
         success_count = 0
@@ -2582,6 +2647,47 @@ async def handle_admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "🗑 Đã hủy broadcast.",
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Quản trị", callback_data="admin_home")]])
         )
+        return
+
+    if data == "broadcast_block_menu":
+        # Rời chế độ gom tin broadcast khi vào quản lý chặn ID
+        context.user_data.pop("awaiting_broadcast", None)
+        context.user_data.pop("broadcast_queue", None)
+        context.user_data.pop("awaiting_block_id", None)
+        text_out, markup = _build_block_menu()
+        await query.edit_message_text(text_out, parse_mode="Markdown", reply_markup=markup)
+        return
+
+    if data == "broadcast_block_add":
+        context.user_data["awaiting_block_id"] = True
+        await query.edit_message_text(
+            "➕ **THÊM ID CHẶN BROADCAST**\n\n"
+            "Gửi ID người dùng bạn muốn chặn.\n"
+            "Có thể gửi **nhiều ID** cùng lúc, cách nhau bằng dấu phẩy, khoảng trắng hoặc xuống dòng.\n\n"
+            "Ví dụ: `123456789, 987654321`",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Quay lại", callback_data="broadcast_block_menu")]])
+        )
+        return
+
+    if data.startswith("broadcast_unblock_"):
+        context.user_data.pop("awaiting_block_id", None)
+        uid_str = data[len("broadcast_unblock_"):]
+        try:
+            removed = db.remove_broadcast_block(int(uid_str))
+        except ValueError:
+            removed = False
+        extra = f"✅ Đã bỏ chặn `{uid_str}`." if removed else f"ℹ️ `{uid_str}` không có trong danh sách."
+        text_out, markup = _build_block_menu(extra=extra)
+        await query.edit_message_text(text_out, parse_mode="Markdown", reply_markup=markup)
+        return
+
+    if data == "broadcast_block_clear":
+        context.user_data.pop("awaiting_block_id", None)
+        count = db.clear_broadcast_blocklist()
+        extra = f"🧹 Đã bỏ chặn toàn bộ **{count}** ID." if count else "_Danh sách vốn đã trống._"
+        text_out, markup = _build_block_menu(extra=extra)
+        await query.edit_message_text(text_out, parse_mode="Markdown", reply_markup=markup)
         return
 
     # Clear awaiting state just in case
@@ -3222,13 +3328,22 @@ async def handle_admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == "admin_broadcast":
         context.user_data["awaiting_broadcast"] = True
         context.user_data["broadcast_queue"] = []
+        blocked_count = len(db.get_broadcast_blocklist())
+        block_note = (
+            f"🚫 Đang chặn **{blocked_count}** ID — các ID này sẽ **không** nhận broadcast.\n\n"
+            if blocked_count else ""
+        )
         await query.edit_message_text(
             "📢 **GỬI THÔNG BÁO CHO TẤT CẢ NGƯỜI DÙNG**\n\n"
             "Gửi lần lượt các tin nhắn bạn muốn broadcast — **văn bản, ảnh, video đều được**.\n"
             "Có thể gửi nhiều tin, bot sẽ gom lại.\n\n"
+            + block_note +
             "Khi xong, bấm **📤 Gửi ngay** để phát đến tất cả khách.",
             parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Hủy", callback_data="admin_home")]])
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton(f"🚫 Quản lý chặn ID ({blocked_count})", callback_data="broadcast_block_menu")],
+                [InlineKeyboardButton("⬅️ Hủy", callback_data="admin_home")],
+            ])
         )
 
     elif data == "admin_export_prices":
