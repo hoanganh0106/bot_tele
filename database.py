@@ -53,6 +53,12 @@ class Database:
         self._pending_write = False
         self._ensure_file()
         self._cache = self._read_from_disk()
+        self._idx_version = 0
+        self._idx_built_at = -1
+        self._idx_orders_by_user = {}
+        self._idx_orders_by_status = {}
+        self._txn_set = set()
+        self._txid_set = set()
 
     def _ensure_file(self):
         """Tạo file nếu chưa có."""
@@ -78,6 +84,28 @@ class Database:
     def _read(self) -> dict:
         """Trả về cache (không đọc file)."""
         return self._cache
+
+    def _ensure_indexes(self):
+        """Rebuild lookup indexes after the cache has changed. Caller holds lock."""
+        if self._idx_built_at == self._idx_version:
+            return
+
+        data = self._read()
+        by_user = {}
+        by_status = {}
+        for code, order in data.get("orders", {}).items():
+            user_id = order.get("user_id")
+            status = order.get("status")
+            if user_id is not None:
+                by_user.setdefault(user_id, set()).add(code)
+            if status is not None:
+                by_status.setdefault(status, set()).add(code)
+
+        self._idx_orders_by_user = by_user
+        self._idx_orders_by_status = by_status
+        self._txn_set = set(data.get("processed_transactions", []))
+        self._txid_set = set(data.get("processed_crypto_txids", []))
+        self._idx_built_at = self._idx_version
 
     def _flush_to_disk(self):
         """Ghi cache hiện tại ra file (atomic write)."""
@@ -106,6 +134,7 @@ class Database:
         immediate=False: debounce 2s (settings, prices — dữ liệu ít quan trọng)
         """
         self._cache = data
+        self._idx_version += 1
         
         if immediate:
             if self._debounce_timer:
@@ -144,26 +173,33 @@ class Database:
 
     def get_user_orders(self, user_id: int) -> dict:
         with self.lock:
+            self._ensure_indexes()
+            orders = self._read()["orders"]
             return {
-                code: order
-                for code, order in self._read()["orders"].items()
-                if order.get("user_id") == user_id
+                code: orders[code]
+                for code in self._idx_orders_by_user.get(user_id, set())
+                if code in orders
             }
 
     def get_pending_orders(self) -> dict:
         with self.lock:
+            self._ensure_indexes()
+            orders = self._read()["orders"]
             return {
-                code: order
-                for code, order in self._read()["orders"].items()
-                if order.get("status") == "pending"
+                code: orders[code]
+                for code in self._idx_orders_by_status.get("pending", set())
+                if code in orders
             }
 
     def get_retryable_orders(self, max_retries: int = 3, max_age_minutes: int = 30) -> dict:
         """Lấy đơn failed gần đây có thể retry (lỗi API tạm thời)."""
         with self.lock:
+            self._ensure_indexes()
+            orders = self._read().get("orders", {})
             result = {}
-            for code, order in self._read().get("orders", {}).items():
-                if order.get("status") != "failed":
+            for code in self._idx_orders_by_status.get("failed", set()):
+                order = orders.get(code)
+                if not order:
                     continue
                 error = order.get("error", "")
                 # Chỉ retry các lỗi tạm thời (API timeout, connection, exception)
@@ -272,21 +308,29 @@ class Database:
 
     def get_crypto_pending_orders(self) -> dict:
         with self.lock:
+            self._ensure_indexes()
+            orders = self._read().get("orders", {})
             return {
-                code: dict(order)
-                for code, order in self._read().get("orders", {}).items()
-                if order.get("status") == "pending" and order.get("payment_method") == "crypto"
+                code: dict(orders[code])
+                for code in self._idx_orders_by_status.get("pending", set())
+                if code in orders and orders[code].get("payment_method") == "crypto"
             }
 
     def get_crypto_matchable_orders(self) -> dict:
         """Return active and just-cancelled crypto orders for late-deposit handling."""
         with self.lock:
+            self._ensure_indexes()
+            orders = self._read().get("orders", {})
+            codes = set().union(*(
+                self._idx_orders_by_status.get(status, set())
+                for status in ("pending", "cancelled_timeout", "cancelled")
+            ))
             return {
-                code: dict(order)
-                for code, order in self._read().get("orders", {}).items()
-                if order.get("status") in ("pending", "cancelled_timeout", "cancelled")
-                and order.get("payment_method") == "crypto"
-                and order.get("usdt_amount")
+                code: dict(orders[code])
+                for code in codes
+                if code in orders
+                and orders[code].get("payment_method") == "crypto"
+                and orders[code].get("usdt_amount")
             }
 
     def claim_crypto_deposit(self, order_code: str, tx_id: str, insert_time: int) -> dict | None:
@@ -345,12 +389,18 @@ class Database:
 
     def get_confirmed_crypto_orders(self) -> dict:
         with self.lock:
+            self._ensure_indexes()
+            orders = self._read().get("orders", {})
+            codes = set().union(*(
+                self._idx_orders_by_status.get(status, set())
+                for status in ("pending", "processing", "failed")
+            ))
             return {
-                code: dict(order)
-                for code, order in self._read().get("orders", {}).items()
-                if order.get("status") in ("pending", "processing", "failed")
-                and order.get("payment_method") == "crypto"
-                and order.get("crypto_payment_confirmed")
+                code: dict(orders[code])
+                for code in codes
+                if code in orders
+                and orders[code].get("payment_method") == "crypto"
+                and orders[code].get("crypto_payment_confirmed")
             }
 
     def complete_order_payment(self, order_code: str, updates: dict) -> dict | None:
@@ -416,12 +466,18 @@ class Database:
 
     def get_confirmed_wallet_orders(self) -> dict:
         with self.lock:
+            self._ensure_indexes()
+            orders = self._read().get("orders", {})
+            codes = set().union(*(
+                self._idx_orders_by_status.get(status, set())
+                for status in ("pending", "processing", "failed")
+            ))
             return {
-                code: dict(order)
-                for code, order in self._read().get("orders", {}).items()
-                if order.get("status") in ("pending", "processing", "failed")
-                and order.get("payment_method") == "wallet"
-                and order.get("wallet_payment_confirmed")
+                code: dict(orders[code])
+                for code in codes
+                if code in orders
+                and orders[code].get("payment_method") == "wallet"
+                and orders[code].get("wallet_payment_confirmed")
             }
 
     def start_partial_wallet_payment(self, order_code: str, user_id: int) -> dict | None:
@@ -548,14 +604,21 @@ class Database:
         """
         clean_content = content.replace(" ", "").replace("-", "").replace("\n", "").upper()
         with self.lock:
+            self._ensure_indexes()
             orders = self._read()["orders"]
             # Ưu tiên 1: đơn đang chờ xử lý (pending/failed)
-            for code, order in orders.items():
-                if code in clean_content and order.get("status") in ("pending", "failed"):
+            priority_codes = set().union(
+                self._idx_orders_by_status.get("pending", set()),
+                self._idx_orders_by_status.get("failed", set()),
+            )
+            for code in priority_codes:
+                order = orders.get(code)
+                if order and code in clean_content:
                     return code, order
             # Ưu tiên 2: đơn bị tự hủy timeout (có thể hồi phục khi tiền vào)
-            for code, order in orders.items():
-                if code in clean_content and order.get("status") == "cancelled_timeout":
+            for code in self._idx_orders_by_status.get("cancelled_timeout", set()):
+                order = orders.get(code)
+                if order and code in clean_content:
                     return code, order
             # Fallback: trả về đơn bất kỳ khớp mã (để webhook xử lý logic "đã xử lý rồi")
             for code, order in orders.items():
@@ -566,9 +629,11 @@ class Database:
     def find_order_waiting_email(self, user_id: int) -> tuple | None:
         """Tìm order đang chờ email từ user."""
         with self.lock:
-            for code, order in self._read()["orders"].items():
-                if (order.get("user_id") == user_id and
-                    order.get("status") == "paid_waiting_email"):
+            self._ensure_indexes()
+            orders = self._read()["orders"]
+            for code in self._idx_orders_by_user.get(user_id, set()):
+                order = orders.get(code)
+                if order and order.get("status") == "paid_waiting_email":
                     return code, order
             return None
 
@@ -1019,15 +1084,18 @@ class Database:
     # === TRANSACTION DEDUP ===
     def is_transaction_processed(self, transaction_id) -> bool:
         with self.lock:
-            return str(transaction_id) in self._read().get("processed_transactions", [])
+            self._ensure_indexes()
+            return str(transaction_id) in self._txn_set
 
     def mark_transaction_processed(self, transaction_id):
         with self.lock:
             data = self._read()
             txns = data.setdefault("processed_transactions", [])
             tid = str(transaction_id)
-            if tid not in txns:
+            self._ensure_indexes()
+            if tid not in self._txn_set:
                 txns.append(tid)
+                self._txn_set.add(tid)
                 # Giữ tối đa 1000 giao dịch gần nhất
                 if len(txns) > 1000:
                     data["processed_transactions"] = txns[-1000:]
@@ -1036,7 +1104,8 @@ class Database:
     # === BINANCE DEPOSIT DEDUP ===
     def is_txid_processed(self, tx_id: str) -> bool:
         with self.lock:
-            return str(tx_id) in self._read().get("processed_crypto_txids", [])
+            self._ensure_indexes()
+            return str(tx_id) in self._txid_set
 
     def mark_txid_processed(self, tx_id: str) -> bool:
         """Atomically claim a Binance deposit txid. Returns False if already used."""
@@ -1046,9 +1115,11 @@ class Database:
         with self.lock:
             data = self._read()
             txids = data.setdefault("processed_crypto_txids", [])
-            if tx_id in txids:
+            self._ensure_indexes()
+            if tx_id in self._txid_set:
                 return False
             txids.append(tx_id)
+            self._txid_set.add(tx_id)
             if len(txids) > 5000:
                 data["processed_crypto_txids"] = txids[-5000:]
             self._write(data, immediate=True)

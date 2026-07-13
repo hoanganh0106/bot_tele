@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib
 import json
 import os
+from copy import deepcopy
 from pathlib import Path
 import sys
 import tempfile
@@ -53,6 +54,106 @@ def check(condition: bool, message: str) -> None:
         raise AssertionError(message)
 
 
+def build_index_fixture(default_data: dict) -> dict:
+    data = deepcopy(default_data)
+    statuses = (
+        "pending",
+        "failed",
+        "cancelled_timeout",
+        "cancelled",
+        "processing",
+        "paid_waiting_email",
+        "completed",
+    )
+    for index in range(200):
+        status = statuses[index % len(statuses)]
+        payment_method = ("crypto", "wallet", "bank")[index % 3]
+        data["orders"][f"IDX{index:03d}"] = {
+            "user_id": index % 17,
+            "status": status,
+            "payment_method": payment_method,
+            "usdt_amount": "1.25" if payment_method == "crypto" else None,
+            "crypto_payment_confirmed": (
+                payment_method == "crypto"
+                and status in ("pending", "processing", "failed")
+                and index % 2 == 0
+            ),
+            "wallet_payment_confirmed": (
+                payment_method == "wallet"
+                and status in ("pending", "processing", "failed")
+                and index % 2 == 1
+            ),
+            "error": "connection timeout" if status == "failed" else "",
+            "retry_count": index % 3,
+        }
+    return data
+
+
+def check_indexes(database, fixture: dict) -> None:
+    orders = fixture["orders"]
+
+    expected_user = {
+        code for code, order in orders.items() if order.get("user_id") == 7
+    }
+    expected_pending = {
+        code for code, order in orders.items() if order.get("status") == "pending"
+    }
+    expected_retryable = {
+        code
+        for code, order in orders.items()
+        if order.get("status") == "failed"
+        and "timeout" in order.get("error", "").lower()
+        and order.get("retry_count", 0) < 3
+    }
+    expected_crypto_pending = {
+        code
+        for code, order in orders.items()
+        if order.get("status") == "pending"
+        and order.get("payment_method") == "crypto"
+    }
+    expected_crypto_matchable = {
+        code
+        for code, order in orders.items()
+        if order.get("status") in ("pending", "cancelled_timeout", "cancelled")
+        and order.get("payment_method") == "crypto"
+        and order.get("usdt_amount")
+    }
+    expected_confirmed_crypto = {
+        code
+        for code, order in orders.items()
+        if order.get("status") in ("pending", "processing", "failed")
+        and order.get("payment_method") == "crypto"
+        and order.get("crypto_payment_confirmed")
+    }
+    expected_confirmed_wallet = {
+        code
+        for code, order in orders.items()
+        if order.get("status") in ("pending", "processing", "failed")
+        and order.get("payment_method") == "wallet"
+        and order.get("wallet_payment_confirmed")
+    }
+
+    check(set(database.get_user_orders(7)) == expected_user, "user index mismatch")
+    check(set(database.get_pending_orders()) == expected_pending, "status index mismatch")
+    check(set(database.get_retryable_orders()) == expected_retryable, "retry index mismatch")
+    check(
+        set(database.get_crypto_pending_orders()) == expected_crypto_pending,
+        "crypto pending index mismatch",
+    )
+    check(
+        set(database.get_crypto_matchable_orders()) == expected_crypto_matchable,
+        "crypto matchable index mismatch",
+    )
+    check(
+        set(database.get_confirmed_crypto_orders()) == expected_confirmed_crypto,
+        "confirmed crypto index mismatch",
+    )
+    check(
+        set(database.get_confirmed_wallet_orders()) == expected_confirmed_wallet,
+        "confirmed wallet index mismatch",
+    )
+
+
 def run() -> None:
     with tempfile.TemporaryDirectory(prefix="ctv-bot-smoke-") as temp_dir:
         os.environ["DATA_DIR"] = temp_dir
@@ -91,6 +192,29 @@ def run() -> None:
         saved = json.loads(db_path.read_text(encoding="utf-8"))
         check(set(saved) == set(_DEFAULT_DATA), "database top-level format changed")
         print("PASS Database CRUD, cancellation, dedupe, and JSON format")
+
+        fixture = build_index_fixture(_DEFAULT_DATA)
+        index_path = Path(temp_dir) / "index-db.json"
+        index_path.write_text(json.dumps(fixture), encoding="utf-8")
+        indexed_database = Database(str(index_path))
+        check_indexes(indexed_database, fixture)
+
+        indexed_database.save_order(
+            "IDXNEW",
+            {"user_id": 999, "status": "pending", "payment_method": "bank"},
+        )
+        check("IDXNEW" in indexed_database.get_pending_orders(), "status index stayed stale")
+        check("IDXNEW" in indexed_database.get_user_orders(999), "user index stayed stale")
+        check(
+            indexed_database.cancel_order_if_pending("IDXNEW", "cancelled"),
+            "fixture cancellation failed",
+        )
+        check("IDXNEW" not in indexed_database.get_pending_orders(), "cancel index stayed stale")
+
+        check(not indexed_database.is_txid_processed("index-txid"), "txid started processed")
+        check(indexed_database.mark_txid_processed("index-txid"), "txid claim failed")
+        check(indexed_database.is_txid_processed("index-txid"), "txid set stayed stale")
+        print("PASS indexes match raw scans for 200 orders and invalidate after writes")
 
 
 if __name__ == "__main__":
