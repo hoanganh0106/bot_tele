@@ -1344,18 +1344,57 @@ async def handle_pay_crypto(update: Update, context: ContextTypes.DEFAULT_TYPE):
         qr_url=escape_html(qr_url),
         timeout_minutes=CRYPTO_ORDER_TIMEOUT_SECONDS // 60,
     )
+    caption = t(
+        user_id,
+        "crypto_payment_caption",
+        network=network_label,
+        address=escape_html(USDT_WALLET_ADDRESS),
+        amount=amount_text,
+        warning=warning,
+        timeout_minutes=CRYPTO_ORDER_TIMEOUT_SECONDS // 60,
+    )
     buttons = [
         [InlineKeyboardButton(t(user_id, "btn_paid"), callback_data=f"paid_{order_code}")],
         [InlineKeyboardButton(t(user_id, "btn_cancel"), callback_data=f"cancel_{order_code}")],
     ]
-    await query.edit_message_text(
-        text,
-        parse_mode="HTML",
-        reply_markup=InlineKeyboardMarkup(buttons),
-        disable_web_page_preview=False,
-    )
+    markup = InlineKeyboardMarkup(buttons)
+    try:
+        await query.message.reply_photo(
+            photo=qr_url,
+            caption=caption,
+            parse_mode="HTML",
+            reply_markup=markup,
+        )
+    except Exception as exc:
+        logger.warning("Unable to send USDT QR image for order %s: %s", order_code, exc)
+        await query.edit_message_text(
+            text,
+            parse_mode="HTML",
+            reply_markup=markup,
+            disable_web_page_preview=False,
+        )
+    else:
+        try:
+            await query.message.delete()
+        except Exception as exc:
+            logger.warning("Unable to remove payment chooser for order %s: %s", order_code, exc)
     asyncio.create_task(
         auto_cancel_order(context, order_code, user_id, CRYPTO_ORDER_TIMEOUT_SECONDS)
+    )
+
+
+async def edit_payment_message(query, text: str, *, parse_mode=None, reply_markup=None):
+    """Edit either a text payment message or a QR photo caption."""
+    if query.message and query.message.photo:
+        return await query.edit_message_caption(
+            caption=text,
+            parse_mode=parse_mode,
+            reply_markup=reply_markup,
+        )
+    return await query.edit_message_text(
+        text=text,
+        parse_mode=parse_mode,
+        reply_markup=reply_markup,
     )
 
 
@@ -1367,20 +1406,22 @@ async def handle_paid_button(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     order = get_owned_pending_order(order_code, query.from_user.id)
     if not order:
-        await query.edit_message_text(t(query.from_user.id, "order_invalid"))
+        await edit_payment_message(query, t(query.from_user.id, "order_invalid"))
         return
 
     if order.get("payment_method") == "crypto":
-        await query.edit_message_text(
+        await edit_payment_message(
+            query,
             t(query.from_user.id, "crypto_paid_waiting"), parse_mode="Markdown"
         )
         return
 
     if user_lang(query.from_user.id) == "en":
-        await query.edit_message_text(t(query.from_user.id, "paid_waiting", order_code=order_code), parse_mode="Markdown")
+        await edit_payment_message(query, t(query.from_user.id, "paid_waiting", order_code=order_code), parse_mode="Markdown")
         return
 
-    await query.edit_message_text(
+    await edit_payment_message(
+        query,
         f"⏳ Đơn **#{order_code}** đang chờ xác nhận thanh toán.\n\n"
         "Hệ thống sẽ tự động xác nhận trong **1-3 phút** sau khi nhận được tiền.\n"
         "Bạn sẽ nhận được thông báo ngay khi hoàn tất! 🔔",
@@ -1471,7 +1512,7 @@ async def handle_cancel_order(update: Update, context: ContextTypes.DEFAULT_TYPE
     # Kiểm tra có trả ví partial không
     order = db.get_order(order_code)
     if not order or order.get("user_id") != query.from_user.id or order.get("status") != "pending":
-        await query.edit_message_text(t(query.from_user.id, "order_invalid"))
+        await edit_payment_message(query, t(query.from_user.id, "order_invalid"))
         return
     db.release_usdt_amount(order_code)
     wallet_paid = order.get("wallet_paid", 0) if order else 0
@@ -1494,14 +1535,15 @@ async def handle_cancel_order(update: Update, context: ContextTypes.DEFAULT_TYPE
         buttons.append(row)
         buttons.append([InlineKeyboardButton(t(query.from_user.id, "btn_home"), callback_data="back_start")])
 
-        await query.edit_message_text(
+        await edit_payment_message(
+            query,
             t(query.from_user.id, "order_cancelled", order_code=order_code, refund=refund_text),
             parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup(buttons)
         )
         db.release_usdt_amount(order_code)
     else:
-        await query.edit_message_text(t(query.from_user.id, "order_already_processed"))
+        await edit_payment_message(query, t(query.from_user.id, "order_already_processed"))
 
 
 async def handle_back_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
