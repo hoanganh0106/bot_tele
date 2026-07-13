@@ -478,7 +478,7 @@ def classify_product(key: str, info: dict, merged_cats: dict = None) -> tuple:
     # 2. Không tự động phân loại — sản phẩm mới sẽ vào "Khác" để admin tự chọn danh mục
     return "Khác", "📦", "khac"
 
-def build_category_grid(products, callback_prefix, is_admin=False):
+def build_category_grid(products, callback_prefix, is_admin=False, user_id=None):
     categories = {}
     merged_cats = get_all_categories_merged()  # Fetch 1 lần, dùng cho tất cả products
     for key, info in products.items():
@@ -565,12 +565,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             await context.bot.send_message(
                 chat_id=referred_by,
-                text=(
-                    f"🎉 **THƯỞNG GIỚI THIỆU!**\n\n"
-                    f"👤 **{user.first_name}** đã tham gia qua link mời của bạn!\n\n"
-                    f"💰 Bạn nhận được: **+{format_money(reward)}**\n"
-                    f"💵 Số dư ví hiện tại: **{format_money(ref_balance)}**"
-                ),
+                text=t(referred_by, "referral_credited", name=user.first_name or "?", reward=format_money(reward), balance=format_money(ref_balance)),
                 parse_mode="Markdown"
             )
         except Exception:
@@ -686,6 +681,8 @@ async def cmd_language(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.callback_query:
         await update.callback_query.answer()
         target = update.callback_query.message
+        message_text = target.text or target.caption or ""
+        context.user_data["language_return_menu"] = ("MENU SẢN PHẨM" in message_text or "PRODUCT MENU" in message_text)
     await target.reply_text(
         t(update.effective_user.id, "language_prompt"),
         parse_mode="Markdown",
@@ -704,6 +701,11 @@ async def handle_set_language(update: Update, context: ContextTypes.DEFAULT_TYPE
         return
     set_user_lang(query.from_user.id, lang)
     await query.answer(i18n.get_text(lang, "language_updated"))
+    if context.user_data.pop("language_return_menu", False):
+        query.data = "reload_menu"
+        context.user_data["_skip_query_answer"] = True
+        await handle_category_click(update, context)
+        return
     balance = db.get_user_balance(query.from_user.id)
     buttons = [
         [ui_btn("menu", callback_data="reload_menu", user_id=query.from_user.id)],
@@ -762,44 +764,43 @@ async def cmd_getemoji(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Hiển thị menu sản phẩm."""
     db.add_user(update.effective_user.id)
-    msg = await update.message.reply_text("⏳ Đang tải sản phẩm...")
+    user_id = update.effective_user.id
+    msg = await update.message.reply_text(t(user_id, "loading_products"))
 
     try:
         # Fast path: trả cache ngay, không chờ API
         products, balance = get_products_cached()
         if not products:
-            await msg.edit_text("❌ Không thể tải sản phẩm lúc này. Vui lòng thử lại sau!")
+            await msg.edit_text(t(user_id, "products_unavailable"))
             return
 
         user_balance = db.get_user_balance(update.effective_user.id)
         
-        buttons, _ = build_category_grid(products, "viewcat", is_admin=False)
+        buttons, _ = build_category_grid(products, "viewcat", is_admin=False, user_id=user_id)
         
         # Nút ví + giới thiệu
         buttons.append([
-            ui_btn("wallet", f"� Ví: {format_money(user_balance)}", callback_data="wallet_home"),
-            ui_btn("referral", "🎁 Giới thiệu", callback_data="referral_home"),
+            ui_btn("wallet", f"{t(user_id, 'btn_wallet')}: {format_money(user_balance)}", callback_data="wallet_home", user_id=user_id),
+            ui_btn("referral", callback_data="referral_home", user_id=user_id),
         ])
         # Thêm nút cố định
         buttons.append([
-            ui_btn("contact", "☎️ Liên hệ Admin", url="https://t.me/hoanganh1162"),
-            ui_btn("reload", "🔄 Cập nhật", callback_data="reload_menu")
+            ui_btn("contact", url="https://t.me/hoanganh1162", user_id=user_id),
+            ui_btn("reload", callback_data="reload_menu", user_id=user_id)
         ])
         buttons.append([
-            ui_btn("back", "⬅️ Quay lại trang chủ", callback_data="back_start")
+            ui_btn("back", t(user_id, "btn_home"), callback_data="back_start", user_id=user_id)
         ])
+        buttons.append([ui_btn("language", callback_data="language", user_id=user_id)])
 
         await msg.edit_text(
-            "🛍️ <b>MENU SẢN PHẨM</b>\n"
-            "════════════════════\n\n"
-            f"💰 Số dư ví: <b>{format_money(user_balance)}</b>\n\n"
-            "👇 <i>Chọn danh mục sản phẩm</i>:",
+            t(user_id, "menu_title", balance=format_money(user_balance)),
             parse_mode="HTML",
             reply_markup=InlineKeyboardMarkup(buttons)
         )
     except Exception as e:
         logger.error(f"cmd_menu error: {e}")
-        await msg.edit_text("❌ Có lỗi xảy ra khi tải sản phẩm. Vui lòng /menu lại.")
+        await msg.edit_text(t(user_id, "products_unavailable"))
 
 
 async def handle_product_select(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -820,7 +821,7 @@ async def handle_product_select(update: Update, context: ContextTypes.DEFAULT_TY
     # Lấy thông tin sản phẩm (async — không block event loop)
     products, _ = get_products_cached()
     if not products or product_key not in products:
-        await query.edit_message_text("❌ Sản phẩm không tồn tại hoặc server lỗi!")
+        await query.edit_message_text(t(query.from_user.id, "product_missing"))
         return
 
     # Clone info để KHÔNG mutate cache
@@ -837,13 +838,10 @@ async def handle_product_select(update: Update, context: ContextTypes.DEFAULT_TY
     if info["stock"] == 0:
         _, _, cid = classify_product(product_key, info)
         await query.edit_message_text(
-            f"❌ **{info['name']}** hiện đã hết hàng!\n"
-            "Vui lòng quay lại sau.",
+            t(query.from_user.id, "product_out_of_stock", name=info['name']),
             parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("⬅️ Quay lại", callback_data=f"viewcat_{cid}"),
-                 InlineKeyboardButton("🛍️ Danh mục", callback_data="back_menu"),
-                 InlineKeyboardButton("🏠 Trang chủ", callback_data="back_start")]
+                [InlineKeyboardButton(t(query.from_user.id, "btn_back"), callback_data=f"viewcat_{cid}"), InlineKeyboardButton(t(query.from_user.id, "btn_category"), callback_data="back_menu"), InlineKeyboardButton(t(query.from_user.id, "btn_home"), callback_data="back_start")]
             ])
         )
         return
@@ -851,13 +849,12 @@ async def handle_product_select(update: Update, context: ContextTypes.DEFAULT_TY
     if info["stock"] == -1:
         _, _, cid = classify_product(product_key, info)
         await query.edit_message_text(
-            f"🔄 **{info['name']}** đang cập nhật kho.\n"
-            "Vui lòng thử lại sau 1-2 phút.",
+            t(query.from_user.id, "product_updating", name=info['name']),
             parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("⬅️ Quay lại", callback_data=f"viewcat_{cid}"),
-                 InlineKeyboardButton("🛍️ Danh mục", callback_data="back_menu"),
-                 InlineKeyboardButton("🏠 Trang chủ", callback_data="back_start")]
+                [InlineKeyboardButton(t(query.from_user.id, "btn_back"), callback_data=f"viewcat_{cid}"),
+                 InlineKeyboardButton(t(query.from_user.id, "btn_category"), callback_data="back_menu"),
+                 InlineKeyboardButton(t(query.from_user.id, "btn_home"), callback_data="back_start")]
             ])
         )
         return
@@ -877,9 +874,7 @@ async def handle_product_select(update: Update, context: ContextTypes.DEFAULT_TY
 
     _, _, cid = classify_product(product_key, info)
     qty_buttons.append([
-        InlineKeyboardButton("⬅️ Quay lại", callback_data=f"viewcat_{cid}"),
-        InlineKeyboardButton("🛍️ Danh mục", callback_data="back_menu"),
-        InlineKeyboardButton("🏠 Trang chủ", callback_data="back_start")
+        InlineKeyboardButton(t(query.from_user.id, "btn_back"), callback_data=f"viewcat_{cid}"), InlineKeyboardButton(t(query.from_user.id, "btn_category"), callback_data="back_menu"), InlineKeyboardButton(t(query.from_user.id, "btn_home"), callback_data="back_start")
     ])
 
     # Nếu là slot_gpt_team, thông báo cần email
@@ -939,13 +934,13 @@ async def handle_qty_select(update: Update, context: ContextTypes.DEFAULT_TYPE):
     product_key = "_".join(parts[2:]) if len(parts) > 2 else context.user_data.get("selected_product")
     
     if not product_key:
-        await query.edit_message_text("❌ Lỗi phiên (Sản phẩm bị thất lạc). Vui lòng /menu lại.")
+        await query.edit_message_text(t(query.from_user.id, "session_error"))
         return
 
     # Lấy thông tin sản phẩm từ cache (instant, không block event loop)
     products, _ = get_products_cached()
     if not products or product_key not in products:
-        await query.edit_message_text("❌ Lỗi: Sản phẩm không còn tồn tại. Vui lòng /menu lại.")
+        await query.edit_message_text(t(query.from_user.id, "product_missing"))
         return
     
     # Clone info để không mutate cache
@@ -959,11 +954,10 @@ async def handle_qty_select(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if info["stock"] <= 0:
         _, _, cid = classify_product(product_key, info)
         await query.edit_message_text(
-            f"❌ **{info['name']}** hiện đã hết hàng!\nVui lòng quay lại sau.",
+            t(query.from_user.id, "stock_error", name=info['name']),
             parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("⬅️ Quay lại", callback_data=f"viewcat_{cid}"),
-                 InlineKeyboardButton("🏠 Thoát", callback_data="reload_menu")]
+                [InlineKeyboardButton(t(query.from_user.id, "btn_back"), callback_data=f"viewcat_{cid}"), InlineKeyboardButton(t(query.from_user.id, "btn_exit"), callback_data="reload_menu")]
             ])
         )
         return
@@ -1014,38 +1008,27 @@ async def handle_qty_select(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if user_balance >= total:
         buttons.append([InlineKeyboardButton(
-            f"💰 Thanh toán bằng ví ({format_money(total)})",
+            t(query.from_user.id, "btn_pay_wallet", amount=format_money(total)),
             callback_data=f"paywallet_{order_code}"
         )])
     elif user_balance > 0:
         remain = total - user_balance
         buttons.append([InlineKeyboardButton(
-            f"💰 Ví {format_money(user_balance)} + CK {format_money(remain)}",
+            t(query.from_user.id, "btn_pay_partial", balance=format_money(user_balance), amount=format_money(remain)),
             callback_data=f"paypartial_{order_code}"
         )])
     
     buttons.append([InlineKeyboardButton(
-        f"💳 Chuyển khoản {format_money(total)}",
+        t(query.from_user.id, "btn_pay_bank", amount=format_money(total)),
         callback_data=f"paybank_{order_code}"
     )])
-    buttons.append([InlineKeyboardButton("⬅️ Quay lại & Hủy đơn", callback_data=f"cancel_{order_code}")])
+    buttons.append([InlineKeyboardButton(t(query.from_user.id, "btn_cancel"), callback_data=f"cancel_{order_code}")])
 
     wallet_line = ""
     if user_balance > 0:
-        wallet_line = f"💰 Số dư ví: <b>{format_money(user_balance)}</b>\n\n"
+        wallet_line = t(query.from_user.id, "wallet_balance", balance=format_money(user_balance))
 
-    text = (
-        f"🛒 <b>ĐƠN HÀNG #{order_code}</b>\n\n"
-        "<blockquote>"
-        f"📦 {escape_html(info.get('name', product_key))}\n"
-        f"🔢 Số lượng: <b>{qty}</b>\n"
-        f"💰 Đơn giá: <b>{format_money(sell_price)}</b>\n"
-        f"💵 Tổng: <u><b>{format_money(total)}</b></u>"
-        "</blockquote>\n\n"
-        f"{wallet_line}"
-        f"🔽 <b>Chọn phương thức thanh toán:</b>\n\n"
-        f"⏰ Đơn hàng tự hủy sau <b>5 phút</b>"
-    )
+    text = t(query.from_user.id, "order_payment", order_code=order_code, product=escape_html(info.get('name', product_key)), qty=qty, price=format_money(sell_price), total=format_money(total), wallet=wallet_line) + "\n⏰ " + ("Order expires after <b>5 minutes</b>" if lang == "en" else "Đơn hàng tự hủy sau <b>5 phút</b>")
 
     await query.edit_message_text(
         text,
@@ -1074,15 +1057,12 @@ async def auto_cancel_order(context, order_code, user_id, delay):
         if wallet_paid > 0:
             db.add_balance(user_id, wallet_paid, reason="refund")
             new_balance = db.get_user_balance(user_id)
-            refund_text = f"\n💰 Đã hoàn {format_money(wallet_paid)} vào ví (Số dư: {format_money(new_balance)})"
+            refund_text = t(user_id, "refund", amount=format_money(wallet_paid), balance=format_money(new_balance))
         
         try:
             await context.bot.send_message(
                 chat_id=user_id,
-                text=(
-                    f"⏰ Đơn hàng **#{order_code}** đã tự động hủy do quá thời gian thanh toán."
-                    f"{refund_text}"
-                ),
+                text=t(user_id, "order_timeout", order_code=order_code, refund=refund_text),
                 parse_mode="Markdown"
             )
         except Exception:
@@ -1097,7 +1077,7 @@ async def handle_pay_bank(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     order = db.get_order(order_code)
     if not order or order.get("status") != "pending":
-        await query.edit_message_text("❌ Đơn hàng không tồn tại hoặc đã được xử lý.")
+        await query.edit_message_text(t(query.from_user.id, "order_invalid"))
         return
 
     total = int(order.get("total", 0))
@@ -1172,7 +1152,7 @@ async def handle_pay_wallet(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     order = db.get_order(order_code)
     if not order or order.get("status") != "pending":
-        await query.edit_message_text("❌ Đơn hàng không tồn tại hoặc đã được xử lý.")
+        await query.edit_message_text(t(query.from_user.id, "order_invalid"))
         return
 
     total = int(order.get("total", 0))
@@ -1182,17 +1162,14 @@ async def handle_pay_wallet(update: Update, context: ContextTypes.DEFAULT_TYPE):
     success = db.deduct_balance(user_id, total)
     if not success:
         await query.edit_message_text(
-            f"❌ Số dư ví không đủ ({format_money(db.get_user_balance(user_id))}).\n"
-            f"Cần: {format_money(total)}"
+            t(user_id, "wallet_insufficient", balance=format_money(db.get_user_balance(user_id)), amount=format_money(total))
         )
         return
 
     new_balance = db.get_user_balance(user_id)
     
     await query.edit_message_text(
-        f"✅ Đã thanh toán **{format_money(total)}** từ ví!\n"
-        f"💰 Số dư còn lại: **{format_money(new_balance)}**\n\n"
-        f"⏳ Đang xử lý đơn hàng **#{order_code}**...",
+        t(user_id, "wallet_paid", amount=format_money(total), balance=format_money(new_balance), order_code=order_code),
         parse_mode="Markdown"
     )
 
@@ -1210,7 +1187,7 @@ async def handle_pay_partial(update: Update, context: ContextTypes.DEFAULT_TYPE)
     
     order = db.get_order(order_code)
     if not order or order.get("status") != "pending":
-        await query.edit_message_text("❌ Đơn hàng không tồn tại hoặc đã được xử lý.")
+        await query.edit_message_text(t(query.from_user.id, "order_invalid"))
         return
 
     total = int(order.get("total", 0))
@@ -1218,7 +1195,7 @@ async def handle_pay_partial(update: Update, context: ContextTypes.DEFAULT_TYPE)
     user_balance = db.get_user_balance(user_id)
     
     if user_balance <= 0:
-        await query.edit_message_text("❌ Số dư ví = 0. Vui lòng chuyển khoản toàn bộ.")
+        await query.edit_message_text(t(user_id, "partial_no_balance"))
         return
 
     # Trừ phần ví
@@ -1239,23 +1216,12 @@ async def handle_pay_partial(update: Update, context: ContextTypes.DEFAULT_TYPE)
     qr_url = generate_qr_url(remain, order_code)
 
     buttons = [
-        [InlineKeyboardButton("✅ Đã chuyển khoản", callback_data=f"paid_{order_code}")],
-        [InlineKeyboardButton("⬅️ Hủy đơn & Quay lại", callback_data=f"cancel_{order_code}")],
+        [InlineKeyboardButton(t(user_id, "btn_paid"), callback_data=f"paid_{order_code}")],
+        [InlineKeyboardButton(t(user_id, "btn_cancel"), callback_data=f"cancel_{order_code}")],
     ]
 
     await query.edit_message_text(
-        f"✅ Đã trừ **{format_money(wallet_amount)}** từ ví!\n"
-        f"💰 Số dư còn lại: **{format_money(new_balance)}**\n\n"
-        f"🏦 **CHUYỂN KHOẢN PHẦN CÒN LẠI:**\n\n"
-        f"🏦 Ngân hàng: **{BANK_NAME}**\n"
-        f"💳 STK: `{BANK_ACCOUNT_NUMBER}`\n"
-        f"👤 Tên: **{BANK_ACCOUNT_NAME}**\n"
-        f"💰 Số tiền: **{format_money(remain)}**\n"
-        f"📝 Nội dung: `{order_code}`\n\n"
-        f"📱 Quét QR:\n"
-        f"[QR Thanh toán]({qr_url})\n\n"
-        f"⏰ Đơn tự hủy sau **5 phút** (hoàn tiền ví nếu hủy)\n"
-        f"✅ Hệ thống tự xác nhận sau khi nhận được CK",
+        t(user_id, "partial_payment", wallet_amount=format_money(wallet_amount), balance=format_money(new_balance), bank=BANK_NAME, account=BANK_ACCOUNT_NUMBER, account_name=BANK_ACCOUNT_NAME, remain=format_money(remain), order_code=order_code, qr_url=qr_url),
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup(buttons),
         disable_web_page_preview=False
@@ -1280,24 +1246,24 @@ async def handle_cancel_order(update: Update, context: ContextTypes.DEFAULT_TYPE
         if wallet_paid > 0:
             db.add_balance(order.get("user_id"), wallet_paid, reason="refund")
             new_balance = db.get_user_balance(order.get("user_id"))
-            refund_text = f"\n💰 Đã hoàn **{format_money(wallet_paid)}** vào ví (Số dư: {format_money(new_balance)})"
+            refund_text = t(query.from_user.id, "refund", amount=f"**{format_money(wallet_paid)}**", balance=format_money(new_balance))
         
         # Tạo dòng nút điều hướng thông minh quay lại
         buttons = []
         row = []
         if product_key:
-            row.append(InlineKeyboardButton("⬅️ Xem lại sản phẩm", callback_data=f"prod_{product_key}"))
-        row.append(InlineKeyboardButton("🛍️ Menu sản phẩm", callback_data="back_menu"))
+            row.append(InlineKeyboardButton(t(query.from_user.id, "btn_view_product"), callback_data=f"prod_{product_key}"))
+        row.append(InlineKeyboardButton(t(query.from_user.id, "btn_menu"), callback_data="back_menu"))
         buttons.append(row)
-        buttons.append([InlineKeyboardButton("🏠 Trang chủ", callback_data="back_start")])
+        buttons.append([InlineKeyboardButton(t(query.from_user.id, "btn_home"), callback_data="back_start")])
 
         await query.edit_message_text(
-            f"❌ Đơn **#{order_code}** đã được hủy.{refund_text}",
+            t(query.from_user.id, "order_cancelled", order_code=order_code, refund=refund_text),
             parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup(buttons)
         )
     else:
-        await query.edit_message_text("Đơn hàng này đã được xử lý hoặc không tồn tại.")
+        await query.edit_message_text(t(query.from_user.id, "order_already_processed"))
 
 
 async def handle_back_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1307,20 +1273,18 @@ async def handle_back_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Hiển thị lại menu trực tiếp trên message hiện tại
     products, _ = get_products_cached()
     if not products:
-        await query.edit_message_text("❌ Không thể tải sản phẩm. Gõ /menu để thử lại.")
+        await query.edit_message_text(t(query.from_user.id, "products_unavailable"))
         return
-    buttons, _ = build_category_grid(products, "viewcat", is_admin=False)
+    user_id = query.from_user.id
+    buttons, _ = build_category_grid(products, "viewcat", is_admin=False, user_id=user_id)
     buttons.append([
-        ui_btn("contact", "☎️ Liên hệ Admin", url="https://t.me/hoanganh1162"),
-        ui_btn("reload", "🔄 Cập nhật", callback_data="reload_menu")
+        ui_btn("contact", url="https://t.me/hoanganh1162", user_id=user_id), ui_btn("reload", callback_data="reload_menu", user_id=user_id)
     ])
     buttons.append([
-        ui_btn("back", "⬅️ Quay lại trang chủ", callback_data="back_start")
+        ui_btn("back", t(user_id, "btn_home"), callback_data="back_start", user_id=user_id)
     ])
     await query.edit_message_text(
-        "🛍️ <b>MENU SẢN PHẨM</b>\n"
-        "════════════════════\n\n"
-        "👇 <i>Chọn danh mục sản phẩm</i>:",
+        t(user_id, "menu_title", balance=format_money(db.get_user_balance(user_id))),
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup(buttons)
     )
@@ -1332,13 +1296,13 @@ async def cmd_myorders(update: Update, context: ContextTypes.DEFAULT_TYPE):
     orders = db.get_user_orders(user_id)
 
     if not orders:
-        await update.message.reply_text("📭 Bạn chưa có đơn hàng nào.")
+        await update.message.reply_text(t(user_id, "no_orders"))
         return
 
     # Lấy 10 đơn gần nhất
     recent = sorted(orders.items(), key=lambda x: x[1].get("created_at", ""), reverse=True)[:10]
 
-    text = "📋 **LỊCH SỬ ĐƠN HÀNG** (10 gần nhất)\n\n"
+    text = t(user_id, "orders_title")
     for code, order in recent:
         status_icon = {
             "pending": "⏳",
@@ -1409,12 +1373,7 @@ async def process_paid_order(context, order_code: str, payment_source: str = "se
             try:
                 await context.bot.send_message(
                     chat_id=user_id,
-                    text=(
-                        f"✅ Đơn **#{order_code}** đã thanh toán thành công!\n\n"
-                        f"📧 Sản phẩm này yêu cầu bạn cung cấp thông tin/email.\n"
-                        f"Vui lòng nhắn tin gửi **{qty} email** (mỗi email viết trên 1 dòng):\n\n"
-                        f"Ví dụ:\n```\nemail1@gmail.com\nemail2@gmail.com\n```"
-                    ),
+                    text=t(user_id, "need_email", order_code=order_code, qty=qty),
                     parse_mode="Markdown"
                 )
             except Exception as e:
@@ -1450,7 +1409,7 @@ async def process_paid_order(context, order_code: str, payment_source: str = "se
                     await _notify_all_admins(context, admin_text)
                     
                     try:
-                        await context.bot.send_message(user_id, f"✅ Đơn **#{order_code}** thanh toán thành công!\n\nTuy nhiên kho hàng tự động vừa hết đột xuất. Vui lòng chờ Admin xử lý giao tài khoản bù cho bạn trong chốc lát nhé!")
+                        await context.bot.send_message(user_id, t(user_id, "delivery_delayed", order_code=order_code))
                     except Exception: pass
                     
                     logger.info(f"  ✅ Order {order_code} → paid (auto delivery out of stock)")
@@ -1469,18 +1428,14 @@ async def process_paid_order(context, order_code: str, payment_source: str = "se
                 items_str = "```\n" + "\n".join(accounts) + "\n```"
                 
                 # Lấy mô tả sản phẩm
-                _desc = db.get_custom_description(product_key)
+                _desc = product_display_desc(product_key, {}, user_lang(user_id))
                 desc_block = f"\n📝 _{_desc}_\n" if _desc else ""
                 
                 # Gửi cho khách
                 try:
                     await context.bot.send_message(
                         chat_id=user_id,
-                        text=(f"🎉 **ĐƠN HÀNG #{order_code} HOÀN TẤT!**\n\n"
-                              f"🔑 **TÀI KHOẢN CỦA BẠN:**\n"
-                              f"{items_str}\n"
-                              f"{desc_block}\n"
-                              f"💬 _Cảm ơn bạn! Cần hỗ trợ xin liên hệ Admin._"),
+                        text=t(user_id, "delivery_complete", order_code=order_code, items=items_str, description=desc_block),
                         parse_mode="Markdown"
                     )
                 except Exception: pass
@@ -1532,12 +1487,7 @@ async def process_paid_order(context, order_code: str, payment_source: str = "se
             try:
                 await context.bot.send_message(
                     chat_id=user_id,
-                    text=(
-                        f"✅ **GỬI THÔNG TIN THÀNH CÔNG!**\n"
-                        f"Đơn hàng **#{order_code}** của bạn đang được chuyển đến hệ thống.\n\n"
-                        f"⏳ Admin đang tiến hành duyệt và xử lý cấp quyền cho bạn.\n"
-                        f"Vui lòng đợi một lát nhé! (Cần hỗ trợ gấp: nhắn mục *Liên Hệ Admin*)"
-                    ),
+                    text=t(user_id, "manual_processing", order_code=order_code),
                     parse_mode="Markdown"
                 )
             except Exception:
@@ -1621,21 +1571,13 @@ async def process_paid_order(context, order_code: str, payment_source: str = "se
             items_text = "```\n" + "\n".join(items) + "\n```"
 
             # Lấy mô tả sản phẩm
-            _desc2 = db.get_custom_description(product_key)
+            _desc2 = product_display_desc(product_key, {}, user_lang(user_id))
             desc_block2 = f"\n📝 _{_desc2}_\n" if _desc2 else ""
 
             try:
                 await context.bot.send_message(
                     chat_id=user_id,
-                    text=(
-                        f"🎉 **ĐƠN HÀNG #{order_code} THÀNH CÔNG!**\n\n"
-                        f"📦 {order.get('product_name', product_key)}\n"
-                        f"🔢 Số lượng: {qty}\n\n"
-                        f"🔑 **TÀI KHOẢN CỦA BẠN:**\n"
-                        f"{items_text}\n"
-                        f"{desc_block2}\n"
-                        f"⚠️ _Vui lòng lưu lại thông tin ngay!_"
-                    ),
+                    text=t(user_id, "api_delivery_complete", order_code=order_code, product=order.get('product_name', product_key), qty=qty, items=items_text, description=desc_block2),
                     parse_mode="Markdown"
                 )
             except Exception as e:
@@ -1774,7 +1716,7 @@ async def handle_admin_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE
         try:
             await context.bot.send_message(
                 chat_id=user_id,
-                text=f"❌ Đơn hàng **#{order_code}** đã bị hủy bởi admin.",
+                text=t(user_id, "admin_cancelled_order", order_code=order_code),
                 parse_mode="Markdown"
             )
         except Exception:
@@ -1935,7 +1877,7 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if action == "add":
             new_balance = db.add_balance(target_id, amount, reason="admin_add")
             action_text = f"➕ Cộng **{format_money(amount)}**"
-            notify_text = f"💰 **Admin đã cộng {format_money(amount)} vào ví của bạn!**\n💵 Số dư mới: **{format_money(new_balance)}**"
+            notify_text = t(target_id, "admin_wallet_added", amount=format_money(amount), balance=format_money(new_balance))
         else:
             current = db.get_user_balance(target_id)
             if amount > current:
@@ -1946,7 +1888,7 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
             db.deduct_balance(target_id, amount)
             new_balance = db.get_user_balance(target_id)
             action_text = f"➖ Trừ **{format_money(amount)}**"
-            notify_text = f"💰 **Admin đã trừ {format_money(amount)} từ ví của bạn.**\n💵 Số dư mới: **{format_money(new_balance)}**"
+            notify_text = t(target_id, "admin_wallet_deducted", amount=format_money(amount), balance=format_money(new_balance))
         
         await update.message.reply_text(
             f"✅ **ĐÃ CẬP NHẬT VÍ**\n"
@@ -2272,6 +2214,18 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(f"✅ Đã cập nhật mô tả cho sản phẩm `{key}`.", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Quay lại cài đặt", callback_data=f"admin_price_{key}"), InlineKeyboardButton("🏠 Thoát", callback_data="admin_home")]]))
         return
 
+    if context.user_data.get("awaiting_desc_en_for"):
+        key = context.user_data.pop("awaiting_desc_en_for")
+        db.set_custom_description_en(key, None if text.lower() == "reset" else text)
+        await update.message.reply_text(f"✅ Đã cập nhật mô tả EN cho sản phẩm `{key}`.", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Quay lại cài đặt", callback_data=f"admin_price_{key}")]]))
+        return
+
+    if context.user_data.get("awaiting_name_en_for"):
+        key = context.user_data.pop("awaiting_name_en_for")
+        db.set_custom_name_en(key, None if text.lower() == "reset" else text)
+        await update.message.reply_text(f"✅ Đã cập nhật tên EN cho sản phẩm `{key}`.", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Quay lại cài đặt", callback_data=f"admin_price_{key}")]]))
+        return
+
     # 1.5 Handle renaming products
     if context.user_data.get("awaiting_name_for"):
         key = context.user_data["awaiting_name_for"]
@@ -2424,8 +2378,7 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
         emails = [e for e in text_lines if "@" in e]
         if len(emails) != order["qty"]:
             await update.message.reply_text(
-                f"❌ Cần đúng **{order['qty']}** email, bạn gửi {len(emails)}.\n"
-                f"Vui lòng gửi lại (mỗi email 1 dòng).",
+                t(user_id, "email_count_error", required=order["qty"], received=len(emails)),
                 parse_mode="Markdown"
             )
             return
@@ -2434,8 +2387,7 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
         invalid = [e for e in emails if not re.match(email_regex, e)]
         if invalid:
             await update.message.reply_text(
-                f"❌ Email không hợp lệ: {', '.join(invalid)}\n"
-                f"Vui lòng kiểm tra và gửi lại.",
+                t(user_id, "email_invalid", emails=', '.join(invalid)),
                 parse_mode="Markdown"
             )
             return
@@ -2446,7 +2398,7 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     order["status"] = "pending"
     db.save_order(order_code, order)
-    await update.message.reply_text("⏳ Đang xử lý ghi nhận thông tin...")
+    await update.message.reply_text(t(user_id, "info_processing"))
     await process_paid_order(context, order_code, order.get("payment_source", "sepay"))
 
 
@@ -2522,32 +2474,30 @@ async def cmd_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def handle_category_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await query.answer()
+    if not context.user_data.pop("_skip_query_answer", False):
+        await query.answer()
     data = query.data
     
     if data == "reload_menu":
         products, _ = await async_refresh_products_cache()
         if not products:
-            await query.edit_message_text("❌ Không thể tải sản phẩm. Gõ /menu để thử lại.")
+            await query.edit_message_text(t(query.from_user.id, "products_unavailable"))
             return
         user_balance = db.get_user_balance(query.from_user.id)
-        buttons, _ = build_category_grid(products, "viewcat", is_admin=False)
+        user_id = query.from_user.id
+        buttons, _ = build_category_grid(products, "viewcat", is_admin=False, user_id=user_id)
         buttons.append([
-            ui_btn("wallet", f"� Ví: {format_money(user_balance)}", callback_data="wallet_home"),
-            ui_btn("referral", "🎁 Giới thiệu", callback_data="referral_home"),
+            ui_btn("wallet", f"{t(user_id, 'btn_wallet')}: {format_money(user_balance)}", callback_data="wallet_home", user_id=user_id), ui_btn("referral", callback_data="referral_home", user_id=user_id),
         ])
         buttons.append([
-            ui_btn("contact", "☎️ Liên hệ Admin", url="https://t.me/hoanganh1162"),
-            ui_btn("reload", "🔄 Cập nhật", callback_data="reload_menu")
+            ui_btn("contact", url="https://t.me/hoanganh1162", user_id=user_id), ui_btn("reload", callback_data="reload_menu", user_id=user_id)
         ])
         buttons.append([
-            ui_btn("back", "⬅️ Quay lại trang chủ", callback_data="back_start")
+            ui_btn("back", t(user_id, "btn_home"), callback_data="back_start", user_id=user_id)
         ])
+        buttons.append([ui_btn("language", callback_data="language", user_id=user_id)])
         await query.edit_message_text(
-            "🛍️ <b>MENU SẢN PHẨM</b>\n"
-            "════════════════════\n\n"
-            f"💰 Số dư ví: <b>{format_money(user_balance)}</b>\n\n"
-            "👇 <i>Chọn danh mục sản phẩm</i>:",
+            t(user_id, "menu_title", balance=format_money(user_balance)),
             parse_mode="HTML",
             reply_markup=InlineKeyboardMarkup(buttons)
         )
@@ -2557,10 +2507,10 @@ async def handle_category_click(update: Update, context: ContextTypes.DEFAULT_TY
         user_id = update.effective_user.id
         orders = db.get_user_orders(user_id)
         if not orders:
-            await query.edit_message_text("📭 Bạn chưa có đơn hàng nào.")
+            await query.edit_message_text(t(user_id, "no_orders"))
             return
         recent = sorted(orders.items(), key=lambda x: x[1].get("created_at", ""), reverse=True)[:10]
-        text = "📋 **LỊCH SỬ ĐƠN HÀNG** (10 gần nhất)\n\n"
+        text = t(user_id, "orders_title")
         for code, order in recent:
             status_icon = {
                 "pending": "⏳", "paid": "✅", "cancelled": "❌",
@@ -2577,7 +2527,7 @@ async def handle_category_click(update: Update, context: ContextTypes.DEFAULT_TY
     cat_id = data.replace("viewcat_", "")
     products, _ = get_products_cached()
     if not products:
-        await query.edit_message_text("❌ Lỗi tải dữ liệu.")
+        await query.edit_message_text(t(query.from_user.id, "products_unavailable"))
         return
         
     buttons = []
@@ -2592,7 +2542,7 @@ async def handle_category_click(update: Update, context: ContextTypes.DEFAULT_TY
         if c_id == cat_id:
             sell_price = get_sell_price(key, info['price'], info.get('is_custom_local', False))
             status = f"✅{stock}"
-            dname = db.get_custom_name(key) or info['name']
+            dname = product_display_name(key, info, user_lang(query.from_user.id))
             
             # Phân biệt nguồn API (Chỉ cho Admin)
             api_tag = ""
@@ -2683,6 +2633,7 @@ async def render_admin_product_detail(update, context, key):
         [InlineKeyboardButton("✏️ Đổi tên hiển thị", callback_data=f"admin_do_name_{key}"),
          InlineKeyboardButton(hide_btn_txt, callback_data=f"admin_toggle_hide_{key}")],
         [InlineKeyboardButton("📜 Sửa nội dung/Mô tả", callback_data=f"admin_do_desc_{key}")],
+        [InlineKeyboardButton("✏️ Tên EN", callback_data=f"admin_do_name_en_{key}"), InlineKeyboardButton("📝 Mô tả EN", callback_data=f"admin_do_desc_en_{key}")],
         [InlineKeyboardButton("🔀 Chuyển danh mục", callback_data=f"admin_do_cat_{key}")]
     ]
     
@@ -2703,7 +2654,7 @@ def _clear_admin_state(context: ContextTypes.DEFAULT_TYPE):
         "broadcast_queue", "awaiting_user_lookup",
         "awaiting_stock_items_for", "awaiting_stock_manual_for",
         "awaiting_ref_reward", "awaiting_ref_newuser", "awaiting_min_deposit",
-        "awaiting_wallet_adjust", "awaiting_desc_for", "awaiting_name_for",
+        "awaiting_wallet_adjust", "awaiting_desc_for", "awaiting_name_for", "awaiting_desc_en_for", "awaiting_name_en_for",
         "awaiting_new_cat", "awaiting_new_prod", "awaiting_rename_cat",
         "awaiting_set_emoji",
         "awaiting_welcome_msg", "awaiting_ui_emoji",
@@ -3171,6 +3122,12 @@ async def handle_admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ])
         )
 
+    elif data.startswith("admin_do_desc_en_"):
+        key = data.replace("admin_do_desc_en_", "")
+        context.user_data["awaiting_desc_en_for"] = key
+        current = db.get_custom_description_en(key) or "(chưa có)"
+        await query.edit_message_text(f"📝 Gửi MÔ TẢ TIẾNG ANH cho `{key}`.\n\nHiện tại:\n`{escape_md(current)}`\n\nNhắn `reset` để xóa.", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Quay lại", callback_data=f"admin_price_{key}")]]))
+
     elif data.startswith("admin_do_desc_"):
         key = data.replace("admin_do_desc_", "")
         context.user_data["awaiting_desc_for"] = key
@@ -3404,6 +3361,12 @@ async def handle_admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
         query.data = f"admin_viewcat_{cid}"
         await handle_admin_cb(update, context)
 
+    elif data.startswith("admin_do_name_en_"):
+        key = data.replace("admin_do_name_en_", "")
+        context.user_data["awaiting_name_en_for"] = key
+        current = db.get_custom_name_en(key) or "(chưa có)"
+        await query.edit_message_text(f"✏️ Gửi TÊN TIẾNG ANH cho `{key}`.\n\nHiện tại: **{escape_md(current)}**\n\nNhắn `reset` để xóa.", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Quay lại", callback_data=f"admin_price_{key}")]]))
+
     elif data.startswith("admin_do_name_"):
         key = data.replace("admin_do_name_", "")
         context.user_data["awaiting_name_for"] = key
@@ -3618,22 +3581,10 @@ async def handle_wallet_home(update: Update, context: ContextTypes.DEFAULT_TYPE)
     total_spent = user_info.get("total_spent", 0)
     referral_earnings = user_info.get("referral_earnings", 0)
     
-    text = (
-        "💳 <b>VÍ CỦA BẠN</b>\n\n"
-        f"💵 <b>Số dư:</b> <u>{format_money(balance)}</u>\n\n"
-        "<blockquote>"
-        f"💳 Đã nạp: {format_money(total_deposited)}\n"
-        f"🛒 Đã chi: {format_money(total_spent)}\n"
-        f"🎁 Thưởng giới thiệu: {format_money(referral_earnings)}"
-        "</blockquote>\n\n"
-        "💡 <i>Dùng số dư ví để mua hàng không cần CK.</i>"
-    )
+    text = t(user_id, "wallet_home", balance=format_money(balance), deposited=format_money(total_deposited), spent=format_money(total_spent), earnings=format_money(referral_earnings))
     
     buttons = [
-        [InlineKeyboardButton("💳 Nạp tiền vào ví", callback_data="deposit_start")],
-        [InlineKeyboardButton("🎁 Giới thiệu bạn bè", callback_data="referral_home")],
-        [InlineKeyboardButton("🛒 Mua sản phẩm", callback_data="reload_menu")],
-        [InlineKeyboardButton("⬅️ Quay lại", callback_data="back_start")],
+        [InlineKeyboardButton(t(user_id, "btn_deposit"), callback_data="deposit_start")], [InlineKeyboardButton(t(user_id, "btn_invite"), callback_data="referral_home")], [InlineKeyboardButton(t(user_id, "btn_buy"), callback_data="reload_menu")], [InlineKeyboardButton(t(user_id, "btn_back"), callback_data="back_start")],
     ]
     
     await query.edit_message_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(buttons))
@@ -3650,24 +3601,10 @@ async def handle_deposit_start(update: Update, context: ContextTypes.DEFAULT_TYP
     
     qr_url = generate_qr_url(0, dep_code)
     
-    text = (
-        "💳 <b>NẠP TIỀN VÀO VÍ</b>\n\n"
-        "<blockquote>"
-        f"🏦 Ngân hàng: <b>{escape_html(BANK_NAME)}</b>\n"
-        f"💳 Số TK: <code>{escape_html(BANK_ACCOUNT_NUMBER)}</code>\n"
-        f"👤 Tên: <b>{escape_html(BANK_ACCOUNT_NAME)}</b>\n"
-        f"📝 Nội dung: <code>{dep_code}</code>"
-        "</blockquote>\n\n"
-        f"💰 Số tiền: <b>Tùy ý</b> (tối thiểu {format_money(min_deposit)})\n\n"
-        f"📱 Quét QR bên dưới:\n"
-        f"<a href=\"{qr_url}\">QR Nạp tiền</a>\n\n"
-        "✅ Tiền sẽ <b>tự động cộng</b> vào ví sau 1-2 phút.\n"
-        "🔔 Bạn sẽ nhận thông báo khi nạp thành công!"
-    )
+    text = t(user_id, "deposit_page", bank=escape_html(BANK_NAME), account=escape_html(BANK_ACCOUNT_NUMBER), account_name=escape_html(BANK_ACCOUNT_NAME), code=dep_code, minimum=format_money(min_deposit), qr_url=qr_url)
     
     buttons = [
-        [InlineKeyboardButton("💰 Xem số dư", callback_data="wallet_home")],
-        [InlineKeyboardButton("⬅️ Quay lại", callback_data="wallet_home")],
+        [InlineKeyboardButton(t(user_id, "btn_balance"), callback_data="wallet_home")], [InlineKeyboardButton(t(user_id, "btn_back"), callback_data="wallet_home")],
     ]
     
     await query.edit_message_text(
@@ -3691,34 +3628,18 @@ async def handle_referral_home(update: Update, context: ContextTypes.DEFAULT_TYP
     new_user_rw = db.get_setting("referral_new_user_reward", 500)
     ref_enabled = db.get_setting("referral_enabled", True)
     
-    status = "✅ Đang hoạt động" if ref_enabled else "⏸️ Tạm dừng"
+    status = t(user_id, "ref_active" if ref_enabled else "ref_paused")
     
     new_user_line = ""
     if new_user_rw > 0:
-        new_user_line = f"🎁 Bạn bè nhận: <b>{format_money(new_user_rw)}</b>\n"
+        new_user_line = t(user_id, "ref_friend_reward", amount=format_money(new_user_rw))
     
-    text = (
-        "🎁 <b>GIỚI THIỆU BẠN BÈ</b>\n\n"
-        f"🔗 <b>Link mời của bạn:</b>\n"
-        f"👉 <a href=\"{ref_link}\">Bấm vào đây để mở link</a>\n\n"
-        f"📋 <b>Copy link:</b>\n"
-        f"<code>{ref_link}</code>\n\n"
-        "<blockquote>"
-        f"💰 Bạn nhận: <b>{format_money(reward)}/người</b>\n"
-        f"{new_user_line}"
-        f"📡 Trạng thái: {status}"
-        "</blockquote>\n\n"
-        f"👥 Đã giới thiệu: <b>{stats['referral_count']}</b> người\n"
-        f"💵 Tổng thưởng: <b>{format_money(stats['referral_earnings'])}</b>\n\n"
-        "💡 <i>Bấm vào link xanh để xem, hoặc bấm vào ô code để copy!</i>"
-    )
+    text = t(user_id, "referral_page", link=ref_link, reward=format_money(reward), friend_reward=new_user_line, status=status, count=stats['referral_count'], earnings=format_money(stats['referral_earnings']))
     
-    share_text = f"Mua tài khoản Premium giá rẻ, tự động 24/7! Bấm vào đây: {ref_link}"
+    share_text = t(user_id, "ref_share", link=ref_link)
     
     buttons = [
-        [InlineKeyboardButton("📤 Chia sẻ cho bạn bè", switch_inline_query=share_text)],
-        [InlineKeyboardButton("💰 Xem ví", callback_data="wallet_home")],
-        [InlineKeyboardButton("⬅️ Quay lại", callback_data="back_start")],
+        [InlineKeyboardButton(t(user_id, "btn_share"), switch_inline_query=share_text)], [InlineKeyboardButton(t(user_id, "btn_wallet"), callback_data="wallet_home")], [InlineKeyboardButton(t(user_id, "btn_back"), callback_data="back_start")],
     ]
     
     await query.edit_message_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(buttons))
@@ -3734,35 +3655,23 @@ async def handle_back_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     balance = db.get_user_balance(user_id)
     
     # Lấy welcome message tùy chỉnh hoặc dùng mặc định (giống cmd_start)
-    custom_welcome = db.get_welcome_message()
+    custom_welcome = db.get_welcome_message() if user_lang(user_id) == "vi" else None
     if custom_welcome:
         text = custom_welcome.replace("{name}", escape_html(user.first_name or "bạn"))
         text = text.replace("{balance}", format_money(balance))
         text = text.replace("{id}", str(user.id))
     else:
-        text = (
-            f"✨ Xin chào <b>{escape_html(user.first_name)}</b>! ✨\n\n"
-            "🏪 <b>SHOP TÀI KHOẢN PREMIUM</b>\n\n"
-            "<blockquote>"
-            "⚡ Thanh toán → Xác nhận <b>1 phút</b>\n"
-            "📦 Nhận tài khoản <b>ngay lập tức</b>\n"
-            "💬 Hỗ trợ <b>nhanh chóng</b>\n"
-            "🤖 Tự động <b>24/7</b>"
-            "</blockquote>\n\n"
-            f"💰 <b>Số dư ví:</b> {format_money(balance)}\n\n"
-            "👇 <i>Chọn chức năng bên dưới</i> 👇"
-        )
+        text = t(user_id, "welcome", name=escape_html(user.first_name), balance=format_money(balance))
     
     buttons = [
-        [ui_btn("menu", "🛍️ MENU SẢN PHẨM", callback_data="reload_menu")],
+        [ui_btn("menu", callback_data="reload_menu", user_id=user_id)],
         [
-            ui_btn("wallet", f"💳 Ví: {format_money(balance)}", callback_data="wallet_home"),
-            ui_btn("referral", "🎁 Giới thiệu", callback_data="referral_home"),
+            ui_btn("wallet", f"{t(user_id, 'btn_wallet')}: {format_money(balance)}", callback_data="wallet_home", user_id=user_id), ui_btn("referral", callback_data="referral_home", user_id=user_id),
         ],
         [
-            ui_btn("history", "📋 Lịch sử", callback_data="btn_myorders"),
-            ui_btn("contact", "☎️ Liên hệ Admin", url="https://t.me/hoanganh1162")
-        ]
+            ui_btn("history", callback_data="btn_myorders", user_id=user_id), ui_btn("contact", url="https://t.me/hoanganh1162", user_id=user_id)
+        ],
+        [ui_btn("language", callback_data="language", user_id=user_id)],
     ]
     
     if is_admin(user_id):
@@ -3817,11 +3726,11 @@ async def _cleanup_stale_orders(application):
                 if wallet_paid > 0:
                     db.add_balance(order["user_id"], wallet_paid, reason="refund")
                     new_balance = db.get_user_balance(order["user_id"])
-                    refund_text = f"\n💰 Đã hoàn {format_money(wallet_paid)} vào ví (Số dư: {format_money(new_balance)})"
+                    refund_text = t(order["user_id"], "refund", amount=format_money(wallet_paid), balance=format_money(new_balance))
                 try:
                     await application.bot.send_message(
                         chat_id=order["user_id"],
-                        text=f"⏰ Đơn hàng **#{code}** đã tự động hủy do quá thời gian thanh toán.{refund_text}",
+                        text=t(order["user_id"], "order_timeout", order_code=code, refund=refund_text),
                         parse_mode="Markdown"
                     )
                 except Exception:
@@ -4009,13 +3918,7 @@ async def _handle_payment(application, payment: dict):
         try:
             await application.bot.send_message(
                 chat_id=deposit_user_id,
-                text=(
-                    f"✅ **NẠP TIỀN THÀNH CÔNG!**\n"
-                    f"━━━━━━━━━━━━━━━━━━\n"
-                    f"💰 Số tiền: **+{format_money(transfer_amount)}**\n"
-                    f"💵 Số dư mới: **{format_money(new_balance)}**\n\n"
-                    f"Bạn có thể dùng ví để mua sản phẩm ngay! Gõ /menu"
-                ),
+                text=t(deposit_user_id, "deposit_success", amount=format_money(transfer_amount), balance=format_money(new_balance)),
                 parse_mode="Markdown"
             )
         except Exception as e:
