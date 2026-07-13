@@ -27,6 +27,7 @@ from telegram.ext import (
 from ctv_api import CTVApi
 from database import Database
 from sepay_server import start_webhook_server
+import i18n
 
 # ============================================
 # LOAD CẤU HÌNH
@@ -63,6 +64,7 @@ db = Database(DB_PATH)
 
 # Cache bot username — set 1 lần khi khởi động, dùng mãi
 _bot_username: str = ""
+_lang_cache: dict[int, str] = {}
 
 
 
@@ -76,6 +78,33 @@ def is_admin(user_id: int) -> bool:
 
 def format_money(amount: int) -> str:
     return f"{amount:,}".replace(",", ".") + "đ"
+
+
+def user_lang(user_id: int) -> str:
+    if user_id not in _lang_cache:
+        _lang_cache[user_id] = db.get_user_lang(user_id)
+    return _lang_cache[user_id]
+
+
+def set_user_lang(user_id: int, lang: str) -> None:
+    db.set_user_lang(user_id, lang)
+    _lang_cache[user_id] = lang
+
+
+def t(user_id: int, key: str, **kwargs) -> str:
+    return i18n.get_text(user_lang(user_id), key, **kwargs)
+
+
+def product_display_name(product_key: str, info: dict, lang: str) -> str:
+    if lang == "en":
+        return db.get_custom_name_en(product_key) or db.get_custom_name(product_key) or info.get("name", product_key)
+    return db.get_custom_name(product_key) or info.get("name", product_key)
+
+
+def product_display_desc(product_key: str, info: dict, lang: str) -> str:
+    if lang == "en":
+        return db.get_custom_description_en(product_key) or db.get_custom_description(product_key) or info.get("description") or info.get("desc") or ""
+    return db.get_custom_description(product_key) or info.get("description") or info.get("desc") or ""
 
 
 def get_sell_price(product_key: str, base_price: int, is_custom_local: bool = False) -> int:
@@ -136,8 +165,10 @@ def _is_api_balance_error(error_msg: str) -> bool:
     return any(keyword in msg for keyword in keywords)
 
 
-def _paid_order_customer_error_text(order_code: str) -> str:
+def _paid_order_customer_error_text(order_code: str, user_id: int = None) -> str:
     """Thông báo lỗi xử lý đơn cho khách, không lộ nguyên nhân nội bộ."""
+    if user_id is not None:
+        return t(user_id, "customer_order_error", order_code=order_code)
     return (
         f"⚠️ Đơn **#{order_code}** gặp lỗi trong quá trình xử lý.\n\n"
         f"✅ Thanh toán của bạn **đã được ghi nhận** — Admin đã nhận thông báo "
@@ -174,9 +205,9 @@ UI_BUTTONS = {
 }
 
 
-def ui_btn(btn_key: str, text: str = None, callback_data: str = None, url: str = None) -> InlineKeyboardButton:
+def ui_btn(btn_key: str, text: str = None, callback_data: str = None, url: str = None, user_id: int = None) -> InlineKeyboardButton:
     """Tạo InlineKeyboardButton với custom emoji icon nếu có."""
-    display_text = text or UI_BUTTONS.get(btn_key, btn_key)
+    display_text = text or (t(user_id, f"btn_{btn_key}") if user_id is not None else UI_BUTTONS.get(btn_key, btn_key))
     emoji_id = db.get_ui_emoji(btn_key) if db else None
     kwargs = {}
     if emoji_id:
@@ -526,7 +557,63 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         referred_by=referred_by
     )
 
+    # Thông báo cho người giới thiệu — referral_credited chỉ True khi is_new,
+    # nên phải gửi TRƯỚC nhánh return chọn ngôn ngữ để không mất thông báo.
+    if referral_credited and referred_by:
+        reward = db.get_setting("referral_reward", 1000)
+        ref_balance = db.get_user_balance(referred_by)
+        try:
+            await context.bot.send_message(
+                chat_id=referred_by,
+                text=(
+                    f"🎉 **THƯỞNG GIỚI THIỆU!**\n\n"
+                    f"👤 **{user.first_name}** đã tham gia qua link mời của bạn!\n\n"
+                    f"💰 Bạn nhận được: **+{format_money(reward)}**\n"
+                    f"💵 Số dư ví hiện tại: **{format_money(ref_balance)}**"
+                ),
+                parse_mode="Markdown"
+            )
+        except Exception:
+            pass
+
+    # Referral is registered first; only then ask genuinely new users to choose a language.
+    if is_new:
+        prompt = i18n.get_text("vi", "language_prompt")
+        if new_user_reward > 0:
+            prompt += (
+                f"\n\n🎁 Quà chào mừng **+{format_money(new_user_reward)}** đã cộng vào ví!\n"
+                f"🎁 Welcome bonus **+{format_money(new_user_reward)}** added to your wallet!"
+            )
+        await update.message.reply_text(
+            prompt,
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("🇻🇳 Tiếng Việt", callback_data="setlang_vi"),
+                InlineKeyboardButton("🇬🇧 English", callback_data="setlang_en"),
+            ]]),
+        )
+        return
+
     balance = db.get_user_balance(user.id)
+
+    if user_lang(user.id) == "en":
+        buttons = [
+            [ui_btn("menu", callback_data="reload_menu", user_id=user.id)],
+            [
+                ui_btn("wallet", f"{t(user.id, 'btn_wallet')}: {format_money(balance)}", callback_data="wallet_home", user_id=user.id),
+                ui_btn("referral", callback_data="referral_home", user_id=user.id),
+            ],
+            [
+                ui_btn("history", callback_data="btn_myorders", user_id=user.id),
+                ui_btn("contact", url="https://t.me/hoanganh1162", user_id=user.id),
+            ],
+            [ui_btn("language", callback_data="language", user_id=user.id)],
+        ]
+        await update.message.reply_text(
+            t(user.id, "welcome", name=escape_html(user.first_name or "there"), balance=format_money(balance)),
+            parse_mode="HTML", reply_markup=InlineKeyboardMarkup(buttons),
+        )
+        return
     
     # Thông báo thưởng cho user mới được giới thiệu
     welcome_bonus = ""
@@ -565,35 +652,21 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [
             ui_btn("history", "📋 Lịch sử", callback_data="btn_myorders"),
             ui_btn("contact", "☎️ Liên hệ Admin", url="https://t.me/hoanganh1162")
-        ]
+        ],
+        [ui_btn("language", "🌐 Ngôn ngữ / Language", callback_data="language")]
     ]
-    
+
     if is_admin(user.id):
         buttons.append([InlineKeyboardButton("⚙️ Quản trị Admin", callback_data="admin_home")])
         text += "\n\n<i>🔑 Xin chào Admin, bảng Quản trị đã được mở khóa!</i>"
         
     await update.message.reply_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(buttons))
 
-    # Thông báo cho người giới thiệu
-    if referral_credited and referred_by:
-        reward = db.get_setting("referral_reward", 1000)
-        ref_balance = db.get_user_balance(referred_by)
-        try:
-            await context.bot.send_message(
-                chat_id=referred_by,
-                text=(
-                    f"🎉 **THƯỞNG GIỚI THIỆU!**\n\n"
-                    f"👤 **{user.first_name}** đã tham gia qua link mời của bạn!\n\n"
-                    f"💰 Bạn nhận được: **+{format_money(reward)}**\n"
-                    f"💵 Số dư ví hiện tại: **{format_money(ref_balance)}**"
-                ),
-                parse_mode="Markdown"
-            )
-        except Exception:
-            pass
-
 
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if user_lang(update.effective_user.id) == "en":
+        await update.message.reply_text(t(update.effective_user.id, "help"), parse_mode="Markdown")
+        return
     text = (
         "📖 **HƯỚNG DẪN SỬ DỤNG**\n\n"
         "1️⃣ Gõ /menu để xem danh sách sản phẩm\n"
@@ -606,6 +679,48 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "❓ Cần hỗ trợ? Liên hệ admin"
     )
     await update.message.reply_text(text, parse_mode="Markdown")
+
+
+async def cmd_language(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    target = update.message
+    if update.callback_query:
+        await update.callback_query.answer()
+        target = update.callback_query.message
+    await target.reply_text(
+        t(update.effective_user.id, "language_prompt"),
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton("🇻🇳 Tiếng Việt", callback_data="setlang_vi"),
+            InlineKeyboardButton("🇬🇧 English", callback_data="setlang_en"),
+        ]]),
+    )
+
+
+async def handle_set_language(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    lang = query.data.removeprefix("setlang_")
+    if lang not in i18n.LANGS:
+        await query.answer()
+        return
+    set_user_lang(query.from_user.id, lang)
+    await query.answer(i18n.get_text(lang, "language_updated"))
+    balance = db.get_user_balance(query.from_user.id)
+    buttons = [
+        [ui_btn("menu", callback_data="reload_menu", user_id=query.from_user.id)],
+        [
+            ui_btn("wallet", f"{t(query.from_user.id, 'btn_wallet')}: {format_money(balance)}", callback_data="wallet_home", user_id=query.from_user.id),
+            ui_btn("referral", callback_data="referral_home", user_id=query.from_user.id),
+        ],
+        [
+            ui_btn("history", callback_data="btn_myorders", user_id=query.from_user.id),
+            ui_btn("contact", url="https://t.me/hoanganh1162", user_id=query.from_user.id),
+        ],
+        [ui_btn("language", callback_data="language", user_id=query.from_user.id)],
+    ]
+    await query.edit_message_text(
+        t(query.from_user.id, "welcome", name=escape_html(query.from_user.first_name or "there"), balance=format_money(balance)),
+        parse_mode="HTML", reply_markup=InlineKeyboardMarkup(buttons),
+    )
 
 
 async def cmd_getemoji(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -693,6 +808,7 @@ async def handle_product_select(update: Update, context: ContextTypes.DEFAULT_TY
     await query.answer()
 
     product_key = query.data.replace("prod_", "")
+    lang = user_lang(query.from_user.id)
     
     # Xóa dữ liệu cũ để tránh lẫn giá từ sản phẩm trước
     context.user_data.pop("selected_product", None)
@@ -709,9 +825,7 @@ async def handle_product_select(update: Update, context: ContextTypes.DEFAULT_TY
 
     # Clone info để KHÔNG mutate cache
     info = dict(products[product_key])
-    custom_name = db.get_custom_name(product_key)
-    if custom_name:
-        info["name"] = custom_name
+    info["name"] = product_display_name(product_key, info, lang)
     
     # Luôn tính giá bán từ nguồn chính xác nhất
     sell_price = get_sell_price(product_key, info["price"], info.get("is_custom_local", False))
@@ -774,9 +888,7 @@ async def handle_product_select(update: Update, context: ContextTypes.DEFAULT_TY
         note = "\n⚠️ <i>Sản phẩm này cần cung cấp email sau khi thanh toán</i>"
 
     # Hiển thị mô tả: chỉ custom hoặc API, KHÔNG tự sinh
-    desc = db.get_custom_description(product_key)
-    if not desc:
-        desc = info.get("description") or info.get("desc")
+    desc = product_display_desc(product_key, info, lang)
     
     desc_block = ""
     if desc:
@@ -790,6 +902,18 @@ async def handle_product_select(update: Update, context: ContextTypes.DEFAULT_TY
     _, icon, cid_for_icon = classify_product(product_key, info)
     cat_icon = fmt_icon(cid_for_icon, icon)
     pname = escape_html(info['name'])
+    if lang == "en":
+        if db.has_custom_accounts_enabled(product_key):
+            desc_block = f"\n<blockquote>{escape_html(desc)}</blockquote>\n" if desc else ""
+            desc_block += t(query.from_user.id, "product_auto_delivery")
+        await query.edit_message_text(
+            t(query.from_user.id, "product_detail", icon=cat_icon, name=pname,
+              price=format_money(sell_price), stock=info["stock"], description=desc_block,
+              note=t(query.from_user.id, "product_email_note") if product_key == "slot_gpt_team" else ""),
+            parse_mode="HTML", disable_web_page_preview=True,
+            reply_markup=InlineKeyboardMarkup(qty_buttons),
+        )
+        return
     
     await query.edit_message_text(
         f"{cat_icon} <b>{pname}</b>\n\n"
@@ -807,6 +931,7 @@ async def handle_qty_select(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Khi khách chọn số lượng."""
     query = update.callback_query
     await query.answer()
+    lang = user_lang(query.from_user.id)
 
     # Format mới: qty_SỐ_LƯỢNG_MÃ_SẢN_PHẨM
     parts = query.data.split("_")
@@ -825,9 +950,7 @@ async def handle_qty_select(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     # Clone info để không mutate cache
     info = dict(products[product_key])
-    custom_name = db.get_custom_name(product_key)
-    if custom_name:
-        info["name"] = custom_name
+    info["name"] = product_display_name(product_key, info, lang)
     
     # Luôn tính giá bán từ nguồn chính xác nhất (custom_prices hoặc markup)
     sell_price = get_sell_price(product_key, info['price'], info.get('is_custom_local', False))
@@ -980,6 +1103,19 @@ async def handle_pay_bank(update: Update, context: ContextTypes.DEFAULT_TYPE):
     total = int(order.get("total", 0))
     qr_url = generate_qr_url(total, order_code)
 
+    if user_lang(query.from_user.id) == "en":
+        await query.edit_message_text(
+            t(query.from_user.id, "bank_payment", order_code=order_code,
+              product=escape_html(order.get("product_name", "?")), total=format_money(total),
+              bank=escape_html(BANK_NAME), account=escape_html(BANK_ACCOUNT_NUMBER),
+              account_name=escape_html(BANK_ACCOUNT_NAME), qr_url=qr_url),
+            parse_mode="HTML", reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton(t(query.from_user.id, "btn_paid"), callback_data=f"paid_{order_code}")],
+                [InlineKeyboardButton(t(query.from_user.id, "btn_cancel"), callback_data=f"cancel_{order_code}")],
+            ]), disable_web_page_preview=False,
+        )
+        return
+
     text = (
         f"🛒 <b>ĐƠN HÀNG #{order_code}</b>\n\n"
         f"📦 {escape_html(order.get('product_name', '?'))}\n"
@@ -1015,6 +1151,10 @@ async def handle_paid_button(update: Update, context: ContextTypes.DEFAULT_TYPE)
     query = update.callback_query
     await query.answer()
     order_code = query.data.replace("paid_", "")
+
+    if user_lang(query.from_user.id) == "en":
+        await query.edit_message_text(t(query.from_user.id, "paid_waiting", order_code=order_code), parse_mode="Markdown")
+        return
 
     await query.edit_message_text(
         f"⏳ Đơn **#{order_code}** đang chờ xác nhận thanh toán.\n\n"
@@ -1434,7 +1574,7 @@ async def process_paid_order(context, order_code: str, payment_source: str = "se
             try:
                 await context.bot.send_message(
                     chat_id=user_id,
-                    text=_paid_order_customer_error_text(order_code),
+                    text=_paid_order_customer_error_text(order_code, user_id),
                     parse_mode="Markdown"
                 )
             except Exception:
@@ -1529,7 +1669,7 @@ async def process_paid_order(context, order_code: str, payment_source: str = "se
             try:
                 await context.bot.send_message(
                     chat_id=user_id,
-                    text=_paid_order_customer_error_text(order_code),
+                    text=_paid_order_customer_error_text(order_code, user_id),
                     parse_mode="Markdown"
                 )
             except Exception:
@@ -1581,7 +1721,7 @@ async def process_paid_order(context, order_code: str, payment_source: str = "se
         try:
             await context.bot.send_message(
                 chat_id=user_id,
-                text=_paid_order_customer_error_text(order_code),
+                text=_paid_order_customer_error_text(order_code, user_id),
                 parse_mode="Markdown"
             )
         except Exception:
@@ -3983,7 +4123,15 @@ async def post_init(application):
         BotCommand("myorders", "Lịch sử đơn hàng"),
         BotCommand("help", "Hướng dẫn sử dụng"),
     ]
+    commands.append(BotCommand("language", "Đổi ngôn ngữ"))
     await application.bot.set_my_commands(commands)
+    await application.bot.set_my_commands([
+        BotCommand("start", "Start"),
+        BotCommand("menu", "View products and buy"),
+        BotCommand("myorders", "Order history"),
+        BotCommand("help", "How to use"),
+        BotCommand("language", "Change language"),
+    ], language_code="en")
 
     # Cache bot username 1 lần duy nhất
     global _bot_username
@@ -4098,6 +4246,7 @@ def main():
     # Commands
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("help", cmd_help))
+    app.add_handler(CommandHandler("language", cmd_language))
     app.add_handler(CommandHandler("menu", cmd_menu))
     app.add_handler(CommandHandler("myorders", cmd_myorders))
 
@@ -4108,6 +4257,8 @@ def main():
 
     # Callback handlers
     app.add_handler(CallbackQueryHandler(handle_noop, pattern="^noop$"))
+    app.add_handler(CallbackQueryHandler(handle_set_language, pattern="^setlang_"))
+    app.add_handler(CallbackQueryHandler(cmd_language, pattern="^language$"))
     app.add_handler(CallbackQueryHandler(handle_product_select, pattern="^prod_"))
     app.add_handler(CallbackQueryHandler(handle_qty_select, pattern="^qty_"))
     app.add_handler(CallbackQueryHandler(handle_paid_button, pattern="^paid_"))
