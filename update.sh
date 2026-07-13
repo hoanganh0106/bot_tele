@@ -85,13 +85,22 @@ fi
 # Sao chép code mới từ SCRIPT_DIR sang PROJECT_DIR
 if [ "$SCRIPT_DIR" != "$PROJECT_DIR" ]; then
     echo "🚚 Đang sao chép code mới sang $PROJECT_DIR..."
-    FILES_TO_COPY=("bot.py" "ctv_api.py" "database.py" "binance_client.py" "i18n.py" "sepay_server.py" "config.env.example" "requirements.txt" "ctv-bot.service")
+    FILES_TO_COPY=("bot.py" "jobs.py" "test_binance.py" "ctv_api.py" "database.py" "binance_client.py" "i18n.py" "sepay_server.py" "config.env.example" "requirements.txt" "ctv-bot.service")
     for file in "${FILES_TO_COPY[@]}"; do
         if [ -f "$SCRIPT_DIR/$file" ]; then
             cp "$SCRIPT_DIR/$file" "$PROJECT_DIR/"
             echo "   -> Đã copy $file"
         fi
     done
+
+    for dir in core handlers; do
+        if [ -d "$SCRIPT_DIR/$dir" ]; then
+            rm -rf "$PROJECT_DIR/$dir"
+            cp -r "$SCRIPT_DIR/$dir" "$PROJECT_DIR/"
+            echo "   -> Đã copy $dir/"
+        fi
+    done
+    rm -rf "$PROJECT_DIR/__pycache__" "$PROJECT_DIR/core/__pycache__" "$PROJECT_DIR/handlers/__pycache__"
     
     # Chỉ copy config.env nếu bên PROJECT_DIR chưa có
     if [ -f "$SCRIPT_DIR/config.env" ] && [ ! -f "$PROJECT_DIR/config.env" ]; then

@@ -194,14 +194,18 @@ def run() -> None:
         check(set(saved) == set(_DEFAULT_DATA), "database top-level format changed")
         print("PASS Database CRUD, cancellation, dedupe, and JSON format")
 
-        original_get_products_cached = bot.get_products_cached
-        bot.get_products_cached = lambda: ({
+        from core import screens
+        from core.helpers import set_user_lang
+        from core.runtime import db as runtime_db
+
+        original_get_products_cached = screens.get_products_cached
+        screens.get_products_cached = lambda: ({
             "smoke": {"name": "Smoke", "price": 1_000, "stock": 1},
         }, None)
         try:
-            bot.set_user_lang(901, "vi")
-            bot.db.set_menu_title("<b>Menu test</b> {balance}")
-            menu_text, menu_keyboard = asyncio.run(bot.build_menu_screen(901))
+            set_user_lang(901, "vi")
+            runtime_db.set_menu_title("<b>Menu test</b> {balance}")
+            menu_text, menu_keyboard = asyncio.run(screens.build_menu_screen(901))
             callbacks = {
                 button.callback_data
                 for row in menu_keyboard.inline_keyboard
@@ -221,16 +225,16 @@ def run() -> None:
                 "menu footer callbacks changed",
             )
 
-            bot.set_user_lang(902, "en")
-            bot.db.set_menu_title_en("<i>Shop test</i> {balance}")
-            menu_text_en, _ = asyncio.run(bot.build_menu_screen(902))
+            set_user_lang(902, "en")
+            runtime_db.set_menu_title_en("<i>Shop test</i> {balance}")
+            menu_text_en, _ = asyncio.run(screens.build_menu_screen(902))
             check(menu_text_en == "<i>Shop test</i> 0đ", "custom EN menu title mismatch")
-            bot.db.set_menu_title(None)
-            bot.db.set_menu_title_en(None)
-            check(bot.db.get_menu_title() is None, "VI menu title reset failed")
-            check(bot.db.get_menu_title_en() is None, "EN menu title reset failed")
+            runtime_db.set_menu_title(None)
+            runtime_db.set_menu_title_en(None)
+            check(runtime_db.get_menu_title() is None, "VI menu title reset failed")
+            check(runtime_db.get_menu_title_en() is None, "EN menu title reset failed")
         finally:
-            bot.get_products_cached = original_get_products_cached
+            screens.get_products_cached = original_get_products_cached
         print("PASS custom bilingual menu title and wallet-free footer")
 
         fixture = build_index_fixture(_DEFAULT_DATA)
