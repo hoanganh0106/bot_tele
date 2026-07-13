@@ -22,8 +22,10 @@ _DEFAULT_DATA = {
     "custom_prices": {},
     "price_deltas": {},
     "custom_names": {},
+    "custom_names_en": {},
     "custom_categories": {},
     "custom_descriptions": {},
+    "custom_descriptions_en": {},
     "custom_category_defs": {},
     "custom_products": {},
     "custom_stocks": {},
@@ -406,6 +408,20 @@ class Database:
                 names[product_key] = name
             self._write(data)
 
+    def get_custom_name_en(self, product_key: str) -> str | None:
+        with self.lock:
+            return self._read().get("custom_names_en", {}).get(product_key)
+
+    def set_custom_name_en(self, product_key: str, name: str):
+        with self.lock:
+            data = self._read()
+            names = data.setdefault("custom_names_en", {})
+            if name is None:
+                names.pop(product_key, None)
+            else:
+                names[product_key] = name
+            self._write(data)
+
     # === CUSTOM CATEGORIES ===
     def get_custom_category(self, product_key: str) -> str | None:
         with self.lock:
@@ -430,6 +446,20 @@ class Database:
         with self.lock:
             data = self._read()
             descs = data.setdefault("custom_descriptions", {})
+            if desc is None:
+                descs.pop(product_key, None)
+            else:
+                descs[product_key] = desc
+            self._write(data)
+
+    def get_custom_description_en(self, product_key: str) -> str | None:
+        with self.lock:
+            return self._read().get("custom_descriptions_en", {}).get(product_key)
+
+    def set_custom_description_en(self, product_key: str, desc: str):
+        with self.lock:
+            data = self._read()
+            descs = data.setdefault("custom_descriptions_en", {})
             if desc is None:
                 descs.pop(product_key, None)
             else:
@@ -930,6 +960,21 @@ class Database:
         """Lấy thông tin user. Trả về dict hoặc {} nếu chưa đăng ký."""
         with self.lock:
             return dict(self._read().get("users", {}).get(str(user_id), {}))
+
+    def get_user_lang(self, user_id: int) -> str:
+        """Return a persisted language, defaulting legacy users to Vietnamese."""
+        with self.lock:
+            lang = self._read().get("users", {}).get(str(user_id), {}).get("lang", "vi")
+            return lang if lang in ("vi", "en") else "vi"
+
+    def set_user_lang(self, user_id: int, lang: str):
+        if lang not in ("vi", "en"):
+            raise ValueError("Unsupported language")
+        with self.lock:
+            data = self._read()
+            users = data.setdefault("users", {})
+            users.setdefault(str(user_id), {"balance": 0})["lang"] = lang
+            self._write(data)
 
     def get_user_balance(self, user_id: int) -> int:
         """Lấy số dư ví."""
