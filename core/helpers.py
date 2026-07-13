@@ -127,13 +127,16 @@ def product_display_desc(product_key: str, info: dict, lang: str) -> str:
 
 
 def product_display_price(product_key: str, vnd_unit_price: int, lang: str, qty: int = 1, include_vnd: bool = True) -> str:
-    """Show admin-configured USDT to EN users while keeping VND as payable currency."""
+    """Show the configured storefront price in the user's language.
+
+    The EN storefront uses the admin-configured USDT price. VND remains the
+    payable amount and is shown by the bank-payment flow itself.
+    """
     vnd_total = vnd_unit_price * qty
     usdt_unit_price = db.get_custom_price_usdt(product_key)
     if lang == "en" and usdt_unit_price is not None:
         usdt_total = Decimal(str(usdt_unit_price)) * qty
-        usdt_text = format_usdt(usdt_total)
-        return f"{usdt_text} · pay {format_money(vnd_total)}" if include_vnd else usdt_text
+        return format_usdt(usdt_total)
     return format_money(vnd_total)
 
 

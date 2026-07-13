@@ -73,7 +73,7 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
             del context.user_data["awaiting_price_usdt_for"]
             await update.message.reply_text(
                 f"✅ Đã đặt giá tiếng Anh cho `{product_key}`: **{format_usdt(normalized)}**\n\n"
-                "ℹ️ Khách EN thấy giá USDT kèm số VNĐ cần thanh toán.",
+                "ℹ️ Khách EN sẽ thấy giá USDT; số VNĐ chỉ hiển thị ở bước chuyển khoản ngân hàng.",
                 parse_mode="Markdown",
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Quay lại cài đặt", callback_data=f"admin_price_{product_key}")]]),
             )
