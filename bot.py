@@ -11,6 +11,7 @@ import asyncio
 import logging
 import re
 import uuid
+from urllib.parse import urlencode
 from datetime import datetime
 from threading import Thread, Lock
 
@@ -2087,53 +2088,15 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     ])
                 )
             else:
-                # Chuyển đổi custom emoji entities thành HTML <tg-emoji> tags
-                # để Telegram có thể render đúng khi gửi lại cho user
+                # Giữ nguyên toàn bộ định dạng Telegram (đậm, nghiêng, link,
+                # quote, code, custom emoji...) khi lưu lời chào dưới dạng HTML.
                 msg = update.message
                 raw_text = msg.text or ""
                 entities = msg.entities or []
-                
-                # Tách các custom emoji entity
-                custom_emojis = [
-                    e for e in entities
-                    if e.type == "custom_emoji" and e.custom_emoji_id
-                ]
-                
-                if custom_emojis:
-                    # Build HTML text với custom emoji tags
-                    # Telegram entities dùng UTF-16 offset, cần convert
-                    utf16_text = raw_text.encode("utf-16-le")
-                    result_parts = []
-                    last_pos = 0  # Vị trí UTF-16 (tính bằng 2-byte units)
-                    
-                    # Sort entities theo offset
-                    sorted_emojis = sorted(custom_emojis, key=lambda e: e.offset)
-                    
-                    for entity in sorted_emojis:
-                        # Lấy phần text trước emoji, escape HTML
-                        before_bytes = utf16_text[last_pos * 2 : entity.offset * 2]
-                        before_text = before_bytes.decode("utf-16-le")
-                        result_parts.append(escape_html(before_text))
-                        
-                        # Lấy text của emoji
-                        emoji_bytes = utf16_text[entity.offset * 2 : (entity.offset + entity.length) * 2]
-                        emoji_text = emoji_bytes.decode("utf-16-le")
-                        
-                        # Tạo tg-emoji tag
-                        result_parts.append(
-                            f'<tg-emoji emoji-id="{entity.custom_emoji_id}">{escape_html(emoji_text)}</tg-emoji>'
-                        )
-                        last_pos = entity.offset + entity.length
-                    
-                    # Phần text còn lại sau emoji cuối cùng
-                    remaining_bytes = utf16_text[last_pos * 2:]
-                    remaining_text = remaining_bytes.decode("utf-16-le")
-                    result_parts.append(escape_html(remaining_text))
-                    
-                    html_welcome = "".join(result_parts)
-                else:
-                    # Không có custom emoji, giữ nguyên text (cho phép HTML thủ công)
-                    html_welcome = raw_text
+
+                # text_html xử lý đúng offset UTF-16 và lồng entity. Nếu admin
+                # không dùng định dạng Telegram thì vẫn cho phép nhập HTML tay.
+                html_welcome = msg.text_html if entities else raw_text
                 
                 db.set_welcome_message(html_welcome)
                 await update.message.reply_text(
@@ -3636,10 +3599,14 @@ async def handle_referral_home(update: Update, context: ContextTypes.DEFAULT_TYP
     
     text = t(user_id, "referral_page", link=ref_link, reward=format_money(reward), friend_reward=new_user_line, status=status, count=stats['referral_count'], earnings=format_money(stats['referral_earnings']))
     
-    share_text = t(user_id, "ref_share", link=ref_link)
+    share_text = t(user_id, "ref_share")
+    share_url = "https://t.me/share/url?" + urlencode({
+        "url": ref_link,
+        "text": share_text,
+    })
     
     buttons = [
-        [InlineKeyboardButton(t(user_id, "btn_share"), switch_inline_query=share_text)], [InlineKeyboardButton(t(user_id, "btn_wallet"), callback_data="wallet_home")], [InlineKeyboardButton(t(user_id, "btn_back"), callback_data="back_start")],
+        [InlineKeyboardButton(t(user_id, "btn_share"), url=share_url)], [InlineKeyboardButton(t(user_id, "btn_wallet"), callback_data="wallet_home")], [InlineKeyboardButton(t(user_id, "btn_back"), callback_data="back_start")],
     ]
     
     await query.edit_message_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(buttons))
