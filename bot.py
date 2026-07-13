@@ -360,18 +360,17 @@ def build_home_keyboard(user_id: int, balance: int) -> InlineKeyboardMarkup:
 def build_menu_footer(user_id: int, balance: int) -> list[list[InlineKeyboardButton]]:
     return [
         [
-            ui_btn("wallet", f"{t(user_id, 'btn_wallet')}: {format_money(balance)}", callback_data="wallet_home", user_id=user_id),
             ui_btn("history", callback_data="btn_myorders", user_id=user_id),
-        ],
-        [
-            ui_btn("referral", callback_data="referral_home", user_id=user_id),
             ui_btn("home", callback_data="back_start", user_id=user_id),
         ],
         [
+            ui_btn("referral", callback_data="referral_home", user_id=user_id),
             ui_btn("contact", url="https://t.me/hoanganh1162", user_id=user_id),
-            ui_btn("language", callback_data="language_from_menu", user_id=user_id),
         ],
-        [ui_btn("reload", callback_data="reload_menu", user_id=user_id)],
+        [
+            ui_btn("language", callback_data="language_from_menu", user_id=user_id),
+            ui_btn("reload", callback_data="reload_menu", user_id=user_id),
+        ],
     ]
 
 
@@ -712,10 +711,14 @@ async def build_menu_screen(user_id: int, refresh: bool = False):
     balance = db.get_user_balance(user_id)
     buttons, _ = build_category_grid(products, "viewcat", is_admin=False, user_id=user_id)
     buttons.extend(build_menu_footer(user_id, balance))
-    return (
-        t(user_id, "menu_title", balance=format_money(balance)),
-        InlineKeyboardMarkup(buttons),
+    lang = user_lang(user_id)
+    custom_menu = db.get_menu_title() if lang == "vi" else db.get_menu_title_en()
+    text = (
+        custom_menu.replace("{balance}", format_money(balance))
+        if custom_menu
+        else t(user_id, "menu_title", balance=format_money(balance))
     )
+    return text, InlineKeyboardMarkup(buttons)
 
 
 def build_orders_screen(user_id: int):
@@ -2423,6 +2426,28 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ Có lỗi xảy ra.")
         return
 
+    if context.user_data.get("awaiting_menu_title"):
+        context.user_data.pop("awaiting_menu_title", None)
+        try:
+            if text.lower() == "reset":
+                db.set_menu_title(None)
+                result = "✅ Đã quay về tiêu đề menu sản phẩm mặc định."
+            else:
+                msg = update.message
+                html_title = msg.text_html if (msg.entities or []) else (msg.text or "")
+                db.set_menu_title(html_title)
+                result = "✅ Đã cập nhật menu sản phẩm tiếng Việt.\n\n📝 Mở /menu để kiểm tra."
+            await update.message.reply_text(
+                result,
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("⬅️ Quay lại", callback_data="admin_ui_custom"),
+                    InlineKeyboardButton("🏠 Thoát", callback_data="admin_home"),
+                ]]),
+            )
+        except Exception:
+            await update.message.reply_text("❌ Có lỗi xảy ra.")
+        return
+
     if context.user_data.get("awaiting_ui_emoji"):
         btn_key = context.user_data["awaiting_ui_emoji"]
         del context.user_data["awaiting_ui_emoji"]
@@ -2513,6 +2538,28 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         InlineKeyboardButton("🏠 Thoát", callback_data="admin_home"),
                     ]]),
                 )
+        except Exception:
+            await update.message.reply_text("❌ Có lỗi xảy ra.")
+        return
+
+    if context.user_data.get("awaiting_menu_title_en"):
+        context.user_data.pop("awaiting_menu_title_en", None)
+        try:
+            if text.lower() == "reset":
+                db.set_menu_title_en(None)
+                result = "✅ Đã quay về tiêu đề menu sản phẩm tiếng Anh mặc định."
+            else:
+                msg = update.message
+                html_title = msg.text_html if (msg.entities or []) else (msg.text or "")
+                db.set_menu_title_en(html_title)
+                result = "✅ Đã cập nhật menu sản phẩm tiếng Anh.\n\n📝 Chuyển sang EN rồi mở /menu để kiểm tra."
+            await update.message.reply_text(
+                result,
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("⬅️ Quay lại", callback_data="admin_ui_custom"),
+                    InlineKeyboardButton("🏠 Thoát", callback_data="admin_home"),
+                ]]),
+            )
         except Exception:
             await update.message.reply_text("❌ Có lỗi xảy ra.")
         return
@@ -2936,7 +2983,8 @@ def _clear_admin_state(context: ContextTypes.DEFAULT_TYPE):
         "awaiting_wallet_adjust", "awaiting_desc_for", "awaiting_name_for", "awaiting_desc_en_for", "awaiting_name_en_for",
         "awaiting_new_cat", "awaiting_new_prod", "awaiting_rename_cat",
         "awaiting_set_emoji",
-        "awaiting_welcome_msg", "awaiting_welcome_msg_en", "awaiting_ui_emoji",
+        "awaiting_welcome_msg", "awaiting_welcome_msg_en",
+        "awaiting_menu_title", "awaiting_menu_title_en", "awaiting_ui_emoji",
         "awaiting_block_id",
     ]:
         context.user_data.pop(key_to_clear, None)
@@ -3788,6 +3836,8 @@ async def handle_admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
         buttons = [
             [InlineKeyboardButton("✏️ Sửa lời chào /start", callback_data="admin_edit_welcome")],
             [InlineKeyboardButton("✏️ Sửa lời chào EN", callback_data="admin_edit_welcome_en")],
+            [InlineKeyboardButton("✏️ Sửa Menu sản phẩm VI", callback_data="admin_edit_menu_title")],
+            [InlineKeyboardButton("✏️ Sửa Menu sản phẩm EN", callback_data="admin_edit_menu_title_en")],
             [InlineKeyboardButton("🎨 Đổi Icon nút bấm", callback_data="admin_edit_btn_list")],
             [InlineKeyboardButton("⬅️ Quay lại", callback_data="admin_home")],
         ]
@@ -3797,6 +3847,32 @@ async def handle_admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Chọn mục bạn muốn tùy chỉnh:",
             parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup(buttons)
+        )
+
+    elif data == "admin_edit_menu_title":
+        context.user_data["awaiting_menu_title"] = True
+        current = db.get_menu_title()
+        preview = f"\n\n📝 Nội dung hiện tại:\n━━━━━━━━━━━━━━━━━━\n{current}\n━━━━━━━━━━━━━━━━━━" if current else "\n\n⚠️ _Đang dùng menu tiếng Việt mặc định_"
+        await query.edit_message_text(
+            f"✏️ **SỬA MENU SẢN PHẨM VI**{preview}\n\n"
+            "📝 Nhắn nội dung mới cho đầu trang menu sản phẩm.\n\n"
+            "💡 Biến có thể dùng: `{balance}` — Số dư ví\n\n"
+            "Nhắn `reset` để quay về mặc định.",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Hủy", callback_data="admin_ui_custom")]]),
+        )
+
+    elif data == "admin_edit_menu_title_en":
+        context.user_data["awaiting_menu_title_en"] = True
+        current = db.get_menu_title_en()
+        preview = f"\n\n📝 Nội dung hiện tại:\n━━━━━━━━━━━━━━━━━━\n{current}\n━━━━━━━━━━━━━━━━━━" if current else "\n\n⚠️ _Đang dùng menu tiếng Anh mặc định_"
+        await query.edit_message_text(
+            f"✏️ **SỬA MENU SẢN PHẨM EN**{preview}\n\n"
+            "📝 Nhắn nội dung tiếng Anh mới cho đầu trang menu sản phẩm.\n\n"
+            "💡 Biến có thể dùng: `{balance}` — Số dư ví\n\n"
+            "Nhắn `reset` để quay về mặc định.",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Hủy", callback_data="admin_ui_custom")]]),
         )
 
     elif data == "admin_edit_welcome_en":

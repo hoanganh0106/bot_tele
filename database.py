@@ -918,6 +918,35 @@ class Database:
                 settings["welcome_message_en"] = msg
             self._write(data)
 
+    # === PRODUCT MENU TITLE ===
+    def get_menu_title(self) -> str | None:
+        with self.lock:
+            return self._read().get("settings", {}).get("menu_title")
+
+    def set_menu_title(self, msg: str | None):
+        with self.lock:
+            data = self._read()
+            settings = data.setdefault("settings", {})
+            if msg is None:
+                settings.pop("menu_title", None)
+            else:
+                settings["menu_title"] = msg
+            self._write(data)
+
+    def get_menu_title_en(self) -> str | None:
+        with self.lock:
+            return self._read().get("settings", {}).get("menu_title_en")
+
+    def set_menu_title_en(self, msg: str | None):
+        with self.lock:
+            data = self._read()
+            settings = data.setdefault("settings", {})
+            if msg is None:
+                settings.pop("menu_title_en", None)
+            else:
+                settings["menu_title_en"] = msg
+            self._write(data)
+
     # === CUSTOM STOCKS ===
     def get_custom_stocks(self) -> dict:
         with self.lock:
