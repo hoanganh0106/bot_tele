@@ -949,7 +949,7 @@ async def handle_product_select(update: Update, context: ContextTypes.DEFAULT_TY
     # Lấy thông tin sản phẩm (async — không block event loop)
     products, _ = get_products_cached()
     if not products or product_key not in products:
-        await query.edit_message_text(t(query.from_user.id, "product_missing"))
+        await edit_navigation_message(query, t(query.from_user.id, "product_missing"))
         return
 
     # Clone info để KHÔNG mutate cache
@@ -965,7 +965,8 @@ async def handle_product_select(update: Update, context: ContextTypes.DEFAULT_TY
     # Check stock
     if info["stock"] == 0:
         _, _, cid = classify_product(product_key, info)
-        await query.edit_message_text(
+        await edit_navigation_message(
+            query,
             t(query.from_user.id, "product_out_of_stock", name=info['name']),
             parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup([
@@ -976,7 +977,8 @@ async def handle_product_select(update: Update, context: ContextTypes.DEFAULT_TY
 
     if info["stock"] == -1:
         _, _, cid = classify_product(product_key, info)
-        await query.edit_message_text(
+        await edit_navigation_message(
+            query,
             t(query.from_user.id, "product_updating", name=info['name']),
             parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup([
@@ -1027,7 +1029,8 @@ async def handle_product_select(update: Update, context: ContextTypes.DEFAULT_TY
         if db.has_custom_accounts_enabled(product_key):
             desc_block = f"\n<blockquote>{escape_html(desc)}</blockquote>\n" if desc else ""
             desc_block += t(query.from_user.id, "product_auto_delivery")
-        await query.edit_message_text(
+        await edit_navigation_message(
+            query,
             t(query.from_user.id, "product_detail", icon=cat_icon, name=pname,
               price=product_display_price(product_key, sell_price, lang), stock=info["stock"], description=desc_block,
               note=t(query.from_user.id, "product_email_note") if product_key == "slot_gpt_team" else ""),
@@ -1036,7 +1039,8 @@ async def handle_product_select(update: Update, context: ContextTypes.DEFAULT_TY
         )
         return
     
-    await query.edit_message_text(
+    await edit_navigation_message(
+        query,
         f"{cat_icon} <b>{pname}</b>\n\n"
         f"💰 Giá: <b>{format_money(sell_price)}</b> / cái\n"
         f"📦 Kho: <b>{info['stock']}</b> còn lại\n"
@@ -1398,6 +1402,32 @@ async def edit_payment_message(query, text: str, *, parse_mode=None, reply_marku
     )
 
 
+async def edit_navigation_message(
+    query,
+    text: str,
+    *,
+    parse_mode=None,
+    reply_markup=None,
+    disable_web_page_preview=None,
+):
+    """Replace a QR photo with a text screen, or edit an existing text screen."""
+    kwargs = {
+        "parse_mode": parse_mode,
+        "reply_markup": reply_markup,
+    }
+    if disable_web_page_preview is not None:
+        kwargs["disable_web_page_preview"] = disable_web_page_preview
+
+    if query.message and query.message.photo:
+        sent = await query.message.reply_text(text=text, **kwargs)
+        try:
+            await query.message.delete()
+        except Exception as exc:
+            logger.warning("Unable to remove QR message after navigation: %s", exc)
+        return sent
+    return await query.edit_message_text(text=text, **kwargs)
+
+
 async def handle_paid_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Khi khách nhấn đã chuyển khoản."""
     query = update.callback_query
@@ -1552,7 +1582,7 @@ async def handle_back_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     user_id = query.from_user.id
     text, keyboard = await build_menu_screen(user_id, refresh=False)
-    await query.edit_message_text(text, parse_mode="HTML", reply_markup=keyboard)
+    await edit_navigation_message(query, text, parse_mode="HTML", reply_markup=keyboard)
 
 
 async def cmd_myorders(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -3937,7 +3967,12 @@ async def handle_back_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     balance = db.get_user_balance(user_id)
     
     text = render_home_text(user_id, user.first_name, balance)
-    await query.edit_message_text(text, parse_mode="HTML", reply_markup=build_home_keyboard(user_id, balance))
+    await edit_navigation_message(
+        query,
+        text,
+        parse_mode="HTML",
+        reply_markup=build_home_keyboard(user_id, balance),
+    )
 
 
 async def handle_noop(update: Update, context: ContextTypes.DEFAULT_TYPE):
