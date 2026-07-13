@@ -375,6 +375,20 @@ def build_menu_footer(user_id: int, balance: int) -> list[list[InlineKeyboardBut
     ]
 
 
+def build_product_back_keyboard(user_id: int, category_id: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([[
+        ui_btn("back", callback_data=f"viewcat_{category_id}", user_id=user_id),
+        ui_btn("home", callback_data="back_start", user_id=user_id),
+    ]])
+
+
+def build_admin_product_back_keyboard(product_key: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([[
+        InlineKeyboardButton("⬅️ Quay lại", callback_data=f"admin_price_{product_key}"),
+        InlineKeyboardButton("🏠 Thoát", callback_data="admin_home"),
+    ]])
+
+
 def generate_qr_url(amount: int, content: str) -> str:
     """Tạo QR VietQR."""
     return (
@@ -969,9 +983,7 @@ async def handle_product_select(update: Update, context: ContextTypes.DEFAULT_TY
             query,
             t(query.from_user.id, "product_out_of_stock", name=info['name']),
             parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup([
-                [ui_btn("back", callback_data=f"viewcat_{cid}", user_id=query.from_user.id), ui_btn("home", callback_data="back_start", user_id=query.from_user.id)]
-            ])
+            reply_markup=build_product_back_keyboard(query.from_user.id, cid),
         )
         return
 
@@ -981,9 +993,7 @@ async def handle_product_select(update: Update, context: ContextTypes.DEFAULT_TY
             query,
             t(query.from_user.id, "product_updating", name=info['name']),
             parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup([
-                [ui_btn("back", callback_data=f"viewcat_{cid}", user_id=query.from_user.id), ui_btn("home", callback_data="back_start", user_id=query.from_user.id)]
-            ])
+            reply_markup=build_product_back_keyboard(query.from_user.id, cid),
         )
         return
 
@@ -1086,9 +1096,7 @@ async def handle_qty_select(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(
             t(query.from_user.id, "stock_error", name=info['name']),
             parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup([
-                [ui_btn("back", callback_data=f"viewcat_{cid}", user_id=query.from_user.id), ui_btn("home", callback_data="back_start", user_id=query.from_user.id)]
-            ])
+            reply_markup=build_product_back_keyboard(query.from_user.id, cid),
         )
         return
 
@@ -3387,10 +3395,7 @@ async def handle_admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"✅ Đã xóa sạch kho cho `{key}`.\n"
             f"Sản phẩm sẽ hiển thị lại tồn kho mặc định từ API (nếu có).",
             parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("⬅️ Quay lại", callback_data=f"admin_price_{key}"),
-                 InlineKeyboardButton("🏠 Thoát", callback_data="admin_home")]
-            ])
+            reply_markup=build_admin_product_back_keyboard(key),
         )
 
     elif data.startswith("admin_do_desc_en_"):
@@ -3427,10 +3432,7 @@ async def handle_admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"Bao gồm hướng dẫn, ghi chú, v.v.\n\n"
             f"Nhắn chữ `reset` nếu muốn xóa mô tả.",
             parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("⬅️ Quay lại", callback_data=f"admin_price_{key}"),
-                 InlineKeyboardButton("🏠 Thoát", callback_data="admin_home")]
-            ])
+            reply_markup=build_admin_product_back_keyboard(key),
         )
         
     elif data == "admin_add_cat":
@@ -3617,10 +3619,7 @@ async def handle_admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"💡 _Hệ thống sẽ tự tính mức chênh lệch. Khi đối tác tăng giá, giá bán sẽ tự tăng theo._\n\n"
             f"Nhắn `reset` để xóa và dùng markup mặc định.",
             parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("⬅️ Quay lại", callback_data=f"admin_price_{key}"),
-                 InlineKeyboardButton("🏠 Thoát", callback_data="admin_home")]
-            ])
+            reply_markup=build_admin_product_back_keyboard(key),
         )
 
     elif data.startswith("admin_toggle_hide_"):
@@ -3660,10 +3659,7 @@ async def handle_admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"✏️ Vui lòng **nhắn tin gửi TÊN MỚI** cho `{key}`.\n\n"
             f"Nhắn chữ `reset` nếu muốn khôi phục tên gốc của server.",
             parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("⬅️ Quay lại", callback_data=f"admin_price_{key}"),
-                 InlineKeyboardButton("🏠 Thoát", callback_data="admin_home")]
-            ])
+            reply_markup=build_admin_product_back_keyboard(key),
         )
 
     elif data.startswith("admin_do_cat_"):
@@ -4615,11 +4611,11 @@ def _backup_database():
 def main():
     """Start bot."""
     if not BOT_TOKEN or BOT_TOKEN == "YOUR_TELEGRAM_BOT_TOKEN_HERE":
-        print("❌ Chưa điền TELEGRAM_BOT_TOKEN trong config.env!")
+        logger.critical("❌ Chưa điền TELEGRAM_BOT_TOKEN trong config.env!")
         return
 
     if not CTV_API_KEY or CTV_API_KEY == "DLR_YOUR_API_KEY_HERE":
-        print("❌ Chưa điền CTV_API_KEY trong config.env!")
+        logger.critical("❌ Chưa điền CTV_API_KEY trong config.env!")
         return
 
     # Tạo thư mục data (DATA_DIR đã được tạo ở trên)

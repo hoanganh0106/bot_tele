@@ -199,40 +199,6 @@ class Database:
             self._write(data, immediate=True)
             return True
 
-    def reserve_usdt_amount(self, order_code: str, amount: str) -> bool:
-        """Atomically reserve one exact USDT amount for a pending order."""
-        amount = str(amount)
-        with self.lock:
-            data = self._read()
-            reservations = data.setdefault("crypto_reservations", {})
-            orders = data.setdefault("orders", {})
-
-            order = orders.get(order_code)
-            if not order or order.get("status") != "pending":
-                return False
-
-            # Remove reservations whose owner no longer exists or is terminal.
-            for reserved_amount, owner in list(reservations.items()):
-                owner_order = orders.get(owner)
-                if not owner_order or owner_order.get("status") != "pending":
-                    reservations.pop(reserved_amount, None)
-
-            for code, pending_order in orders.items():
-                if (
-                    code != order_code
-                    and pending_order.get("status") == "pending"
-                    and pending_order.get("payment_method") == "crypto"
-                    and str(pending_order.get("usdt_amount") or "") == amount
-                ):
-                    return False
-
-            owner = reservations.get(amount)
-            if owner and owner != order_code:
-                return False
-            reservations[amount] = order_code
-            self._write(data, immediate=True)
-            return True
-
     def release_usdt_amount(self, order_code: str):
         """Release every amount reservation owned by an order."""
         with self.lock:
@@ -621,8 +587,6 @@ class Database:
             # Bước 1a: Tìm trong users dict (bao gồm cả user chỉ /start chưa mua)
             for uid_str, uinfo in users.items():
                 uname = uinfo.get("username", "") or ""
-                fname = uinfo.get("first_name", "") or ""
-                
                 if uid_str == query_lower:
                     target_id = int(uid_str)
                     target_username = uname
@@ -675,16 +639,6 @@ class Database:
             return res
 
     # === CUSTOM PRICES ===
-    def get_custom_price(self, product_key: str) -> int | None:
-        with self.lock:
-            return self._read().get("custom_prices", {}).get(product_key)
-
-    def set_custom_price(self, product_key: str, price: int):
-        with self.lock:
-            data = self._read()
-            data.setdefault("custom_prices", {})[product_key] = price
-            self._write(data)
-
     def remove_custom_price(self, product_key: str):
         with self.lock:
             data = self._read()
@@ -1018,13 +972,6 @@ class Database:
             except (TypeError, ValueError):
                 continue
         return result
-
-    def is_broadcast_blocked(self, user_id: int) -> bool:
-        try:
-            uid = int(user_id)
-        except (TypeError, ValueError):
-            return False
-        return uid in set(self.get_broadcast_blocklist())
 
     def add_broadcast_block(self, user_id: int) -> bool:
         """Thêm 1 ID vào blocklist. Trả về True nếu vừa được thêm mới."""
@@ -1389,20 +1336,6 @@ class Database:
 
     def deduct_balance(self, user_id: int, amount: int) -> bool:
         """Trừ tiền từ ví. Trả về True nếu thành công, False nếu không đủ tiền."""
-        with self.lock:
-            data = self._read()
-            users = data.setdefault("users", {})
-            uid = str(user_id)
-            current = users.get(uid, {}).get("balance", 0)
-            if current < amount:
-                return False
-            users[uid]["balance"] = current - amount
-            users[uid]["total_spent"] = users[uid].get("total_spent", 0) + amount
-            self._write(data, immediate=True)
-            return True
-
-    def deduct_balance_if_sufficient(self, user_id: int, amount: int) -> bool:
-        """Re-deduct a previously refunded wallet part atomically."""
         with self.lock:
             data = self._read()
             users = data.setdefault("users", {})
