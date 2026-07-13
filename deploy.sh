@@ -27,7 +27,7 @@ mkdir -p $PROJECT_DIR
 # Tự động copy files từ thư mục chạy script vào PROJECT_DIR nếu khác nhau
 if [ "$SCRIPT_DIR" != "$PROJECT_DIR" ]; then
     echo "🚚 Đang sao chép files từ $SCRIPT_DIR sang $PROJECT_DIR..."
-    FILES_TO_COPY=("bot.py" "ctv_api.py" "database.py" "sepay_server.py" "config.env" "config.env.example" "requirements.txt" "ctv-bot.service")
+    FILES_TO_COPY=("bot.py" "ctv_api.py" "database.py" "binance_client.py" "sepay_server.py" "config.env" "config.env.example" "requirements.txt" "ctv-bot.service")
     for file in "${FILES_TO_COPY[@]}"; do
         if [ -f "$SCRIPT_DIR/$file" ]; then
             cp "$SCRIPT_DIR/$file" "$PROJECT_DIR/"
