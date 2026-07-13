@@ -21,6 +21,7 @@ _DEFAULT_DATA = {
     "orders": {},
     "custom_prices": {},
     "price_deltas": {},
+    "custom_prices_usdt": {},
     "custom_names": {},
     "custom_names_en": {},
     "custom_categories": {},
@@ -393,6 +394,22 @@ class Database:
                 return count
             return 0
 
+    # === DISPLAY PRICES FOR ENGLISH CUSTOMERS (USDT) ===
+    def get_custom_price_usdt(self, product_key: str) -> str | None:
+        """Return the admin-set USDT display price as a decimal string."""
+        with self.lock:
+            return self._read().get("custom_prices_usdt", {}).get(product_key)
+
+    def set_custom_price_usdt(self, product_key: str, price: str | None):
+        with self.lock:
+            data = self._read()
+            prices = data.setdefault("custom_prices_usdt", {})
+            if price is None:
+                prices.pop(product_key, None)
+            else:
+                prices[product_key] = str(price)
+            self._write(data)
+
     # === CUSTOM NAMES ===
     def get_custom_name(self, product_key: str) -> str | None:
         with self.lock:
@@ -617,7 +634,7 @@ class Database:
                 del data["custom_products"][key]
             
             # Xóa các thiết lập liên quan
-            for prop in ["custom_prices", "price_deltas", "custom_names", "custom_categories", "custom_descriptions", "custom_stocks", "custom_accounts_inventory"]:
+            for prop in ["custom_prices", "price_deltas", "custom_prices_usdt", "custom_names", "custom_names_en", "custom_categories", "custom_descriptions", "custom_descriptions_en", "custom_stocks", "custom_accounts_inventory"]:
                 if prop in data and key in data[prop]:
                     del data[prop][key]
                     

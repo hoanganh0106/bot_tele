@@ -12,6 +12,7 @@ import logging
 import re
 import uuid
 from urllib.parse import urlencode
+from decimal import Decimal, InvalidOperation
 from datetime import datetime
 from threading import Thread, Lock
 
@@ -81,6 +82,15 @@ def format_money(amount: int) -> str:
     return f"{amount:,}".replace(",", ".") + "đ"
 
 
+def format_usdt(amount) -> str:
+    """Format a configured USDT amount without float rounding artifacts."""
+    value = Decimal(str(amount))
+    rendered = format(value.normalize(), "f")
+    if "." in rendered:
+        rendered = rendered.rstrip("0").rstrip(".")
+    return f"{rendered} USDT"
+
+
 def user_lang(user_id: int) -> str:
     if user_id not in _lang_cache:
         _lang_cache[user_id] = db.get_user_lang(user_id)
@@ -106,6 +116,17 @@ def product_display_desc(product_key: str, info: dict, lang: str) -> str:
     if lang == "en":
         return db.get_custom_description_en(product_key) or db.get_custom_description(product_key) or info.get("description") or info.get("desc") or ""
     return db.get_custom_description(product_key) or info.get("description") or info.get("desc") or ""
+
+
+def product_display_price(product_key: str, vnd_unit_price: int, lang: str, qty: int = 1, include_vnd: bool = True) -> str:
+    """Show admin-configured USDT to EN users while keeping VND as payable currency."""
+    vnd_total = vnd_unit_price * qty
+    usdt_unit_price = db.get_custom_price_usdt(product_key)
+    if lang == "en" and usdt_unit_price is not None:
+        usdt_total = Decimal(str(usdt_unit_price)) * qty
+        usdt_text = format_usdt(usdt_total)
+        return f"{usdt_text} · pay {format_money(vnd_total)}" if include_vnd else usdt_text
+    return format_money(vnd_total)
 
 
 def get_sell_price(product_key: str, base_price: int, is_custom_local: bool = False) -> int:
@@ -203,6 +224,13 @@ UI_BUTTONS = {
     "history": "📋 Lịch sử mua hàng",
     "contact": "📞 Liên hệ Admin",
     "reload": "🔄 Cập nhật",
+    "language": "🌐 Ngôn ngữ / Language",
+    "home": "🏠 Trang chủ",
+    "back": "⬅️ Quay lại",
+    "buy": "🛒 Mua sản phẩm",
+    "deposit": "💳 Nạp tiền",
+    "share": "📤 Chia sẻ",
+    "cancel": "❌ Hủy",
 }
 
 
@@ -213,13 +241,47 @@ def ui_btn(btn_key: str, text: str = None, callback_data: str = None, url: str =
     kwargs = {}
     if emoji_id:
         kwargs["api_kwargs"] = {"icon_custom_emoji_id": emoji_id}
-        # Xóa emoji mặc định ở đầu text để không hiện cả 2 icon
-        # Text nút luôn theo dạng "EMOJI TEXT", vd: "🛒 MENU SẢN PHẨM"
-        if ' ' in display_text:
-            display_text = display_text.split(' ', 1)[1]
+        # Giữ emoji thường làm fallback: Telegram chỉ render custom icon khi
+        # chủ bot có Premium hoặc bot có username mua thêm trên Fragment.
     if url:
         return InlineKeyboardButton(display_text, url=url, **kwargs)
     return InlineKeyboardButton(display_text, callback_data=callback_data or btn_key, **kwargs)
+
+
+def build_home_keyboard(user_id: int, balance: int) -> InlineKeyboardMarkup:
+    rows = [
+        [ui_btn("menu", callback_data="reload_menu", user_id=user_id)],
+        [
+            ui_btn("wallet", f"{t(user_id, 'btn_wallet')}: {format_money(balance)}", callback_data="wallet_home", user_id=user_id),
+            ui_btn("history", callback_data="btn_myorders", user_id=user_id),
+        ],
+        [
+            ui_btn("referral", callback_data="referral_home", user_id=user_id),
+            ui_btn("contact", url="https://t.me/hoanganh1162", user_id=user_id),
+        ],
+        [ui_btn("language", callback_data="language", user_id=user_id)],
+    ]
+    if is_admin(user_id):
+        rows.append([InlineKeyboardButton("⚙️ Quản trị Admin", callback_data="admin_home")])
+    return InlineKeyboardMarkup(rows)
+
+
+def build_menu_footer(user_id: int, balance: int) -> list[list[InlineKeyboardButton]]:
+    return [
+        [
+            ui_btn("wallet", f"{t(user_id, 'btn_wallet')}: {format_money(balance)}", callback_data="wallet_home", user_id=user_id),
+            ui_btn("history", callback_data="btn_myorders", user_id=user_id),
+        ],
+        [
+            ui_btn("referral", callback_data="referral_home", user_id=user_id),
+            ui_btn("home", callback_data="back_start", user_id=user_id),
+        ],
+        [
+            ui_btn("contact", url="https://t.me/hoanganh1162", user_id=user_id),
+            ui_btn("language", callback_data="language", user_id=user_id),
+        ],
+        [ui_btn("reload", callback_data="reload_menu", user_id=user_id)],
+    ]
 
 
 def generate_qr_url(amount: int, content: str) -> str:
@@ -513,7 +575,10 @@ def build_category_grid(products, callback_prefix, is_admin=False, user_id=None)
     row = []
     for cat_id, data in sorted_cats:
         custom_eid = emoji_ids.get(cat_id)
-        btn_text = f"{data['name']} ({data['count']})"
+        cat_name = data["name"]
+        if not is_admin and user_id is not None and cat_id == "khac":
+            cat_name = t(user_id, "category_other")
+        btn_text = f"{cat_name} ({data['count']})"
         
         if custom_eid:
             # Dùng icon_custom_emoji_id để hiển thị custom emoji trên nút
@@ -523,7 +588,7 @@ def build_category_grid(products, callback_prefix, is_admin=False, user_id=None)
                 api_kwargs={"icon_custom_emoji_id": custom_eid}
             )
         else:
-            btn_text = f"{data['icon']} {data['name']} ({data['count']})"
+            btn_text = f"{data['icon']} {cat_name} ({data['count']})"
             btn = InlineKeyboardButton(btn_text, callback_data=f"{callback_prefix}_{cat_id}")
         
         row.append(btn)
@@ -593,21 +658,9 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     balance = db.get_user_balance(user.id)
 
     if user_lang(user.id) == "en":
-        buttons = [
-            [ui_btn("menu", callback_data="reload_menu", user_id=user.id)],
-            [
-                ui_btn("wallet", f"{t(user.id, 'btn_wallet')}: {format_money(balance)}", callback_data="wallet_home", user_id=user.id),
-                ui_btn("referral", callback_data="referral_home", user_id=user.id),
-            ],
-            [
-                ui_btn("history", callback_data="btn_myorders", user_id=user.id),
-                ui_btn("contact", url="https://t.me/hoanganh1162", user_id=user.id),
-            ],
-            [ui_btn("language", callback_data="language", user_id=user.id)],
-        ]
         await update.message.reply_text(
             t(user.id, "welcome", name=escape_html(user.first_name or "there"), balance=format_money(balance)),
-            parse_mode="HTML", reply_markup=InlineKeyboardMarkup(buttons),
+            parse_mode="HTML", reply_markup=build_home_keyboard(user.id, balance),
         )
         return
     
@@ -639,24 +692,10 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "👇 <i>Chọn chức năng bên dưới</i> 👇"
         )
     
-    buttons = [
-        [ui_btn("menu", "🛍️ MENU SẢN PHẨM", callback_data="reload_menu")],
-        [
-            ui_btn("wallet", f"💳 Ví: {format_money(balance)}", callback_data="wallet_home"),
-            ui_btn("referral", "🎁 Giới thiệu", callback_data="referral_home"),
-        ],
-        [
-            ui_btn("history", "📋 Lịch sử", callback_data="btn_myorders"),
-            ui_btn("contact", "☎️ Liên hệ Admin", url="https://t.me/hoanganh1162")
-        ],
-        [ui_btn("language", "🌐 Ngôn ngữ / Language", callback_data="language")]
-    ]
-
     if is_admin(user.id):
-        buttons.append([InlineKeyboardButton("⚙️ Quản trị Admin", callback_data="admin_home")])
         text += "\n\n<i>🔑 Xin chào Admin, bảng Quản trị đã được mở khóa!</i>"
         
-    await update.message.reply_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(buttons))
+    await update.message.reply_text(text, parse_mode="HTML", reply_markup=build_home_keyboard(user.id, balance))
 
 
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -708,21 +747,9 @@ async def handle_set_language(update: Update, context: ContextTypes.DEFAULT_TYPE
         await handle_category_click(update, context)
         return
     balance = db.get_user_balance(query.from_user.id)
-    buttons = [
-        [ui_btn("menu", callback_data="reload_menu", user_id=query.from_user.id)],
-        [
-            ui_btn("wallet", f"{t(query.from_user.id, 'btn_wallet')}: {format_money(balance)}", callback_data="wallet_home", user_id=query.from_user.id),
-            ui_btn("referral", callback_data="referral_home", user_id=query.from_user.id),
-        ],
-        [
-            ui_btn("history", callback_data="btn_myorders", user_id=query.from_user.id),
-            ui_btn("contact", url="https://t.me/hoanganh1162", user_id=query.from_user.id),
-        ],
-        [ui_btn("language", callback_data="language", user_id=query.from_user.id)],
-    ]
     await query.edit_message_text(
         t(query.from_user.id, "welcome", name=escape_html(query.from_user.first_name or "there"), balance=format_money(balance)),
-        parse_mode="HTML", reply_markup=InlineKeyboardMarkup(buttons),
+        parse_mode="HTML", reply_markup=build_home_keyboard(query.from_user.id, balance),
     )
 
 
@@ -778,21 +805,7 @@ async def cmd_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_balance = db.get_user_balance(update.effective_user.id)
         
         buttons, _ = build_category_grid(products, "viewcat", is_admin=False, user_id=user_id)
-        
-        # Nút ví + giới thiệu
-        buttons.append([
-            ui_btn("wallet", f"{t(user_id, 'btn_wallet')}: {format_money(user_balance)}", callback_data="wallet_home", user_id=user_id),
-            ui_btn("referral", callback_data="referral_home", user_id=user_id),
-        ])
-        # Thêm nút cố định
-        buttons.append([
-            ui_btn("contact", url="https://t.me/hoanganh1162", user_id=user_id),
-            ui_btn("reload", callback_data="reload_menu", user_id=user_id)
-        ])
-        buttons.append([
-            ui_btn("back", t(user_id, "btn_home"), callback_data="back_start", user_id=user_id)
-        ])
-        buttons.append([ui_btn("language", callback_data="language", user_id=user_id)])
+        buttons.extend(build_menu_footer(user_id, user_balance))
 
         await msg.edit_text(
             t(user_id, "menu_title", balance=format_money(user_balance)),
@@ -842,7 +855,7 @@ async def handle_product_select(update: Update, context: ContextTypes.DEFAULT_TY
             t(query.from_user.id, "product_out_of_stock", name=info['name']),
             parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton(t(query.from_user.id, "btn_back"), callback_data=f"viewcat_{cid}"), InlineKeyboardButton(t(query.from_user.id, "btn_category"), callback_data="back_menu"), InlineKeyboardButton(t(query.from_user.id, "btn_home"), callback_data="back_start")]
+                [ui_btn("back", callback_data=f"viewcat_{cid}", user_id=query.from_user.id), ui_btn("home", callback_data="back_start", user_id=query.from_user.id)]
             ])
         )
         return
@@ -853,9 +866,7 @@ async def handle_product_select(update: Update, context: ContextTypes.DEFAULT_TY
             t(query.from_user.id, "product_updating", name=info['name']),
             parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton(t(query.from_user.id, "btn_back"), callback_data=f"viewcat_{cid}"),
-                 InlineKeyboardButton(t(query.from_user.id, "btn_category"), callback_data="back_menu"),
-                 InlineKeyboardButton(t(query.from_user.id, "btn_home"), callback_data="back_start")]
+                [ui_btn("back", callback_data=f"viewcat_{cid}", user_id=query.from_user.id), ui_btn("home", callback_data="back_start", user_id=query.from_user.id)]
             ])
         )
         return
@@ -875,7 +886,7 @@ async def handle_product_select(update: Update, context: ContextTypes.DEFAULT_TY
 
     _, _, cid = classify_product(product_key, info)
     qty_buttons.append([
-        InlineKeyboardButton(t(query.from_user.id, "btn_back"), callback_data=f"viewcat_{cid}"), InlineKeyboardButton(t(query.from_user.id, "btn_category"), callback_data="back_menu"), InlineKeyboardButton(t(query.from_user.id, "btn_home"), callback_data="back_start")
+        ui_btn("back", callback_data=f"viewcat_{cid}", user_id=query.from_user.id), ui_btn("home", callback_data="back_start", user_id=query.from_user.id)
     ])
 
     # Nếu là slot_gpt_team, thông báo cần email
@@ -904,7 +915,7 @@ async def handle_product_select(update: Update, context: ContextTypes.DEFAULT_TY
             desc_block += t(query.from_user.id, "product_auto_delivery")
         await query.edit_message_text(
             t(query.from_user.id, "product_detail", icon=cat_icon, name=pname,
-              price=format_money(sell_price), stock=info["stock"], description=desc_block,
+              price=product_display_price(product_key, sell_price, lang), stock=info["stock"], description=desc_block,
               note=t(query.from_user.id, "product_email_note") if product_key == "slot_gpt_team" else ""),
             parse_mode="HTML", disable_web_page_preview=True,
             reply_markup=InlineKeyboardMarkup(qty_buttons),
@@ -958,7 +969,7 @@ async def handle_qty_select(update: Update, context: ContextTypes.DEFAULT_TYPE):
             t(query.from_user.id, "stock_error", name=info['name']),
             parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton(t(query.from_user.id, "btn_back"), callback_data=f"viewcat_{cid}"), InlineKeyboardButton(t(query.from_user.id, "btn_exit"), callback_data="reload_menu")]
+                [ui_btn("back", callback_data=f"viewcat_{cid}", user_id=query.from_user.id), ui_btn("home", callback_data="back_start", user_id=query.from_user.id)]
             ])
         )
         return
@@ -1029,7 +1040,16 @@ async def handle_qty_select(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if user_balance > 0:
         wallet_line = t(query.from_user.id, "wallet_balance", balance=format_money(user_balance))
 
-    text = t(query.from_user.id, "order_payment", order_code=order_code, product=escape_html(info.get('name', product_key)), qty=qty, price=format_money(sell_price), total=format_money(total), wallet=wallet_line) + "\n⏰ " + ("Order expires after <b>5 minutes</b>" if lang == "en" else "Đơn hàng tự hủy sau <b>5 phút</b>")
+    text = t(
+        query.from_user.id,
+        "order_payment",
+        order_code=order_code,
+        product=escape_html(info.get('name', product_key)),
+        qty=qty,
+        price=product_display_price(product_key, sell_price, lang),
+        total=product_display_price(product_key, sell_price, lang, qty),
+        wallet=wallet_line,
+    ) + t(query.from_user.id, "order_expiry")
 
     await query.edit_message_text(
         text,
@@ -1278,14 +1298,10 @@ async def handle_back_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     user_id = query.from_user.id
     buttons, _ = build_category_grid(products, "viewcat", is_admin=False, user_id=user_id)
-    buttons.append([
-        ui_btn("contact", url="https://t.me/hoanganh1162", user_id=user_id), ui_btn("reload", callback_data="reload_menu", user_id=user_id)
-    ])
-    buttons.append([
-        ui_btn("back", t(user_id, "btn_home"), callback_data="back_start", user_id=user_id)
-    ])
+    balance = db.get_user_balance(user_id)
+    buttons.extend(build_menu_footer(user_id, balance))
     await query.edit_message_text(
-        t(user_id, "menu_title", balance=format_money(db.get_user_balance(user_id))),
+        t(user_id, "menu_title", balance=format_money(balance)),
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup(buttons)
     )
@@ -1759,6 +1775,38 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     text = update.message.text.strip()
     db.add_user(user_id)
+
+    # Giá USDT chỉ dùng để hiển thị cho giao diện tiếng Anh; thanh toán vẫn VND.
+    if context.user_data.get("awaiting_price_usdt_for"):
+        product_key = context.user_data["awaiting_price_usdt_for"]
+        if text.lower() == "reset":
+            db.set_custom_price_usdt(product_key, None)
+            del context.user_data["awaiting_price_usdt_for"]
+            await update.message.reply_text(
+                f"✅ Đã xóa giá USDT của `{product_key}`.",
+                parse_mode="Markdown",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Quay lại cài đặt", callback_data=f"admin_price_{product_key}")]]),
+            )
+            return
+
+        try:
+            value = Decimal(text.replace(",", ".").strip())
+            if not value.is_finite() or value <= 0 or value > Decimal("1000000"):
+                raise InvalidOperation
+            if value.as_tuple().exponent < -8:
+                raise InvalidOperation
+            normalized = format(value.normalize(), "f")
+            db.set_custom_price_usdt(product_key, normalized)
+            del context.user_data["awaiting_price_usdt_for"]
+            await update.message.reply_text(
+                f"✅ Đã đặt giá tiếng Anh cho `{product_key}`: **{format_usdt(normalized)}**\n\n"
+                "ℹ️ Khách EN thấy giá USDT kèm số VNĐ cần thanh toán.",
+                parse_mode="Markdown",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Quay lại cài đặt", callback_data=f"admin_price_{product_key}")]]),
+            )
+        except (InvalidOperation, ValueError):
+            await update.message.reply_text("❌ Giá USDT không hợp lệ. Ví dụ: `2.5` hoặc nhập `reset`.", parse_mode="Markdown")
+        return
 
     # 1. Check nếu đang chờ setup giá
     if context.user_data.get("awaiting_price_for"):
@@ -2449,16 +2497,7 @@ async def handle_category_click(update: Update, context: ContextTypes.DEFAULT_TY
         user_balance = db.get_user_balance(query.from_user.id)
         user_id = query.from_user.id
         buttons, _ = build_category_grid(products, "viewcat", is_admin=False, user_id=user_id)
-        buttons.append([
-            ui_btn("wallet", f"{t(user_id, 'btn_wallet')}: {format_money(user_balance)}", callback_data="wallet_home", user_id=user_id), ui_btn("referral", callback_data="referral_home", user_id=user_id),
-        ])
-        buttons.append([
-            ui_btn("contact", url="https://t.me/hoanganh1162", user_id=user_id), ui_btn("reload", callback_data="reload_menu", user_id=user_id)
-        ])
-        buttons.append([
-            ui_btn("back", t(user_id, "btn_home"), callback_data="back_start", user_id=user_id)
-        ])
-        buttons.append([ui_btn("language", callback_data="language", user_id=user_id)])
+        buttons.extend(build_menu_footer(user_id, user_balance))
         await query.edit_message_text(
             t(user_id, "menu_title", balance=format_money(user_balance)),
             parse_mode="HTML",
@@ -2513,17 +2552,23 @@ async def handle_category_click(update: Update, context: ContextTypes.DEFAULT_TY
                 api_source = info.get("api_source", "CTV")
                 api_tag = f"[{api_source}] " if not info.get("is_custom_local") else "[TỰ BÁN] "
             
-            buttons.append([InlineKeyboardButton(f"{api_tag}{dname} | {format_money(sell_price)} | {status}", callback_data=f"prod_{key}")])
+            display_price = product_display_price(key, sell_price, user_lang(query.from_user.id), include_vnd=False)
+            buttons.append([InlineKeyboardButton(f"{api_tag}{dname} | {display_price} | {status}", callback_data=f"prod_{key}")])
                
-    buttons.append([InlineKeyboardButton("⬅️ Quay lại danh mục", callback_data="back_menu")])
+    buttons.append([
+        ui_btn("back", t(query.from_user.id, "btn_back_categories"), callback_data="back_menu", user_id=query.from_user.id),
+        ui_btn("home", callback_data="back_start", user_id=query.from_user.id),
+    ])
     
     # Lấy tên + icon danh mục
     all_cats = get_all_categories_merged()
-    cat_name, cat_emoji = all_cats.get(cat_id, ["Sản phẩm", "🛒"])
+    cat_name, cat_emoji = all_cats.get(cat_id, [t(query.from_user.id, "category_products"), "🛒"])
+    if cat_id == "khac":
+        cat_name = t(query.from_user.id, "category_other")
     cat_icon_html = fmt_icon(cat_id, cat_emoji)
     
     await query.edit_message_text(
-        f"{cat_icon_html} <b>{escape_html(cat_name)}</b>\n\n<i>💰 Giá  │  ✅Còn hàng  │  ❌Hết  │  🔄Đang cập nhật</i>",
+        t(query.from_user.id, "category_panel", icon=cat_icon_html, name=escape_html(cat_name)),
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup(buttons)
     )
@@ -2539,6 +2584,7 @@ async def render_admin_product_detail(update, context, key):
     current_name = db.get_custom_name(key) or (info["name"] if info else key)
     current_cat, current_icon, _ = classify_product(key, info if info else {"name": key})
     sell_price = get_sell_price(key, info["price"] if info else 0, info.get("is_custom_local", False) if info else False)
+    usdt_price = db.get_custom_price_usdt(key)
     
     stock_status = "Không rõ"
     is_custom_local = False
@@ -2584,6 +2630,7 @@ async def render_admin_product_detail(update, context, key):
         f"Giá gốc (từ đối tác): {format_money(base_price)}\n"
         f"{price_mode}\n"
         f"💰 Giá bán hiện tại: **{format_money(sell_price)}**\n\n"
+        f"💵 Giá hiển thị EN: **{format_usdt(usdt_price) if usdt_price is not None else 'Chưa đặt'}**\n\n"
         f"⚡ _Khi đối tác tăng giá, giá bán tự tăng theo._\n\n"
         f"Vui lòng chọn thao tác bên dưới:"
     )
@@ -2592,7 +2639,8 @@ async def render_admin_product_detail(update, context, key):
     
     buttons = [
         [InlineKeyboardButton("💰 Sửa giá", callback_data=f"admin_do_price_{key}"),
-         InlineKeyboardButton("📦 Sửa tồn kho", callback_data=f"admin_do_stock_{key}")],
+         InlineKeyboardButton("💵 Giá USDT (EN)", callback_data=f"admin_do_price_usdt_{key}")],
+        [InlineKeyboardButton("📦 Sửa tồn kho", callback_data=f"admin_do_stock_{key}")],
         [InlineKeyboardButton("✏️ Đổi tên hiển thị", callback_data=f"admin_do_name_{key}"),
          InlineKeyboardButton(hide_btn_txt, callback_data=f"admin_toggle_hide_{key}")],
         [InlineKeyboardButton("📜 Sửa nội dung/Mô tả", callback_data=f"admin_do_desc_{key}")],
@@ -2613,7 +2661,7 @@ async def render_admin_product_detail(update, context, key):
 def _clear_admin_state(context: ContextTypes.DEFAULT_TYPE):
     """Xóa các state nhập liệu tạm trong dashboard admin."""
     for key_to_clear in [
-        "awaiting_price_for", "awaiting_markup", "awaiting_broadcast",
+        "awaiting_price_for", "awaiting_price_usdt_for", "awaiting_markup", "awaiting_broadcast",
         "broadcast_queue", "awaiting_user_lookup",
         "awaiting_stock_items_for", "awaiting_stock_manual_for",
         "awaiting_ref_reward", "awaiting_ref_newuser", "awaiting_min_deposit",
@@ -3271,6 +3319,21 @@ async def handle_admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
         key = data.replace("admin_price_", "")
         await render_admin_product_detail(update, context, key)
         
+    elif data.startswith("admin_do_price_usdt_"):
+        key = data.replace("admin_do_price_usdt_", "")
+        context.user_data["awaiting_price_usdt_for"] = key
+        current = db.get_custom_price_usdt(key)
+        current_text = format_usdt(current) if current is not None else "Chưa đặt"
+        await query.edit_message_text(
+            f"💵 **ĐẶT GIÁ USDT CHO KHÁCH EN** — `{key}`\n\n"
+            f"Hiện tại: **{current_text}**\n\n"
+            "Nhập giá mỗi sản phẩm, ví dụ `2.5`. Giá này chỉ dùng để hiển thị; "
+            "bot vẫn thu tiền VNĐ theo giá bán hiện tại.\n\n"
+            "Nhập `reset` để xóa giá USDT.",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Quay lại", callback_data=f"admin_price_{key}")]]),
+        )
+
     elif data.startswith("admin_do_price_"):
         key = data.replace("admin_do_price_", "")
         context.user_data["awaiting_price_for"] = key
@@ -3507,6 +3570,7 @@ async def handle_admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "━━━━━━━━━━━━━━━━━━\n"
             "✅ = Đã có custom emoji\n"
             "❌ = Đang dùng emoji mặc định\n\n"
+            "ℹ️ Custom icon chỉ hiện khi chủ bot có Telegram Premium hoặc bot có username mua thêm trên Fragment.\n\n"
             "Chọn nút bạn muốn đổi icon:",
             parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup(buttons)
@@ -3547,7 +3611,9 @@ async def handle_wallet_home(update: Update, context: ContextTypes.DEFAULT_TYPE)
     text = t(user_id, "wallet_home", balance=format_money(balance), deposited=format_money(total_deposited), spent=format_money(total_spent), earnings=format_money(referral_earnings))
     
     buttons = [
-        [InlineKeyboardButton(t(user_id, "btn_deposit"), callback_data="deposit_start")], [InlineKeyboardButton(t(user_id, "btn_invite"), callback_data="referral_home")], [InlineKeyboardButton(t(user_id, "btn_buy"), callback_data="reload_menu")], [InlineKeyboardButton(t(user_id, "btn_back"), callback_data="back_start")],
+        [ui_btn("deposit", t(user_id, "btn_deposit"), callback_data="deposit_start", user_id=user_id)],
+        [ui_btn("referral", t(user_id, "btn_invite"), callback_data="referral_home", user_id=user_id), ui_btn("buy", callback_data="reload_menu", user_id=user_id)],
+        [ui_btn("home", callback_data="back_start", user_id=user_id)],
     ]
     
     await query.edit_message_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(buttons))
@@ -3567,7 +3633,7 @@ async def handle_deposit_start(update: Update, context: ContextTypes.DEFAULT_TYP
     text = t(user_id, "deposit_page", bank=escape_html(BANK_NAME), account=escape_html(BANK_ACCOUNT_NUMBER), account_name=escape_html(BANK_ACCOUNT_NAME), code=dep_code, minimum=format_money(min_deposit), qr_url=qr_url)
     
     buttons = [
-        [InlineKeyboardButton(t(user_id, "btn_balance"), callback_data="wallet_home")], [InlineKeyboardButton(t(user_id, "btn_back"), callback_data="wallet_home")],
+        [ui_btn("wallet", t(user_id, "btn_balance"), callback_data="wallet_home", user_id=user_id), ui_btn("home", callback_data="back_start", user_id=user_id)],
     ]
     
     await query.edit_message_text(
@@ -3606,7 +3672,12 @@ async def handle_referral_home(update: Update, context: ContextTypes.DEFAULT_TYP
     })
     
     buttons = [
-        [InlineKeyboardButton(t(user_id, "btn_share"), url=share_url)], [InlineKeyboardButton(t(user_id, "btn_wallet"), callback_data="wallet_home")], [InlineKeyboardButton(t(user_id, "btn_back"), callback_data="back_start")],
+        [ui_btn("share", t(user_id, "btn_share"), url=share_url, user_id=user_id)],
+        [
+            ui_btn("wallet", callback_data="wallet_home", user_id=user_id),
+            ui_btn("buy", callback_data="reload_menu", user_id=user_id),
+        ],
+        [ui_btn("home", callback_data="back_start", user_id=user_id)],
     ]
     
     await query.edit_message_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(buttons))
@@ -3630,22 +3701,10 @@ async def handle_back_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         text = t(user_id, "welcome", name=escape_html(user.first_name), balance=format_money(balance))
     
-    buttons = [
-        [ui_btn("menu", callback_data="reload_menu", user_id=user_id)],
-        [
-            ui_btn("wallet", f"{t(user_id, 'btn_wallet')}: {format_money(balance)}", callback_data="wallet_home", user_id=user_id), ui_btn("referral", callback_data="referral_home", user_id=user_id),
-        ],
-        [
-            ui_btn("history", callback_data="btn_myorders", user_id=user_id), ui_btn("contact", url="https://t.me/hoanganh1162", user_id=user_id)
-        ],
-        [ui_btn("language", callback_data="language", user_id=user_id)],
-    ]
-    
     if is_admin(user_id):
-        buttons.append([InlineKeyboardButton("⚙️ Quản trị Admin", callback_data="admin_home")])
         text += "\n\n<i>🔑 Xin chào Admin, bảng Quản trị đã được mở khóa!</i>"
     
-    await query.edit_message_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(buttons))
+    await query.edit_message_text(text, parse_mode="HTML", reply_markup=build_home_keyboard(user_id, balance))
 
 
 async def handle_noop(update: Update, context: ContextTypes.DEFAULT_TYPE):
