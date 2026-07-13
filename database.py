@@ -34,6 +34,8 @@ _DEFAULT_DATA = {
     "custom_hiddens": [],
     "settings": {"default_markup_fixed": 10000, "referral_reward": 1000, "referral_new_user_reward": 500, "referral_enabled": True, "min_deposit": 5000},
     "processed_transactions": [],
+    "processed_crypto_txids": [],
+    "crypto_reservations": {},
     "incoming_payments": [],
     "users": {},
     "deposits": {},
@@ -181,19 +183,209 @@ class Database:
                 result[code] = dict(order)
             return result
 
-    def cancel_order_if_pending(self, order_code: str) -> bool:
+    def cancel_order_if_pending(self, order_code: str, status: str = "cancelled_timeout") -> bool:
         """Atomic: hủy đơn CHỈ KHI status vẫn là 'pending'.
         Trả về True nếu đã hủy, False nếu đơn đã được xử lý bởi thread khác.
         Giải quyết race condition giữa webhook (paid) và auto-cancel (timeout).
         """
+        if status not in ("cancelled", "cancelled_timeout"):
+            raise ValueError("Unsupported cancellation status")
         with self.lock:
             data = self._read()
             order = data["orders"].get(order_code)
             if not order or order.get("status") != "pending":
                 return False
-            order["status"] = "cancelled_timeout"
+            order["status"] = status
             self._write(data, immediate=True)
             return True
+
+    def reserve_usdt_amount(self, order_code: str, amount: str) -> bool:
+        """Atomically reserve one exact USDT amount for a pending order."""
+        amount = str(amount)
+        with self.lock:
+            data = self._read()
+            reservations = data.setdefault("crypto_reservations", {})
+            orders = data.setdefault("orders", {})
+
+            order = orders.get(order_code)
+            if not order or order.get("status") != "pending":
+                return False
+
+            # Remove reservations whose owner no longer exists or is terminal.
+            for reserved_amount, owner in list(reservations.items()):
+                owner_order = orders.get(owner)
+                if not owner_order or owner_order.get("status") != "pending":
+                    reservations.pop(reserved_amount, None)
+
+            for code, pending_order in orders.items():
+                if (
+                    code != order_code
+                    and pending_order.get("status") == "pending"
+                    and pending_order.get("payment_method") == "crypto"
+                    and str(pending_order.get("usdt_amount") or "") == amount
+                ):
+                    return False
+
+            owner = reservations.get(amount)
+            if owner and owner != order_code:
+                return False
+            reservations[amount] = order_code
+            self._write(data, immediate=True)
+            return True
+
+    def release_usdt_amount(self, order_code: str):
+        """Release every amount reservation owned by an order."""
+        with self.lock:
+            data = self._read()
+            reservations = data.setdefault("crypto_reservations", {})
+            changed = False
+            for amount, owner in list(reservations.items()):
+                if owner == order_code:
+                    reservations.pop(amount, None)
+                    changed = True
+            if changed:
+                self._write(data, immediate=True)
+
+    def activate_crypto_payment(
+        self,
+        order_code: str,
+        user_id: int,
+        amount: str,
+        created_at: str,
+        network: str,
+    ) -> str | None:
+        """Atomically reserve and attach one crypto amount to a pending order."""
+        amount = str(amount)
+        with self.lock:
+            data = self._read()
+            orders = data.setdefault("orders", {})
+            reservations = data.setdefault("crypto_reservations", {})
+            order = orders.get(order_code)
+            if not order or order.get("status") != "pending" or order.get("user_id") != user_id:
+                return None
+
+            for reserved_amount, reserved_owner in list(reservations.items()):
+                owner_order = orders.get(reserved_owner)
+                if not owner_order or owner_order.get("status") != "pending":
+                    reservations.pop(reserved_amount, None)
+
+            existing = str(order.get("usdt_amount") or "") if order.get("payment_method") == "crypto" else ""
+            target_amount = existing or amount
+            for code, pending_order in orders.items():
+                if (
+                    code != order_code
+                    and pending_order.get("status") == "pending"
+                    and pending_order.get("payment_method") == "crypto"
+                    and str(pending_order.get("usdt_amount") or "") == target_amount
+                ):
+                    return None
+            if existing:
+                owner = reservations.get(existing)
+                if owner not in (None, order_code):
+                    logger.error("Crypto amount %s for order %s is reserved by %s", existing, order_code, owner)
+                    return None
+                reservations[existing] = order_code
+                self._write(data, immediate=True)
+                return existing
+
+            owner = reservations.get(amount)
+            if owner and owner != order_code:
+                return None
+            for reserved_amount, reserved_owner in list(reservations.items()):
+                if reserved_owner == order_code:
+                    reservations.pop(reserved_amount, None)
+            reservations[amount] = order_code
+            order.update({
+                "payment_method": "crypto",
+                "usdt_amount": amount,
+                "crypto_created_at": created_at,
+                "usdt_network": network,
+            })
+            self._write(data, immediate=True)
+            return amount
+
+    def get_crypto_pending_orders(self) -> dict:
+        with self.lock:
+            return {
+                code: dict(order)
+                for code, order in self._read().get("orders", {}).items()
+                if order.get("status") == "pending" and order.get("payment_method") == "crypto"
+            }
+
+    def get_crypto_matchable_orders(self) -> dict:
+        """Return active and just-cancelled crypto orders for late-deposit handling."""
+        with self.lock:
+            return {
+                code: dict(order)
+                for code, order in self._read().get("orders", {}).items()
+                if order.get("status") in ("pending", "cancelled_timeout", "cancelled")
+                and order.get("payment_method") == "crypto"
+                and order.get("usdt_amount")
+            }
+
+    def claim_crypto_deposit(self, order_code: str, tx_id: str, insert_time: int) -> dict | None:
+        """Atomically bind one Binance txid and lock or recover a crypto order."""
+        tx_id = str(tx_id)
+        with self.lock:
+            data = self._read()
+            txids = data.setdefault("processed_crypto_txids", [])
+            order = data.get("orders", {}).get(order_code)
+            original_status = order.get("status") if order else None
+            if (
+                not tx_id
+                or tx_id in txids
+                or not order
+                or original_status not in ("pending", "cancelled_timeout")
+                or order.get("payment_method") != "crypto"
+            ):
+                return None
+            txids.append(tx_id)
+            if len(txids) > 5000:
+                data["processed_crypto_txids"] = txids[-5000:]
+
+            order.update({
+                "crypto_txid": tx_id,
+                "crypto_deposit_time": int(insert_time),
+                "payment_source": "binance_usdt",
+            })
+
+            # A timeout may have already refunded the wallet-funded part. Re-deduct it
+            # inside this same transaction before promising fulfillment.
+            if original_status == "cancelled_timeout" and order.get("wallet_refunded"):
+                amount = int(order.get("wallet_paid", 0) or 0)
+                users = data.setdefault("users", {})
+                user = users.setdefault(str(order.get("user_id")), {"balance": 0})
+                current = int(user.get("balance", 0))
+                if amount > 0 and current < amount:
+                    order.update({
+                        "crypto_claim_status": "wallet_insufficient",
+                        "crypto_payment_confirmed": False,
+                    })
+                    self._write(data, immediate=True)
+                    return dict(order)
+                if amount > 0:
+                    user["balance"] = current - amount
+                    user["total_spent"] = int(user.get("total_spent", 0)) + amount
+                order["wallet_refunded"] = False
+
+            order.update({
+                "status": "processing",
+                "crypto_payment_confirmed": True,
+                "crypto_claim_status": "claimed",
+                "crypto_recovered_timeout": original_status == "cancelled_timeout",
+            })
+            self._write(data, immediate=True)
+            return dict(order)
+
+    def get_confirmed_crypto_orders(self) -> dict:
+        with self.lock:
+            return {
+                code: dict(order)
+                for code, order in self._read().get("orders", {}).items()
+                if order.get("status") in ("pending", "processing", "failed")
+                and order.get("payment_method") == "crypto"
+                and order.get("crypto_payment_confirmed")
+            }
 
     def complete_order_payment(self, order_code: str, updates: dict) -> dict | None:
         """Atomic: chuyển đơn từ 'pending' sang trạng thái mới + lưu dữ liệu.
@@ -205,12 +397,115 @@ class Database:
         with self.lock:
             data = self._read()
             order = data["orders"].get(order_code)
-            if not order or order.get("status") not in ("pending", "failed", "cancelled_timeout"):
+            if not order or order.get("status") not in ("pending", "processing", "failed", "cancelled_timeout"):
                 return None
             # Apply tất cả updates (status, paid_at, items, etc.) trong 1 lock
             order.update(updates)
             self._write(data, immediate=True)
             return dict(order)  # Trả bản sao an toàn
+
+    def claim_order_for_payment(self, order_code: str, user_id: int, payment_method: str) -> dict | None:
+        """Atomically reserve a pending order for a user-triggered payment flow."""
+        with self.lock:
+            data = self._read()
+            order = data.get("orders", {}).get(order_code)
+            if not order or order.get("status") != "pending" or order.get("user_id") != user_id:
+                return None
+            order["status"] = "processing"
+            order["payment_method"] = payment_method
+            self._write(data, immediate=True)
+            return dict(order)
+
+    def release_order_payment_claim(self, order_code: str):
+        with self.lock:
+            data = self._read()
+            order = data.get("orders", {}).get(order_code)
+            if order and order.get("status") == "processing":
+                order["status"] = "pending"
+                self._write(data, immediate=True)
+
+    def confirm_wallet_payment(self, order_code: str, user_id: int, amount: int) -> int | None:
+        """Atomically deduct wallet funds and persist proof that fulfillment is owed."""
+        with self.lock:
+            data = self._read()
+            order = data.get("orders", {}).get(order_code)
+            users = data.setdefault("users", {})
+            user = users.setdefault(str(user_id), {"balance": 0})
+            current = int(user.get("balance", 0))
+            if (
+                not order
+                or order.get("status") != "processing"
+                or order.get("user_id") != user_id
+                or order.get("payment_method") != "wallet"
+                or order.get("wallet_payment_confirmed")
+                or current < amount
+            ):
+                return None
+            user["balance"] = current - amount
+            user["total_spent"] = int(user.get("total_spent", 0)) + amount
+            order["wallet_payment_confirmed"] = True
+            order["payment_source"] = "wallet"
+            self._write(data, immediate=True)
+            return user["balance"]
+
+    def get_confirmed_wallet_orders(self) -> dict:
+        with self.lock:
+            return {
+                code: dict(order)
+                for code, order in self._read().get("orders", {}).items()
+                if order.get("status") in ("pending", "processing", "failed")
+                and order.get("payment_method") == "wallet"
+                and order.get("wallet_payment_confirmed")
+            }
+
+    def start_partial_wallet_payment(self, order_code: str, user_id: int) -> dict | None:
+        """Atomically deduct the wallet portion and update the order exactly once."""
+        with self.lock:
+            data = self._read()
+            order = data.get("orders", {}).get(order_code)
+            users = data.setdefault("users", {})
+            user = users.setdefault(str(user_id), {"balance": 0})
+            if (
+                not order
+                or order.get("status") != "pending"
+                or order.get("user_id") != user_id
+                or int(order.get("wallet_paid", 0) or 0) > 0
+            ):
+                return None
+
+            total = int(order.get("total", 0) or 0)
+            current = int(user.get("balance", 0))
+            if total <= 0 or current <= 0:
+                return None
+
+            wallet_amount = min(current, total)
+            remaining = total - wallet_amount
+            user["balance"] = current - wallet_amount
+            user["total_spent"] = int(user.get("total_spent", 0)) + wallet_amount
+
+            if remaining == 0:
+                order.update({
+                    "status": "processing",
+                    "payment_method": "wallet",
+                    "wallet_payment_confirmed": True,
+                    "payment_source": "wallet",
+                })
+            else:
+                order.update({
+                    "payment_method": "bank_partial",
+                    "wallet_paid": wallet_amount,
+                    "wallet_refunded": False,
+                    "remaining_amount": remaining,
+                    "original_total": total,
+                    "total": remaining,
+                })
+            self._write(data, immediate=True)
+            return {
+                "wallet_amount": wallet_amount,
+                "remaining": remaining,
+                "new_balance": user["balance"],
+                "fully_paid": remaining == 0,
+            }
 
     def update_order_fields(self, order_code: str, updates: dict) -> bool:
         """Cập nhật các trường trong đơn hàng (không kiểm tra status).
@@ -222,6 +517,48 @@ class Database:
             if not order:
                 return False
             order.update(updates)
+            self._write(data, immediate=True)
+            return True
+
+    def refund_order_wallet_if_needed(self, order_code: str) -> tuple[int, int]:
+        """Atomically refund a partial wallet payment once and flag the order."""
+        with self.lock:
+            data = self._read()
+            order = data.get("orders", {}).get(order_code)
+            if not order:
+                return 0, 0
+            user_id = order.get("user_id")
+            amount = int(order.get("wallet_paid", 0) or 0)
+            users = data.setdefault("users", {})
+            uid = str(user_id)
+            user = users.setdefault(uid, {"balance": 0})
+            if amount <= 0 or order.get("wallet_refunded"):
+                return 0, int(user.get("balance", 0))
+            user["balance"] = int(user.get("balance", 0)) + amount
+            user["total_spent"] = max(0, int(user.get("total_spent", 0)) - amount)
+            order["wallet_refunded"] = True
+            self._write(data, immediate=True)
+            return amount, user["balance"]
+
+    def restore_refunded_wallet_for_order(self, order_code: str) -> bool:
+        """Atomically re-deduct a refunded partial payment before late fulfillment."""
+        with self.lock:
+            data = self._read()
+            order = data.get("orders", {}).get(order_code)
+            if not order or not order.get("wallet_refunded"):
+                return True
+            amount = int(order.get("wallet_paid", 0) or 0)
+            users = data.setdefault("users", {})
+            user = users.setdefault(str(order.get("user_id")), {"balance": 0})
+            current = int(user.get("balance", 0))
+            if amount <= 0:
+                order["wallet_refunded"] = False
+            elif current < amount:
+                return False
+            else:
+                user["balance"] = current - amount
+                user["total_spent"] = int(user.get("total_spent", 0)) + amount
+                order["wallet_refunded"] = False
             self._write(data, immediate=True)
             return True
 
@@ -548,6 +885,20 @@ class Database:
             data.setdefault("settings", {})["welcome_message"] = msg
             self._write(data)
 
+    def get_welcome_message_en(self) -> str | None:
+        with self.lock:
+            return self._read().get("settings", {}).get("welcome_message_en")
+
+    def set_welcome_message_en(self, msg: str | None):
+        with self.lock:
+            data = self._read()
+            settings = data.setdefault("settings", {})
+            if msg is None:
+                settings.pop("welcome_message_en", None)
+            else:
+                settings["welcome_message_en"] = msg
+            self._write(data)
+
     # === CUSTOM STOCKS ===
     def get_custom_stocks(self) -> dict:
         with self.lock:
@@ -734,6 +1085,27 @@ class Database:
                 if len(txns) > 1000:
                     data["processed_transactions"] = txns[-1000:]
                 self._write(data, immediate=True)
+
+    # === BINANCE DEPOSIT DEDUP ===
+    def is_txid_processed(self, tx_id: str) -> bool:
+        with self.lock:
+            return str(tx_id) in self._read().get("processed_crypto_txids", [])
+
+    def mark_txid_processed(self, tx_id: str) -> bool:
+        """Atomically claim a Binance deposit txid. Returns False if already used."""
+        tx_id = str(tx_id)
+        if not tx_id:
+            return False
+        with self.lock:
+            data = self._read()
+            txids = data.setdefault("processed_crypto_txids", [])
+            if tx_id in txids:
+                return False
+            txids.append(tx_id)
+            if len(txids) > 5000:
+                data["processed_crypto_txids"] = txids[-5000:]
+            self._write(data, immediate=True)
+            return True
 
     # === INCOMING PAYMENTS (webhook store-then-poll) ===
     def store_incoming_payment(self, payment: dict) -> bool:
@@ -1009,12 +1381,28 @@ class Database:
             users[uid]["balance"] = users[uid].get("balance", 0) + amount
             if reason == "deposit":
                 users[uid]["total_deposited"] = users[uid].get("total_deposited", 0) + amount
+            elif reason == "refund":
+                users[uid]["total_spent"] = max(0, users[uid].get("total_spent", 0) - amount)
             new_balance = users[uid]["balance"]
             self._write(data, immediate=True)
             return new_balance
 
     def deduct_balance(self, user_id: int, amount: int) -> bool:
         """Trừ tiền từ ví. Trả về True nếu thành công, False nếu không đủ tiền."""
+        with self.lock:
+            data = self._read()
+            users = data.setdefault("users", {})
+            uid = str(user_id)
+            current = users.get(uid, {}).get("balance", 0)
+            if current < amount:
+                return False
+            users[uid]["balance"] = current - amount
+            users[uid]["total_spent"] = users[uid].get("total_spent", 0) + amount
+            self._write(data, immediate=True)
+            return True
+
+    def deduct_balance_if_sufficient(self, user_id: int, amount: int) -> bool:
+        """Re-deduct a previously refunded wallet part atomically."""
         with self.lock:
             data = self._read()
             users = data.setdefault("users", {})

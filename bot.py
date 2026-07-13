@@ -8,11 +8,13 @@ Bot Telegram bán CTV tự động
 import os
 import time
 import asyncio
+import unicodedata
 import logging
 import re
 import uuid
+import random
 from urllib.parse import urlencode
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from datetime import datetime
 from threading import Thread, Lock
 
@@ -28,6 +30,7 @@ from telegram.ext import (
 
 from ctv_api import CTVApi
 from database import Database
+from binance_client import BinanceAPIError, BinanceClient
 from sepay_server import start_webhook_server
 import i18n
 
@@ -45,6 +48,13 @@ BANK_NAME = os.getenv("BANK_NAME", "Vietcombank")
 BANK_ACCOUNT_NUMBER = os.getenv("BANK_ACCOUNT_NUMBER", "")
 BANK_ACCOUNT_NAME = os.getenv("BANK_ACCOUNT_NAME", "")
 BANK_BIN = os.getenv("BANK_BIN", "970436")
+BINANCE_API_KEY = os.getenv("BINANCE_API_KEY", "").strip()
+BINANCE_API_SECRET = os.getenv("BINANCE_API_SECRET", "").strip()
+USDT_WALLET_ADDRESS = os.getenv("USDT_WALLET_ADDRESS", "").strip()
+USDT_NETWORK = os.getenv("USDT_NETWORK", "BEP20").strip().upper() or "BEP20"
+USDT_VND_RATE_DEFAULT = int(os.getenv("USDT_VND_RATE", "26500"))
+BINANCE_POLL_INTERVAL = max(15, int(os.getenv("BINANCE_POLL_INTERVAL", "25")))
+CRYPTO_ORDER_TIMEOUT_SECONDS = max(60, int(os.getenv("CRYPTO_ORDER_TIMEOUT_SECONDS", "1800")))
 
 # Logging
 logging.basicConfig(
@@ -63,6 +73,13 @@ DB_PATH = os.path.join(DATA_DIR, "bot_data.json")
 # Init
 api = CTVApi(CTV_API_URL, CTV_API_KEY)
 db = Database(DB_PATH)
+CRYPTO_ENABLED = all(
+    value and not value.upper().startswith("YOUR_")
+    for value in (BINANCE_API_KEY, BINANCE_API_SECRET, USDT_WALLET_ADDRESS)
+)
+binance = BinanceClient(BINANCE_API_KEY, BINANCE_API_SECRET) if CRYPTO_ENABLED else None
+if not CRYPTO_ENABLED:
+    logger.warning("Binance USDT payment disabled: API key/secret or wallet address is missing")
 
 # Cache bot username — set 1 lần khi khởi động, dùng mãi
 _bot_username: str = ""
@@ -89,6 +106,59 @@ def format_usdt(amount) -> str:
     if "." in rendered:
         rendered = rendered.rstrip("0").rstrip(".")
     return f"{rendered} USDT"
+
+
+def get_usdt_vnd_rate() -> int:
+    """Return the runtime USDT/VND rate, falling back to the environment value."""
+    try:
+        rate = int(db.get_setting("usdt_vnd_rate", USDT_VND_RATE_DEFAULT))
+    except (TypeError, ValueError):
+        rate = USDT_VND_RATE_DEFAULT
+    return rate if 10_000 <= rate <= 100_000 else USDT_VND_RATE_DEFAULT
+
+
+def estimate_order_usdt(order: dict) -> Decimal:
+    """Calculate an order's base USDT amount using Decimal only."""
+    custom_price = db.get_custom_price_usdt(order.get("product_key", ""))
+    if custom_price is not None:
+        return (Decimal(str(custom_price)) * int(order.get("qty", 1))).quantize(
+            Decimal("0.001"), rounding=ROUND_HALF_UP
+        )
+    total_vnd = Decimal(str(order.get("original_total", order.get("total", 0))))
+    return (total_vnd / Decimal(get_usdt_vnd_rate())).quantize(
+        Decimal("0.01"), rounding=ROUND_HALF_UP
+    )
+
+
+def format_usdt_exact(amount: Decimal) -> str:
+    return format(amount.quantize(Decimal("0.001"), rounding=ROUND_HALF_UP), ".3f")
+
+
+def crypto_network_matches(network: str) -> bool:
+    configured = USDT_NETWORK.upper()
+    received = str(network or "").upper()
+    if configured in {"BEP20", "BSC"}:
+        return received in {"BEP20", "BSC"}
+    return received == configured
+
+
+def crypto_network_label() -> str:
+    """Render Binance's BSC/BEP20 aliases as one unambiguous user label."""
+    return "BEP20 (BSC)" if USDT_NETWORK in {"BEP20", "BSC"} else USDT_NETWORK
+
+
+def order_created_at_ms(order: dict) -> int | None:
+    try:
+        return int(datetime.fromisoformat(order.get("created_at", "")).timestamp() * 1000)
+    except (TypeError, ValueError):
+        return None
+
+
+def get_owned_pending_order(order_code: str, user_id: int) -> dict | None:
+    order = db.get_order(order_code)
+    if not order or order.get("status") != "pending" or order.get("user_id") != user_id:
+        return None
+    return order
 
 
 def user_lang(user_id: int) -> str:
@@ -241,16 +311,37 @@ def ui_btn(btn_key: str, text: str = None, callback_data: str = None, url: str =
     kwargs = {}
     if emoji_id:
         kwargs["api_kwargs"] = {"icon_custom_emoji_id": emoji_id}
-        # Giữ emoji thường làm fallback: Telegram chỉ render custom icon khi
-        # chủ bot có Premium hoặc bot có username mua thêm trên Fragment.
+        # Telegram tự đặt custom emoji trước text; bỏ icon Unicode ở đầu nhãn
+        # để cùng một nút không hiển thị hai icon.
+        first_token, separator, remainder = display_text.partition(" ")
+        if separator and first_token and all(
+            unicodedata.category(char) in {"So", "Sk", "Mn", "Me", "Cf"}
+            for char in first_token
+        ):
+            display_text = remainder.lstrip()
     if url:
         return InlineKeyboardButton(display_text, url=url, **kwargs)
     return InlineKeyboardButton(display_text, callback_data=callback_data or btn_key, **kwargs)
 
 
+def render_home_text(user_id: int, first_name: str | None, balance: int) -> str:
+    """Render one consistent home screen for /start, Back and language changes."""
+    lang = user_lang(user_id)
+    custom = db.get_welcome_message() if lang == "vi" else db.get_welcome_message_en()
+    safe_name = escape_html(first_name or ("bạn" if lang == "vi" else "there"))
+    if custom:
+        text = custom.replace("{name}", safe_name)
+        text = text.replace("{balance}", format_money(balance)).replace("{id}", str(user_id))
+    else:
+        text = t(user_id, "welcome", name=safe_name, balance=format_money(balance))
+    if is_admin(user_id):
+        text += f"\n\n<i>{t(user_id, 'admin_unlocked')}</i>"
+    return text
+
+
 def build_home_keyboard(user_id: int, balance: int) -> InlineKeyboardMarkup:
     rows = [
-        [ui_btn("menu", callback_data="reload_menu", user_id=user_id)],
+        [ui_btn("menu", callback_data="open_menu", user_id=user_id)],
         [
             ui_btn("wallet", f"{t(user_id, 'btn_wallet')}: {format_money(balance)}", callback_data="wallet_home", user_id=user_id),
             ui_btn("history", callback_data="btn_myorders", user_id=user_id),
@@ -259,7 +350,7 @@ def build_home_keyboard(user_id: int, balance: int) -> InlineKeyboardMarkup:
             ui_btn("referral", callback_data="referral_home", user_id=user_id),
             ui_btn("contact", url="https://t.me/hoanganh1162", user_id=user_id),
         ],
-        [ui_btn("language", callback_data="language", user_id=user_id)],
+        [ui_btn("language", callback_data="language_from_home", user_id=user_id)],
     ]
     if is_admin(user_id):
         rows.append([InlineKeyboardButton("⚙️ Quản trị Admin", callback_data="admin_home")])
@@ -278,7 +369,7 @@ def build_menu_footer(user_id: int, balance: int) -> list[list[InlineKeyboardBut
         ],
         [
             ui_btn("contact", url="https://t.me/hoanganh1162", user_id=user_id),
-            ui_btn("language", callback_data="language", user_id=user_id),
+            ui_btn("language", callback_data="language_from_menu", user_id=user_id),
         ],
         [ui_btn("reload", callback_data="reload_menu", user_id=user_id)],
     ]
@@ -599,6 +690,45 @@ def build_category_grid(products, callback_prefix, is_admin=False, user_id=None)
         buttons.append(row)
     return buttons, emoji_ids
 
+
+async def build_menu_screen(user_id: int, refresh: bool = False):
+    products, _ = await async_refresh_products_cache() if refresh else get_products_cached()
+    if not products:
+        return t(user_id, "products_unavailable"), None
+    balance = db.get_user_balance(user_id)
+    buttons, _ = build_category_grid(products, "viewcat", is_admin=False, user_id=user_id)
+    buttons.extend(build_menu_footer(user_id, balance))
+    return (
+        t(user_id, "menu_title", balance=format_money(balance)),
+        InlineKeyboardMarkup(buttons),
+    )
+
+
+def build_orders_screen(user_id: int):
+    orders = db.get_user_orders(user_id)
+    text = t(user_id, "orders_title") if orders else t(user_id, "no_orders")
+    if orders:
+        recent = sorted(
+            orders.items(), key=lambda item: item[1].get("created_at", ""), reverse=True
+        )[:10]
+        for code, order in recent:
+            status_icon = {
+                "pending": "⏳", "processing": "⏳", "paid": "✅",
+                "paid_waiting_email": "📧", "cancelled": "❌",
+                "cancelled_timeout": "⏰", "failed": "💔",
+            }.get(order.get("status"), "❓")
+            text += (
+                f"{status_icon} `{code}`\n"
+                f"   {order.get('product_name', '?')} x{order.get('qty', '?')} — "
+                f"{format_money(order.get('original_total', order.get('total', 0)))}\n"
+                f"   {order.get('created_at', '?')[:16]}\n\n"
+            )
+    keyboard = InlineKeyboardMarkup([[
+        ui_btn("menu", callback_data="back_menu", user_id=user_id),
+        ui_btn("home", callback_data="back_start", user_id=user_id),
+    ]])
+    return text[:4000], keyboard
+
 # ============================================
 # COMMAND HANDLERS
 # ============================================
@@ -656,46 +786,11 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     balance = db.get_user_balance(user.id)
-
-    if user_lang(user.id) == "en":
-        await update.message.reply_text(
-            t(user.id, "welcome", name=escape_html(user.first_name or "there"), balance=format_money(balance)),
-            parse_mode="HTML", reply_markup=build_home_keyboard(user.id, balance),
-        )
-        return
-    
-    # Thông báo thưởng cho user mới được giới thiệu
-    welcome_bonus = ""
-    if new_user_reward > 0:
-        welcome_bonus = f"\n🎁 <b>Quà chào mừng: +{format_money(new_user_reward)}</b> đã cộng vào ví!\n"
-    
-    # Lấy welcome message tùy chỉnh hoặc dùng mặc định
-    custom_welcome = db.get_welcome_message()
-    if custom_welcome:
-        # Thay thế biến trong template (escape HTML cho an toàn)
-        text = custom_welcome.replace("{name}", escape_html(user.first_name or "bạn"))
-        text = text.replace("{balance}", format_money(balance))
-        text = text.replace("{id}", str(user.id))
-        text += f"\n{welcome_bonus}" if welcome_bonus else ""
-    else:
-        text = (
-            f"✨ Xin chào <b>{escape_html(user.first_name)}</b>! ✨\n\n"
-            "🏪 <b>SHOP TÀI KHOẢN PREMIUM</b>\n\n"
-            "<blockquote>"
-            "⚡ Thanh toán → Xác nhận <b>1 phút</b>\n"
-            "📦 Nhận tài khoản <b>ngay lập tức</b>\n"
-            "💬 Hỗ trợ <b>nhanh chóng</b>\n"
-            "🤖 Tự động <b>24/7</b>"
-            "</blockquote>\n\n"
-            f"{welcome_bonus}"
-            f"💰 <b>Số dư ví:</b> {format_money(balance)}\n\n"
-            "👇 <i>Chọn chức năng bên dưới</i> 👇"
-        )
-    
-    if is_admin(user.id):
-        text += "\n\n<i>🔑 Xin chào Admin, bảng Quản trị đã được mở khóa!</i>"
-        
-    await update.message.reply_text(text, parse_mode="HTML", reply_markup=build_home_keyboard(user.id, balance))
+    await update.message.reply_text(
+        render_home_text(user.id, user.first_name, balance),
+        parse_mode="HTML",
+        reply_markup=build_home_keyboard(user.id, balance),
+    )
 
 
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -717,15 +812,25 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def cmd_language(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    target = update.message
+    source = "home"
     if update.callback_query:
-        await update.callback_query.answer()
-        target = update.callback_query.message
-        message_text = target.text or target.caption or ""
-        context.user_data["language_return_menu"] = ("MENU SẢN PHẨM" in message_text or "PRODUCT MENU" in message_text)
-    await target.reply_text(
-        t(update.effective_user.id, "language_prompt"),
-        parse_mode="Markdown",
+        query = update.callback_query
+        await query.answer()
+        if query.data.startswith("language_from_"):
+            source = query.data.removeprefix("language_from_")
+        context.user_data["language_return"] = source
+        await query.edit_message_text(
+            t(update.effective_user.id, "language_prompt"),
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("🇻🇳 Tiếng Việt", callback_data="setlang_vi"),
+                InlineKeyboardButton("🇬🇧 English", callback_data="setlang_en"),
+            ]]),
+        )
+        return
+    context.user_data["language_return"] = source
+    await update.message.reply_text(
+        t(update.effective_user.id, "language_prompt"), parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup([[
             InlineKeyboardButton("🇻🇳 Tiếng Việt", callback_data="setlang_vi"),
             InlineKeyboardButton("🇬🇧 English", callback_data="setlang_en"),
@@ -741,14 +846,14 @@ async def handle_set_language(update: Update, context: ContextTypes.DEFAULT_TYPE
         return
     set_user_lang(query.from_user.id, lang)
     await query.answer(i18n.get_text(lang, "language_updated"))
-    if context.user_data.pop("language_return_menu", False):
-        query.data = "reload_menu"
-        context.user_data["_skip_query_answer"] = True
-        await handle_category_click(update, context)
+    source = context.user_data.pop("language_return", "home")
+    if source == "menu":
+        text, keyboard = await build_menu_screen(query.from_user.id, refresh=False)
+        await query.edit_message_text(text, parse_mode="HTML", reply_markup=keyboard)
         return
     balance = db.get_user_balance(query.from_user.id)
     await query.edit_message_text(
-        t(query.from_user.id, "welcome", name=escape_html(query.from_user.first_name or "there"), balance=format_money(balance)),
+        render_home_text(query.from_user.id, query.from_user.first_name, balance),
         parse_mode="HTML", reply_markup=build_home_keyboard(query.from_user.id, balance),
     )
 
@@ -789,6 +894,29 @@ async def cmd_getemoji(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(text, parse_mode="Markdown")
 
 
+async def cmd_setrate(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Admin command: update the runtime VND value of one USDT."""
+    if not is_admin(update.effective_user.id):
+        await update.message.reply_text("⛔ Chỉ Admin mới dùng được lệnh này.")
+        return
+    if len(context.args) != 1:
+        await update.message.reply_text(
+            f"Tỷ giá hiện tại: **{get_usdt_vnd_rate():,} VND/USDT**\n"
+            "Cách dùng: `/setrate 26800`",
+            parse_mode="Markdown",
+        )
+        return
+    try:
+        rate = int(context.args[0].replace(",", "").replace(".", ""))
+    except ValueError:
+        rate = 0
+    if not 10_000 <= rate <= 100_000:
+        await update.message.reply_text("❌ Tỷ giá phải nằm trong khoảng 10.000–100.000 VND/USDT.")
+        return
+    db.set_setting("usdt_vnd_rate", rate)
+    await update.message.reply_text(f"✅ Đã cập nhật tỷ giá: **{rate:,} VND/USDT**", parse_mode="Markdown")
+
+
 async def cmd_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Hiển thị menu sản phẩm."""
     db.add_user(update.effective_user.id)
@@ -796,22 +924,8 @@ async def cmd_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = await update.message.reply_text(t(user_id, "loading_products"))
 
     try:
-        # Fast path: trả cache ngay, không chờ API
-        products, balance = get_products_cached()
-        if not products:
-            await msg.edit_text(t(user_id, "products_unavailable"))
-            return
-
-        user_balance = db.get_user_balance(update.effective_user.id)
-        
-        buttons, _ = build_category_grid(products, "viewcat", is_admin=False, user_id=user_id)
-        buttons.extend(build_menu_footer(user_id, user_balance))
-
-        await msg.edit_text(
-            t(user_id, "menu_title", balance=format_money(user_balance)),
-            parse_mode="HTML",
-            reply_markup=InlineKeyboardMarkup(buttons)
-        )
+        text, keyboard = await build_menu_screen(user_id, refresh=False)
+        await msg.edit_text(text, parse_mode="HTML", reply_markup=keyboard)
     except Exception as e:
         logger.error(f"cmd_menu error: {e}")
         await msg.edit_text(t(user_id, "products_unavailable"))
@@ -1034,6 +1148,12 @@ async def handle_qty_select(update: Update, context: ContextTypes.DEFAULT_TYPE):
         t(query.from_user.id, "btn_pay_bank", amount=format_money(total)),
         callback_data=f"paybank_{order_code}"
     )])
+    if CRYPTO_ENABLED:
+        estimated_usdt = estimate_order_usdt(order)
+        buttons.append([InlineKeyboardButton(
+            t(query.from_user.id, "btn_pay_crypto", amount=format_usdt(estimated_usdt)),
+            callback_data=f"paycrypto_{order_code}"
+        )])
     buttons.append([InlineKeyboardButton(t(query.from_user.id, "btn_cancel"), callback_data=f"cancel_{order_code}")])
 
     wallet_line = ""
@@ -1067,6 +1187,12 @@ async def auto_cancel_order(context, order_code, user_id, delay):
     
     # Kiểm tra wallet partial trước khi cancel
     order = db.get_order(order_code)
+    if not order or order.get("status") != "pending":
+        return
+    # The original 5-minute task remains alive after the user selects crypto.
+    # Let the dedicated crypto timeout task own cancellation instead.
+    if order.get("payment_method") == "crypto" and delay < CRYPTO_ORDER_TIMEOUT_SECONDS:
+        return
     wallet_paid = order.get("wallet_paid", 0) if order else 0
     
     # CRITICAL: Dùng cancel_order_if_pending (atomic) để tránh race condition
@@ -1075,10 +1201,10 @@ async def auto_cancel_order(context, order_code, user_id, delay):
     if cancelled:
         # Hoàn tiền ví nếu có
         refund_text = ""
-        if wallet_paid > 0:
-            db.add_balance(user_id, wallet_paid, reason="refund")
-            new_balance = db.get_user_balance(user_id)
-            refund_text = t(user_id, "refund", amount=format_money(wallet_paid), balance=format_money(new_balance))
+        refunded_amount, new_balance = db.refund_order_wallet_if_needed(order_code)
+        if refunded_amount > 0:
+            refund_text = t(user_id, "refund", amount=format_money(refunded_amount), balance=format_money(new_balance))
+        db.release_usdt_amount(order_code)
         
         try:
             await context.bot.send_message(
@@ -1096,10 +1222,13 @@ async def handle_pay_bank(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     order_code = query.data.replace("paybank_", "")
     
-    order = db.get_order(order_code)
-    if not order or order.get("status") != "pending":
+    order = get_owned_pending_order(order_code, query.from_user.id)
+    if not order:
         await query.edit_message_text(t(query.from_user.id, "order_invalid"))
         return
+    db.release_usdt_amount(order_code)
+    db.update_order_fields(order_code, {"payment_method": "bank"})
+    order["payment_method"] = "bank"
 
     total = int(order.get("total", 0))
     qr_url = generate_qr_url(total, order_code)
@@ -1135,8 +1264,8 @@ async def handle_pay_bank(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
     buttons = [
-        [InlineKeyboardButton("✅ Đã chuyển khoản", callback_data=f"paid_{order_code}")],
-        [InlineKeyboardButton("⬅️ Hủy đơn & Quay lại", callback_data=f"cancel_{order_code}")],
+        [InlineKeyboardButton(t(query.from_user.id, "btn_paid"), callback_data=f"paid_{order_code}")],
+        [InlineKeyboardButton(t(query.from_user.id, "btn_cancel"), callback_data=f"cancel_{order_code}")],
     ]
 
     await query.edit_message_text(
@@ -1147,11 +1276,105 @@ async def handle_pay_bank(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+async def handle_pay_crypto(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Reserve an exact USDT amount and show Binance deposit instructions."""
+    query = update.callback_query
+    await query.answer()
+    user_id = query.from_user.id
+    order_code = query.data.replace("paycrypto_", "", 1)
+
+    if not CRYPTO_ENABLED:
+        await query.edit_message_text(t(user_id, "crypto_unavailable"))
+        return
+
+    order = get_owned_pending_order(order_code, user_id)
+    if not order:
+        await query.edit_message_text(t(user_id, "order_invalid"))
+        return
+
+    crypto_created_at = order.get("crypto_created_at") or datetime.now().isoformat()
+    amount_text = None
+    if order.get("payment_method") == "crypto" and order.get("usdt_amount"):
+        amount_text = db.activate_crypto_payment(
+            order_code,
+            user_id,
+            str(order["usdt_amount"]),
+            crypto_created_at,
+            USDT_NETWORK,
+        )
+
+    if not amount_text:
+        base = estimate_order_usdt(order)
+        valid_offsets = [
+            offset for offset in range(-100, 101)
+            if base + (Decimal(offset) / Decimal("1000")) > 0
+        ]
+        offsets = random.sample(valid_offsets, min(10, len(valid_offsets)))
+        for offset in offsets:
+            candidate = base + (Decimal(offset) / Decimal("1000"))
+            candidate_text = format_usdt_exact(candidate)
+            activated_amount = db.activate_crypto_payment(
+                order_code,
+                user_id,
+                candidate_text,
+                crypto_created_at,
+                USDT_NETWORK,
+            )
+            if activated_amount:
+                amount_text = activated_amount
+                break
+
+    if not amount_text:
+        await query.edit_message_text(t(user_id, "crypto_reservation_failed"))
+        return
+
+    qr_url = "https://api.qrserver.com/v1/create-qr-code/?" + urlencode({
+        "size": "300x300",
+        "data": USDT_WALLET_ADDRESS,
+    })
+    network_label = crypto_network_label()
+    warning = t(user_id, "crypto_warning", network=network_label)
+    text = t(
+        user_id,
+        "crypto_payment",
+        network=network_label,
+        address=escape_html(USDT_WALLET_ADDRESS),
+        amount=amount_text,
+        warning=warning,
+        qr_url=escape_html(qr_url),
+        timeout_minutes=CRYPTO_ORDER_TIMEOUT_SECONDS // 60,
+    )
+    buttons = [
+        [InlineKeyboardButton(t(user_id, "btn_paid"), callback_data=f"paid_{order_code}")],
+        [InlineKeyboardButton(t(user_id, "btn_cancel"), callback_data=f"cancel_{order_code}")],
+    ]
+    await query.edit_message_text(
+        text,
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(buttons),
+        disable_web_page_preview=False,
+    )
+    asyncio.create_task(
+        auto_cancel_order(context, order_code, user_id, CRYPTO_ORDER_TIMEOUT_SECONDS)
+    )
+
+
 async def handle_paid_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Khi khách nhấn đã chuyển khoản."""
     query = update.callback_query
     await query.answer()
     order_code = query.data.replace("paid_", "")
+
+    order = get_owned_pending_order(order_code, query.from_user.id)
+    if not order:
+        await query.edit_message_text(t(query.from_user.id, "order_invalid"))
+        return
+
+    if order.get("payment_method") == "crypto":
+        await query.edit_message_text(
+            t(query.from_user.id, "crypto_paid_waiting"), parse_mode="Markdown"
+        )
+        return
 
     if user_lang(query.from_user.id) == "en":
         await query.edit_message_text(t(query.from_user.id, "paid_waiting", order_code=order_code), parse_mode="Markdown")
@@ -1171,23 +1394,23 @@ async def handle_pay_wallet(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     order_code = query.data.replace("paywallet_", "")
     
-    order = db.get_order(order_code)
-    if not order or order.get("status") != "pending":
+    order = db.claim_order_for_payment(order_code, query.from_user.id, "wallet")
+    if not order:
         await query.edit_message_text(t(query.from_user.id, "order_invalid"))
         return
+    db.release_usdt_amount(order_code)
 
     total = int(order.get("total", 0))
     user_id = query.from_user.id
     
-    # Trừ tiền ví
-    success = db.deduct_balance(user_id, total)
-    if not success:
+    # Trừ ví + ghi nhận nghĩa vụ giao hàng trong cùng một transaction JSON.
+    new_balance = db.confirm_wallet_payment(order_code, user_id, total)
+    if new_balance is None:
+        db.release_order_payment_claim(order_code)
         await query.edit_message_text(
             t(user_id, "wallet_insufficient", balance=format_money(db.get_user_balance(user_id)), amount=format_money(total))
         )
         return
-
-    new_balance = db.get_user_balance(user_id)
     
     await query.edit_message_text(
         t(user_id, "wallet_paid", amount=format_money(total), balance=format_money(new_balance), order_code=order_code),
@@ -1206,33 +1429,23 @@ async def handle_pay_partial(update: Update, context: ContextTypes.DEFAULT_TYPE)
     await query.answer()
     order_code = query.data.replace("paypartial_", "")
     
-    order = db.get_order(order_code)
-    if not order or order.get("status") != "pending":
+    user_id = query.from_user.id
+    payment = db.start_partial_wallet_payment(order_code, user_id)
+    if not payment:
         await query.edit_message_text(t(query.from_user.id, "order_invalid"))
         return
+    db.release_usdt_amount(order_code)
 
-    total = int(order.get("total", 0))
-    user_id = query.from_user.id
-    user_balance = db.get_user_balance(user_id)
-    
-    if user_balance <= 0:
-        await query.edit_message_text(t(user_id, "partial_no_balance"))
+    wallet_amount = payment["wallet_amount"]
+    remain = payment["remaining"]
+    new_balance = payment["new_balance"]
+    if payment["fully_paid"]:
+        await query.edit_message_text(
+            t(user_id, "wallet_paid", amount=format_money(wallet_amount), balance=format_money(new_balance), order_code=order_code),
+            parse_mode="Markdown",
+        )
+        await process_paid_order(context, order_code, payment_source="wallet")
         return
-
-    # Trừ phần ví
-    wallet_amount = min(user_balance, total)
-    db.deduct_balance(user_id, wallet_amount)
-    
-    remain = total - wallet_amount
-    new_balance = db.get_user_balance(user_id)
-    
-    # Cập nhật đơn hàng: ghi nhận đã trả 1 phần (dùng method encapsulated)
-    db.update_order_fields(order_code, {
-        "wallet_paid": wallet_amount,
-        "remaining_amount": remain,
-        "original_total": total,
-        "total": remain,
-    })
 
     qr_url = generate_qr_url(remain, order_code)
 
@@ -1257,17 +1470,20 @@ async def handle_cancel_order(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     # Kiểm tra có trả ví partial không
     order = db.get_order(order_code)
+    if not order or order.get("user_id") != query.from_user.id or order.get("status") != "pending":
+        await query.edit_message_text(t(query.from_user.id, "order_invalid"))
+        return
+    db.release_usdt_amount(order_code)
     wallet_paid = order.get("wallet_paid", 0) if order else 0
     product_key = order.get("product_key") if order else None
 
     # CRITICAL: Dùng cancel_order_if_pending (atomic) thay vì read-check-write
-    cancelled = db.cancel_order_if_pending(order_code)
+    cancelled = db.cancel_order_if_pending(order_code, status="cancelled")
     if cancelled:
         refund_text = ""
-        if wallet_paid > 0:
-            db.add_balance(order.get("user_id"), wallet_paid, reason="refund")
-            new_balance = db.get_user_balance(order.get("user_id"))
-            refund_text = t(query.from_user.id, "refund", amount=f"**{format_money(wallet_paid)}**", balance=format_money(new_balance))
+        refunded_amount, new_balance = db.refund_order_wallet_if_needed(order_code)
+        if refunded_amount > 0:
+            refund_text = t(query.from_user.id, "refund", amount=f"**{format_money(refunded_amount)}**", balance=format_money(new_balance))
         
         # Tạo dòng nút điều hướng thông minh quay lại
         buttons = []
@@ -1283,6 +1499,7 @@ async def handle_cancel_order(update: Update, context: ContextTypes.DEFAULT_TYPE
             parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup(buttons)
         )
+        db.release_usdt_amount(order_code)
     else:
         await query.edit_message_text(t(query.from_user.id, "order_already_processed"))
 
@@ -1291,51 +1508,16 @@ async def handle_back_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Quay lại menu chính — hiển thị lại danh mục."""
     query = update.callback_query
     await query.answer()
-    # Hiển thị lại menu trực tiếp trên message hiện tại
-    products, _ = get_products_cached()
-    if not products:
-        await query.edit_message_text(t(query.from_user.id, "products_unavailable"))
-        return
     user_id = query.from_user.id
-    buttons, _ = build_category_grid(products, "viewcat", is_admin=False, user_id=user_id)
-    balance = db.get_user_balance(user_id)
-    buttons.extend(build_menu_footer(user_id, balance))
-    await query.edit_message_text(
-        t(user_id, "menu_title", balance=format_money(balance)),
-        parse_mode="HTML",
-        reply_markup=InlineKeyboardMarkup(buttons)
-    )
+    text, keyboard = await build_menu_screen(user_id, refresh=False)
+    await query.edit_message_text(text, parse_mode="HTML", reply_markup=keyboard)
 
 
 async def cmd_myorders(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Xem lịch sử đơn hàng."""
     user_id = update.effective_user.id
-    orders = db.get_user_orders(user_id)
-
-    if not orders:
-        await update.message.reply_text(t(user_id, "no_orders"))
-        return
-
-    # Lấy 10 đơn gần nhất
-    recent = sorted(orders.items(), key=lambda x: x[1].get("created_at", ""), reverse=True)[:10]
-
-    text = t(user_id, "orders_title")
-    for code, order in recent:
-        status_icon = {
-            "pending": "⏳",
-            "paid": "✅",
-            "cancelled": "❌",
-            "cancelled_timeout": "⏰",
-            "failed": "💔"
-        }.get(order["status"], "❓")
-
-        text += (
-            f"{status_icon} `{code}`\n"
-            f"   {order.get('product_name', '?')} x{order['qty']} — {format_money(order['total'])}\n"
-            f"   {order.get('created_at', '?')[:16]}\n\n"
-        )
-
-    await update.message.reply_text(text, parse_mode="Markdown")
+    text, keyboard = build_orders_screen(user_id)
+    await update.message.reply_text(text, parse_mode="Markdown", reply_markup=keyboard)
 
 
 # ============================================
@@ -1354,7 +1536,7 @@ async def process_paid_order(context, order_code: str, payment_source: str = "se
         logger.warning(f"Order {order_code} not found")
         return False
 
-    if order["status"] not in ("pending", "failed"):
+    if order["status"] not in ("pending", "processing", "failed"):
         logger.info(f"Order {order_code} already processed: {order['status']}")
         return False
 
@@ -1727,8 +1909,10 @@ async def handle_admin_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE
         return
     
     user_id = order.get("user_id")
-    cancelled = db.cancel_order_if_pending(order_code)
+    cancelled = db.cancel_order_if_pending(order_code, status="cancelled")
     if cancelled:
+        db.refund_order_wallet_if_needed(order_code)
+        db.release_usdt_amount(order_code)
         await query.edit_message_text(f"❌ Đơn `{order_code}` đã bị admin hủy.", parse_mode="Markdown")
         try:
             await context.bot.send_message(
@@ -2225,6 +2409,34 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(f"✅ Đã cập nhật mô tả cho sản phẩm `{key}`.", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Quay lại cài đặt", callback_data=f"admin_price_{key}"), InlineKeyboardButton("🏠 Thoát", callback_data="admin_home")]]))
         return
 
+    if context.user_data.get("awaiting_welcome_msg_en"):
+        del context.user_data["awaiting_welcome_msg_en"]
+        try:
+            if text.lower() == "reset":
+                db.set_welcome_message_en(None)
+                await update.message.reply_text(
+                    "✅ Đã quay về lời chào tiếng Anh mặc định.",
+                    reply_markup=InlineKeyboardMarkup([[
+                        InlineKeyboardButton("⬅️ Quay lại", callback_data="admin_ui_custom"),
+                        InlineKeyboardButton("🏠 Thoát", callback_data="admin_home"),
+                    ]]),
+                )
+            else:
+                msg = update.message
+                raw_text = msg.text or ""
+                html_welcome = msg.text_html if (msg.entities or []) else raw_text
+                db.set_welcome_message_en(html_welcome)
+                await update.message.reply_text(
+                    "✅ Đã cập nhật lời chào tiếng Anh.\n\n📝 Đổi tài khoản sang EN rồi gõ /start để kiểm tra.",
+                    reply_markup=InlineKeyboardMarkup([[
+                        InlineKeyboardButton("⬅️ Quay lại", callback_data="admin_ui_custom"),
+                        InlineKeyboardButton("🏠 Thoát", callback_data="admin_home"),
+                    ]]),
+                )
+        except Exception:
+            await update.message.reply_text("❌ Có lỗi xảy ra.")
+        return
+
     if context.user_data.get("awaiting_desc_en_for"):
         key = context.user_data.pop("awaiting_desc_en_for")
         db.set_custom_description_en(key, None if text.lower() == "reset" else text)
@@ -2489,41 +2701,17 @@ async def handle_category_click(update: Update, context: ContextTypes.DEFAULT_TY
         await query.answer()
     data = query.data
     
-    if data == "reload_menu":
-        products, _ = await async_refresh_products_cache()
-        if not products:
-            await query.edit_message_text(t(query.from_user.id, "products_unavailable"))
-            return
-        user_balance = db.get_user_balance(query.from_user.id)
-        user_id = query.from_user.id
-        buttons, _ = build_category_grid(products, "viewcat", is_admin=False, user_id=user_id)
-        buttons.extend(build_menu_footer(user_id, user_balance))
-        await query.edit_message_text(
-            t(user_id, "menu_title", balance=format_money(user_balance)),
-            parse_mode="HTML",
-            reply_markup=InlineKeyboardMarkup(buttons)
+    if data in ("open_menu", "reload_menu"):
+        text, keyboard = await build_menu_screen(
+            query.from_user.id, refresh=(data == "reload_menu")
         )
+        await query.edit_message_text(text, parse_mode="HTML", reply_markup=keyboard)
         return
         
     if data == "btn_myorders":
         user_id = update.effective_user.id
-        orders = db.get_user_orders(user_id)
-        if not orders:
-            await query.edit_message_text(t(user_id, "no_orders"))
-            return
-        recent = sorted(orders.items(), key=lambda x: x[1].get("created_at", ""), reverse=True)[:10]
-        text = t(user_id, "orders_title")
-        for code, order in recent:
-            status_icon = {
-                "pending": "⏳", "paid": "✅", "cancelled": "❌",
-                "cancelled_timeout": "⏰", "failed": "💔"
-            }.get(order["status"], "❓")
-            text += (
-                f"{status_icon} `{code}`\n"
-                f"   {order.get('product_name', '?')} x{order['qty']} — {format_money(order['total'])}\n"
-                f"   {order.get('created_at', '?')[:16]}\n\n"
-            )
-        await query.edit_message_text(text[:4000], parse_mode="Markdown")
+        text, keyboard = build_orders_screen(user_id)
+        await query.edit_message_text(text, parse_mode="Markdown", reply_markup=keyboard)
         return
 
     cat_id = data.replace("viewcat_", "")
@@ -2543,7 +2731,7 @@ async def handle_category_click(update: Update, context: ContextTypes.DEFAULT_TY
         _, _, c_id = classify_product(key, info)
         if c_id == cat_id:
             sell_price = get_sell_price(key, info['price'], info.get('is_custom_local', False))
-            status = f"✅{stock}"
+            status = "🔄" if stock == -1 else f"✅{stock}"
             dname = product_display_name(key, info, user_lang(query.from_user.id))
             
             # Phân biệt nguồn API (Chỉ cho Admin)
@@ -2668,7 +2856,7 @@ def _clear_admin_state(context: ContextTypes.DEFAULT_TYPE):
         "awaiting_wallet_adjust", "awaiting_desc_for", "awaiting_name_for", "awaiting_desc_en_for", "awaiting_name_en_for",
         "awaiting_new_cat", "awaiting_new_prod", "awaiting_rename_cat",
         "awaiting_set_emoji",
-        "awaiting_welcome_msg", "awaiting_ui_emoji",
+        "awaiting_welcome_msg", "awaiting_welcome_msg_en", "awaiting_ui_emoji",
         "awaiting_block_id",
     ]:
         context.user_data.pop(key_to_clear, None)
@@ -3531,6 +3719,7 @@ async def handle_admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == "admin_ui_custom":
         buttons = [
             [InlineKeyboardButton("✏️ Sửa lời chào /start", callback_data="admin_edit_welcome")],
+            [InlineKeyboardButton("✏️ Sửa lời chào EN", callback_data="admin_edit_welcome_en")],
             [InlineKeyboardButton("🎨 Đổi Icon nút bấm", callback_data="admin_edit_btn_list")],
             [InlineKeyboardButton("⬅️ Quay lại", callback_data="admin_home")],
         ]
@@ -3540,6 +3729,19 @@ async def handle_admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Chọn mục bạn muốn tùy chỉnh:",
             parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup(buttons)
+        )
+
+    elif data == "admin_edit_welcome_en":
+        context.user_data["awaiting_welcome_msg_en"] = True
+        current = db.get_welcome_message_en()
+        preview = f"\n\n📝 Nội dung hiện tại:\n━━━━━━━━━━━━━━━━━━\n{current}\n━━━━━━━━━━━━━━━━━━" if current else "\n\n⚠️ _Đang dùng lời chào EN mặc định_"
+        await query.edit_message_text(
+            f"✏️ **SỬA LỜI CHÀO TIẾNG ANH**{preview}\n\n"
+            "📝 Nhắn nội dung tiếng Anh mới.\n\n"
+            "💡 Biến có thể dùng: `{name}`, `{balance}`, `{id}`\n\n"
+            "Nhắn `reset` để quay về mặc định.",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Hủy", callback_data="admin_ui_custom")]]),
         )
 
     elif data == "admin_edit_welcome":
@@ -3612,7 +3814,7 @@ async def handle_wallet_home(update: Update, context: ContextTypes.DEFAULT_TYPE)
     
     buttons = [
         [ui_btn("deposit", t(user_id, "btn_deposit"), callback_data="deposit_start", user_id=user_id)],
-        [ui_btn("referral", t(user_id, "btn_invite"), callback_data="referral_home", user_id=user_id), ui_btn("buy", callback_data="reload_menu", user_id=user_id)],
+        [ui_btn("referral", t(user_id, "btn_invite"), callback_data="referral_home", user_id=user_id), ui_btn("buy", callback_data="open_menu", user_id=user_id)],
         [ui_btn("home", callback_data="back_start", user_id=user_id)],
     ]
     
@@ -3675,7 +3877,7 @@ async def handle_referral_home(update: Update, context: ContextTypes.DEFAULT_TYP
         [ui_btn("share", t(user_id, "btn_share"), url=share_url, user_id=user_id)],
         [
             ui_btn("wallet", callback_data="wallet_home", user_id=user_id),
-            ui_btn("buy", callback_data="reload_menu", user_id=user_id),
+            ui_btn("buy", callback_data="open_menu", user_id=user_id),
         ],
         [ui_btn("home", callback_data="back_start", user_id=user_id)],
     ]
@@ -3692,18 +3894,7 @@ async def handle_back_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     balance = db.get_user_balance(user_id)
     
-    # Lấy welcome message tùy chỉnh hoặc dùng mặc định (giống cmd_start)
-    custom_welcome = db.get_welcome_message() if user_lang(user_id) == "vi" else None
-    if custom_welcome:
-        text = custom_welcome.replace("{name}", escape_html(user.first_name or "bạn"))
-        text = text.replace("{balance}", format_money(balance))
-        text = text.replace("{id}", str(user.id))
-    else:
-        text = t(user_id, "welcome", name=escape_html(user.first_name), balance=format_money(balance))
-    
-    if is_admin(user_id):
-        text += "\n\n<i>🔑 Xin chào Admin, bảng Quản trị đã được mở khóa!</i>"
-    
+    text = render_home_text(user_id, user.first_name, balance)
     await query.edit_message_text(text, parse_mode="HTML", reply_markup=build_home_keyboard(user_id, balance))
 
 
@@ -3729,7 +3920,8 @@ async def _cleanup_stale_orders(application):
     cancelled_count = 0
     
     for code, order in pending.items():
-        created_str = order.get("created_at", "")
+        is_crypto = order.get("payment_method") == "crypto"
+        created_str = order.get("crypto_created_at" if is_crypto else "created_at", "")
         if not created_str:
             continue
         try:
@@ -3738,7 +3930,8 @@ async def _cleanup_stale_orders(application):
             continue
         
         elapsed = (now - created).total_seconds()
-        if elapsed > ORDER_TIMEOUT_SECONDS:
+        timeout_seconds = CRYPTO_ORDER_TIMEOUT_SECONDS if is_crypto else ORDER_TIMEOUT_SECONDS
+        if elapsed > timeout_seconds:
             # Kiểm tra partial wallet payment trước khi hủy
             wallet_paid = order.get("wallet_paid", 0)
             
@@ -3749,10 +3942,10 @@ async def _cleanup_stale_orders(application):
                 cancelled_count += 1
                 # Hoàn tiền ví nếu đã trả partial
                 refund_text = ""
-                if wallet_paid > 0:
-                    db.add_balance(order["user_id"], wallet_paid, reason="refund")
-                    new_balance = db.get_user_balance(order["user_id"])
-                    refund_text = t(order["user_id"], "refund", amount=format_money(wallet_paid), balance=format_money(new_balance))
+                refunded_amount, new_balance = db.refund_order_wallet_if_needed(code)
+                if refunded_amount > 0:
+                    refund_text = t(order["user_id"], "refund", amount=format_money(refunded_amount), balance=format_money(new_balance))
+                db.release_usdt_amount(code)
                 try:
                     await application.bot.send_message(
                         chat_id=order["user_id"],
@@ -3865,7 +4058,7 @@ async def _payment_processor(application):
                             logger.error(f"  → Set order {order_code} to failed (was stuck pending)")
                     except Exception:
                         pass
-                    
+
                     try:
                         await _notify_all_admins(application,
                             f"🚨 **LỖI XỬ LÝ THANH TOÁN**\n"
@@ -3880,6 +4073,167 @@ async def _payment_processor(application):
         except Exception as e:
             logger.error(f"💥 Payment processor crashed, restarting in 10s: {e}", exc_info=True)
             await asyncio.sleep(10)  # Chờ 10s rồi restart
+
+
+async def poll_binance_deposits(application):
+    """Poll successful Binance USDT deposits and match exact reserved amounts."""
+    if not CRYPTO_ENABLED or binance is None:
+        return
+
+    # On restart, include the whole active crypto-order window so deposits received
+    # while the bot was offline can still be matched.
+    last_check = int(time.time() * 1000) - max(CRYPTO_ORDER_TIMEOUT_SECONDS * 1000, 60_000)
+    logger.info("₮ Binance USDT poller started — interval=%ss, network=%s", BINANCE_POLL_INTERVAL, USDT_NETWORK)
+    while True:
+        await asyncio.sleep(BINANCE_POLL_INTERVAL)
+        cycle_now = int(time.time() * 1000)
+        try:
+            deposits = await asyncio.to_thread(
+                binance.get_deposit_history,
+                start_time_ms=last_check - 120_000,
+            )
+            for deposit in deposits:
+                if not crypto_network_matches(deposit.get("network", "")):
+                    continue
+                tx_id = str(deposit.get("txId") or "").strip()
+                if not tx_id or db.is_txid_processed(tx_id):
+                    continue
+                try:
+                    amount = Decimal(str(deposit.get("amount")))
+                    insert_time = int(deposit.get("insertTime", 0))
+                except (InvalidOperation, TypeError, ValueError):
+                    logger.warning("Ignoring malformed Binance deposit: %r", deposit)
+                    continue
+                if not amount.is_finite() or amount <= 0 or insert_time <= 0:
+                    logger.warning("Ignoring invalid Binance deposit values: %r", deposit)
+                    continue
+
+                matches = []
+                for order_code, order in db.get_crypto_matchable_orders().items():
+                    try:
+                        expected = Decimal(str(order.get("usdt_amount")))
+                    except (InvalidOperation, TypeError, ValueError):
+                        continue
+                    if amount != expected:
+                        continue
+                    created_at_ms = order_created_at_ms(order)
+                    if created_at_ms is None or insert_time < created_at_ms:
+                        continue
+                    matches.append((order_code, order))
+
+                if not matches:
+                    if db.mark_txid_processed(tx_id):
+                        await _notify_all_admins(
+                            application,
+                            f"⚠️ **USDT VÀO KHÔNG KHỚP ĐƠN**\n"
+                            f"💰 Số tiền: `{amount}` USDT\n"
+                            f"🌐 Mạng: `{deposit.get('network', '?')}`\n"
+                            f"🔗 TxID: `{escape_md(tx_id)}`\n"
+                            f"🕒 Thời gian: `{insert_time}`",
+                        )
+                    continue
+
+                if len(matches) > 1:
+                    if db.mark_txid_processed(tx_id):
+                        codes = ", ".join(code for code, _ in matches)
+                        await _notify_all_admins(
+                            application,
+                            f"🚨 **USDT KHỚP NHIỀU ĐƠN — KHÔNG TỰ GIAO**\n"
+                            f"📋 Các mã: `{escape_md(codes)}`\n"
+                            f"💰 `{amount}` USDT\n"
+                            f"🔗 TxID: `{escape_md(tx_id)}`\n"
+                            f"⚠️ Cần đối soát và xử lý tay.",
+                        )
+                    continue
+
+                order_code, order = matches[0]
+                if order.get("status") == "cancelled":
+                    if db.mark_txid_processed(tx_id):
+                        await _notify_all_admins(
+                            application,
+                            f"⚠️ **USDT VÀO CHO ĐƠN KHÁCH ĐÃ HỦY TAY**\n"
+                            f"📋 Mã: `{order_code}`\n"
+                            f"💰 `{amount}` USDT\n"
+                            f"🔗 TxID: `{escape_md(tx_id)}`\n"
+                            f"⚠️ Không giao tự động; cần hoàn tiền/xử lý tay.",
+                        )
+                    continue
+
+                claimed = db.claim_crypto_deposit(order_code, tx_id, insert_time)
+                if not claimed:
+                    if db.mark_txid_processed(tx_id):
+                        await _notify_all_admins(
+                            application,
+                            f"⚠️ **USDT KHỚP SỐ TIỀN NHƯNG ĐƠN KHÔNG CÒN CHỜ**\n"
+                            f"📋 Mã: `{order_code}`\n"
+                            f"💰 `{amount}` USDT\n"
+                            f"🔗 TxID: `{escape_md(tx_id)}`",
+                        )
+                    continue
+
+                if claimed.get("crypto_claim_status") == "wallet_insufficient":
+                    db.release_usdt_amount(order_code)
+                    await _notify_all_admins(
+                        application,
+                        f"🚨 **USDT VÀO SAU TIMEOUT — VÍ KHÔNG ĐỦ ĐỂ TRỪ LẠI**\n"
+                        f"📋 Mã: `{order_code}`\n"
+                        f"👤 User: `{claimed.get('user_id')}`\n"
+                        f"💳 Cần trừ lại: {format_money(int(claimed.get('wallet_paid', 0) or 0))}\n"
+                        f"💰 Tiền vào: `{amount}` USDT\n"
+                        f"⚠️ Không giao tự động; cần xử lý tay.",
+                    )
+                    continue
+
+                if claimed.get("crypto_recovered_timeout"):
+                    wallet_paid = int(claimed.get("wallet_paid", 0) or 0)
+                    if wallet_paid > 0:
+                        try:
+                            await application.bot.send_message(
+                                chat_id=claimed["user_id"],
+                                text=t(claimed["user_id"], "wallet_rededucted", amount=format_money(wallet_paid), order_code=order_code),
+                            )
+                        except Exception:
+                            pass
+                    await _notify_all_admins(
+                        application,
+                        f"⚡ **PHỤC HỒI ĐƠN CRYPTO TIMEOUT**\n"
+                        f"📋 Mã: `{order_code}`\n"
+                        f"💰 Tiền vào chậm: `{amount}` USDT\n"
+                        f"✅ Đang xử lý giao hàng...",
+                    )
+
+                try:
+                    result = await process_paid_order(application, order_code, "binance_usdt")
+                finally:
+                    db.release_usdt_amount(order_code)
+                if result:
+                    logger.info("✅ Binance deposit matched order %s: %s USDT", order_code, amount)
+                else:
+                    logger.warning("Binance deposit matched %s but fulfillment returned False", order_code)
+            last_check = cycle_now
+        except BinanceAPIError as exc:
+            logger.error("Binance poll error: %s", exc)
+            if exc.status_code in (418, 429):
+                await asyncio.sleep(max(60, BINANCE_POLL_INTERVAL * 2))
+        except Exception as exc:
+            logger.error("Binance poll error: %s", exc, exc_info=True)
+
+
+async def recover_confirmed_crypto_orders(application):
+    """Resume crypto fulfillment after a crash that happened after txid claim."""
+    for order_code in db.get_confirmed_crypto_orders():
+        logger.warning("Recovering confirmed Binance order after restart: %s", order_code)
+        try:
+            await process_paid_order(application, order_code, "binance_usdt")
+        finally:
+            db.release_usdt_amount(order_code)
+
+
+async def recover_confirmed_wallet_orders(application):
+    """Resume wallet-paid fulfillment after a process restart."""
+    for order_code in db.get_confirmed_wallet_orders():
+        logger.warning("Recovering confirmed wallet order after restart: %s", order_code)
+        await process_paid_order(application, order_code, "wallet")
 
 
 async def _handle_payment(application, payment: dict):
@@ -3994,18 +4348,8 @@ async def _handle_payment(application, payment: dict):
 
     # Kiểm tra trạng thái đơn
     # FIX: Phục hồi đơn cancelled_timeout khi tiền vào muộn
-    if order.get("status") == "cancelled_timeout":
-        logger.info(f"⚡ Recovering cancelled_timeout order {order_code} — late payment received!")
-        db.update_order_fields(order_code, {"status": "pending"})
-        order["status"] = "pending"
-        # Thông báo admin phục hồi
-        await _notify_all_admins(application,
-            f"⚡ **PHỤC HỒI ĐƠN TIMEOUT**\n"
-            f"📋 Mã: `{order_code}`\n"
-            f"💰 Tiền vào (chậm): {transfer_amount:,}đ\n"
-            f"✅ Đang xử lý giao hàng..."
-        )
-    elif order.get("status") not in ("pending", "failed"):
+    recovering_timeout = order.get("status") == "cancelled_timeout"
+    if order.get("status") not in ("pending", "failed", "cancelled_timeout"):
         logger.info(f"Payment for already-processed order {order_code} (status={order.get('status')})")
         db.mark_payment_processed(transaction_id)
         db.mark_transaction_processed(transaction_id)
@@ -4028,6 +4372,38 @@ async def _handle_payment(application, payment: dict):
             f"Chênh lệch: {expected - transfer_amount:,}đ"
         )
         return
+
+    if recovering_timeout:
+        logger.info(f"⚡ Recovering cancelled_timeout order {order_code} — late payment received!")
+        wallet_paid = int(order.get("wallet_paid", 0) or 0)
+        if wallet_paid > 0 and order.get("wallet_refunded"):
+            if not db.restore_refunded_wallet_for_order(order_code):
+                db.mark_payment_processed(transaction_id)
+                db.mark_transaction_processed(transaction_id)
+                await _notify_all_admins(application,
+                    f"🚨 **ĐƠN TIMEOUT CÓ TIỀN VÀO — VÍ KHÔNG ĐỦ ĐỂ TRỪ LẠI**\n"
+                    f"📋 Mã: `{order_code}`\n"
+                    f"👤 User: {order['user_id']}\n"
+                    f"💳 Cần trừ lại ví: {format_money(wallet_paid)}\n"
+                    f"🏦 Tiền vừa vào: {transfer_amount:,}đ\n"
+                    f"⚠️ Không giao tự động; cần xử lý tay."
+                )
+                return
+            try:
+                await application.bot.send_message(
+                    chat_id=order["user_id"],
+                    text=t(order["user_id"], "wallet_rededucted", amount=format_money(wallet_paid), order_code=order_code),
+                )
+            except Exception:
+                pass
+        db.update_order_fields(order_code, {"status": "pending"})
+        order["status"] = "pending"
+        await _notify_all_admins(application,
+            f"⚡ **PHỤC HỒI ĐƠN TIMEOUT**\n"
+            f"📋 Mã: `{order_code}`\n"
+            f"💰 Tiền vào (chậm): {transfer_amount:,}đ\n"
+            f"✅ Đang xử lý giao hàng..."
+        )
 
     # ✅ Thanh toán hợp lệ — xử lý đơn
     logger.info(f"✅ Payment matched order {order_code} — processing!")
@@ -4097,6 +4473,10 @@ async def post_init(application):
     # Recover đơn kẹt ở 'processing' từ crash cũ
     db.recover_stuck_orders()
 
+    # A claimed Binance txid must still be fulfilled after a process restart.
+    await recover_confirmed_crypto_orders(application)
+    await recover_confirmed_wallet_orders(application)
+
     # Dọn dẹp đơn pending cũ từ lần chạy trước
     await _cleanup_stale_orders(application)
 
@@ -4113,6 +4493,10 @@ async def post_init(application):
 
     # 💳 Payment processor — poll DB mỗi 5 giây để xử lý thanh toán
     asyncio.create_task(_payment_processor(application))
+
+    # ₮ Binance poller is independent from the SePay VND processor.
+    if CRYPTO_ENABLED:
+        asyncio.create_task(poll_binance_deposits(application))
 
     # 🔄 Retry failed orders — tự động retry đơn lỗi API tạm thời
     asyncio.create_task(_retry_failed_orders(application))
@@ -4182,16 +4566,18 @@ def main():
     # Admin commands
     app.add_handler(CommandHandler("admin", cmd_admin))
     app.add_handler(CommandHandler("getemoji", cmd_getemoji))
+    app.add_handler(CommandHandler("setrate", cmd_setrate))
 
 
     # Callback handlers
     app.add_handler(CallbackQueryHandler(handle_noop, pattern="^noop$"))
     app.add_handler(CallbackQueryHandler(handle_set_language, pattern="^setlang_"))
-    app.add_handler(CallbackQueryHandler(cmd_language, pattern="^language$"))
+    app.add_handler(CallbackQueryHandler(cmd_language, pattern="^language(?:_from_(?:home|menu|wallet|referral))?$"))
     app.add_handler(CallbackQueryHandler(handle_product_select, pattern="^prod_"))
     app.add_handler(CallbackQueryHandler(handle_qty_select, pattern="^qty_"))
     app.add_handler(CallbackQueryHandler(handle_paid_button, pattern="^paid_"))
     app.add_handler(CallbackQueryHandler(handle_pay_bank, pattern="^paybank_"))
+    app.add_handler(CallbackQueryHandler(handle_pay_crypto, pattern="^paycrypto_"))
     app.add_handler(CallbackQueryHandler(handle_pay_wallet, pattern="^paywallet_"))
     app.add_handler(CallbackQueryHandler(handle_pay_partial, pattern="^paypartial_"))
     app.add_handler(CallbackQueryHandler(handle_cancel_order, pattern="^cancel_"))
@@ -4203,7 +4589,7 @@ def main():
     app.add_handler(CallbackQueryHandler(handle_admin_confirm_pay, pattern="^adminpay_"))
     app.add_handler(CallbackQueryHandler(handle_admin_cancel, pattern="^admincx_"))
     app.add_handler(CallbackQueryHandler(handle_admin_cb, pattern="^(admin_|broadcast_)"))
-    app.add_handler(CallbackQueryHandler(handle_category_click, pattern="^viewcat_|^reload_menu$|^btn_myorders$"))
+    app.add_handler(CallbackQueryHandler(handle_category_click, pattern="^viewcat_|^(?:open|reload)_menu$|^btn_myorders$"))
 
     # Text input handler
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_input))
