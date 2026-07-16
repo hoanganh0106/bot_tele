@@ -99,6 +99,21 @@ def order_created_at_ms(order: dict) -> int | None:
         return None
 
 
+def crypto_poll_start_ms(watermark_ms: int, cycle_now_ms: int, lookback_ms: int, max_lookback_ms: int) -> int:
+    """Compute the Binance poll window start (ms).
+
+    Extends the query window back far enough to (a) re-scan deposits that only
+    reach 'success' minutes after they first appear, so a slow confirmation no
+    longer falls outside a narrow window, and (b) cover downtime since the last
+    persisted watermark. Both are bounded by ``max_lookback_ms`` so a very old
+    watermark cannot force an unbounded query. Txid dedup makes the repeated
+    overlap safe (already-processed transactions are skipped).
+    """
+    start = min(int(watermark_ms), int(cycle_now_ms)) - int(lookback_ms)
+    floor = int(cycle_now_ms) - int(max_lookback_ms)
+    return max(start, floor)
+
+
 def user_lang(user_id: int) -> str:
     if user_id not in _lang_cache:
         _lang_cache[user_id] = db.get_user_lang(user_id)

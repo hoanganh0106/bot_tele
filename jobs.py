@@ -14,6 +14,8 @@ from binance_client import BinanceAPIError
 from core.config import (
     BINANCE_POLL_FAIL_ALERT_THRESHOLD,
     BINANCE_POLL_INTERVAL,
+    BINANCE_POLL_LOOKBACK_SECONDS,
+    BINANCE_POLL_MAX_LOOKBACK_SECONDS,
     CRYPTO_ORDER_TIMEOUT_SECONDS,
     DATA_DIR,
     DB_PATH,
@@ -22,7 +24,14 @@ from core.config import (
     WEBHOOK_PORT,
     logger,
 )
-from core.helpers import crypto_network_matches, escape_md, format_money, order_created_at_ms, t
+from core.helpers import (
+    crypto_network_matches,
+    crypto_poll_start_ms,
+    escape_md,
+    format_money,
+    order_created_at_ms,
+    t,
+)
 from core.products import API_CACHE_TTL, API_STALE_TTL, _api_cache, _do_refresh_products
 from core.runtime import CRYPTO_ENABLED, binance, db, get_bot_username, set_bot_username
 from handlers.admin import _notify_all_admins
@@ -285,18 +294,24 @@ async def poll_binance_deposits(application):
     """Poll successful on-chain USDT deposits and pass them through the shared pipeline."""
     if not CRYPTO_ENABLED or binance is None:
         return
-    last_check = int(time.time() * 1000) - max(CRYPTO_ORDER_TIMEOUT_SECONDS * 1000, 60_000)
+    source = "binance_usdt"
+    lookback_ms = BINANCE_POLL_LOOKBACK_SECONDS * 1000
+    max_lookback_ms = BINANCE_POLL_MAX_LOOKBACK_SECONDS * 1000
+    watermark = db.get_crypto_poll_watermark(source)
+    last_check = watermark if watermark is not None else int(time.time() * 1000)
     failures = _PollFailureAlert("Binance on-chain", BINANCE_POLL_FAIL_ALERT_THRESHOLD)
-    logger.info("Binance USDT on-chain poller started — interval=%ss, network=%s", BINANCE_POLL_INTERVAL, USDT_NETWORK)
+    logger.info("Binance USDT on-chain poller started — interval=%ss, network=%s, lookback=%ss", BINANCE_POLL_INTERVAL, USDT_NETWORK, BINANCE_POLL_LOOKBACK_SECONDS)
     while True:
         await asyncio.sleep(BINANCE_POLL_INTERVAL)
         cycle_now = int(time.time() * 1000)
+        start_ms = crypto_poll_start_ms(last_check, cycle_now, lookback_ms, max_lookback_ms)
         try:
-            deposits = await asyncio.to_thread(binance.get_deposit_history, start_time_ms=last_check - 120_000)
+            deposits = await asyncio.to_thread(binance.get_deposit_history, start_time_ms=start_ms)
             for deposit in deposits:
                 if crypto_network_matches(deposit.get("network", "")):
-                    await _process_incoming_usdt(application, tx_key=deposit.get("txId", ""), amount=deposit.get("amount"), event_time_ms=deposit.get("insertTime", 0), source="binance_usdt", source_label="on-chain BEP20")
+                    await _process_incoming_usdt(application, tx_key=deposit.get("txId", ""), amount=deposit.get("amount"), event_time_ms=deposit.get("insertTime", 0), source=source, source_label="on-chain BEP20")
             last_check = cycle_now
+            db.set_crypto_poll_watermark(source, cycle_now)
             failures.record_success()
         except BinanceAPIError as exc:
             logger.error("Binance on-chain poll error: %s", exc)
@@ -312,16 +327,25 @@ async def poll_binance_pay(application):
     """Poll positive incoming Binance Pay USDT transfers independently from on-chain deposits."""
     if not CRYPTO_ENABLED or binance is None:
         return
-    last_check = int(time.time() * 1000) - max(CRYPTO_ORDER_TIMEOUT_SECONDS * 1000, 60_000)
+    source = "binance_pay"
+    lookback_ms = BINANCE_POLL_LOOKBACK_SECONDS * 1000
+    max_lookback_ms = BINANCE_POLL_MAX_LOOKBACK_SECONDS * 1000
+    watermark = db.get_crypto_poll_watermark(source)
+    last_check = watermark if watermark is not None else int(time.time() * 1000)
     failures = _PollFailureAlert("Binance Pay", BINANCE_POLL_FAIL_ALERT_THRESHOLD)
-    logger.info("Binance Pay poller started — interval=%ss", BINANCE_POLL_INTERVAL)
+    logger.info("Binance Pay poller started — interval=%ss, lookback=%ss", BINANCE_POLL_INTERVAL, BINANCE_POLL_LOOKBACK_SECONDS)
     while True:
         await asyncio.sleep(BINANCE_POLL_INTERVAL)
         cycle_now = int(time.time() * 1000)
+        start_ms = crypto_poll_start_ms(last_check, cycle_now, lookback_ms, max_lookback_ms)
         try:
-            transactions = await asyncio.to_thread(binance.get_pay_transactions, start_time_ms=last_check - 120_000)
+            transactions = await asyncio.to_thread(binance.get_pay_transactions, start_time_ms=start_ms)
             for transaction in transactions:
                 if str(transaction.get("currency", "")).upper() != "USDT":
+                    continue
+                transaction_id = str(transaction.get("transactionId", "")).strip()
+                if not transaction_id:
+                    logger.warning("Ignoring Binance Pay transaction without transactionId: %r", transaction)
                     continue
                 try:
                     amount = Decimal(str(transaction.get("amount")))
@@ -330,8 +354,9 @@ async def poll_binance_pay(application):
                     continue
                 if amount <= 0:
                     continue
-                await _process_incoming_usdt(application, tx_key=f"PAY:{transaction.get('transactionId', '')}", amount=amount, event_time_ms=transaction.get("transactionTime", 0), source="binance_pay", source_label="chuyển nội bộ Binance")
+                await _process_incoming_usdt(application, tx_key=f"PAY:{transaction_id}", amount=amount, event_time_ms=transaction.get("transactionTime", 0), source=source, source_label="chuyển nội bộ Binance")
             last_check = cycle_now
+            db.set_crypto_poll_watermark(source, cycle_now)
             failures.record_success()
         except BinanceAPIError as exc:
             logger.error("Binance Pay poll error: %s", exc)

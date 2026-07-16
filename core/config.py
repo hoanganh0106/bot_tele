@@ -28,6 +28,15 @@ USDT_VND_RATE_DEFAULT = int(os.getenv("USDT_VND_RATE", "26500"))
 BINANCE_POLL_INTERVAL = max(15, int(os.getenv("BINANCE_POLL_INTERVAL", "25")))
 BINANCE_POLL_FAIL_ALERT_THRESHOLD = max(2, int(os.getenv("BINANCE_POLL_FAIL_ALERT_THRESHOLD", "5")))
 CRYPTO_ORDER_TIMEOUT_SECONDS = max(60, int(os.getenv("CRYPTO_ORDER_TIMEOUT_SECONDS", "1800")))
+# Cửa sổ quét ngược mỗi lần poll: đủ rộng để bắt deposit confirm chậm (insertTime
+# rơi trước cửa sổ hẹp cũ) và để bù thời gian bot chết. Mặc định >= timeout đơn.
+BINANCE_POLL_LOOKBACK_SECONDS = max(
+    60, int(os.getenv("BINANCE_POLL_LOOKBACK_SECONDS", str(max(CRYPTO_ORDER_TIMEOUT_SECONDS, 3600))))
+)
+# Trần quét ngược khi resume từ watermark cũ (bot chết lâu) — chặn 1 query quá lớn.
+BINANCE_POLL_MAX_LOOKBACK_SECONDS = max(
+    BINANCE_POLL_LOOKBACK_SECONDS, int(os.getenv("BINANCE_POLL_MAX_LOOKBACK_SECONDS", "86400"))
+)
 
 # Logging
 logging.basicConfig(

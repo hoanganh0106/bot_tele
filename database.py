@@ -35,6 +35,7 @@ _DEFAULT_DATA = {
     "settings": {"default_markup_fixed": 10000, "referral_reward": 1000, "referral_new_user_reward": 500, "referral_enabled": True, "min_deposit": 5000},
     "processed_transactions": [],
     "processed_crypto_txids": [],
+    "crypto_poll_watermarks": {},
     "crypto_reservations": {},
     "incoming_payments": [],
     "users": {},
@@ -1159,6 +1160,25 @@ class Database:
                 data["processed_crypto_txids"] = txids[-5000:]
             self._write(data, immediate=True)
             return True
+
+    # === BINANCE POLL WATERMARK (survive restart / slow-confirm gaps) ===
+    def get_crypto_poll_watermark(self, source: str) -> int | None:
+        """Last successfully-scanned cycle time (ms) for a poll source, or None."""
+        with self.lock:
+            value = self._read().get("crypto_poll_watermarks", {}).get(str(source))
+        try:
+            return int(value) if value is not None else None
+        except (TypeError, ValueError):
+            return None
+
+    def set_crypto_poll_watermark(self, source: str, timestamp_ms: int) -> None:
+        """Persist how far a poll source has scanned. Debounced — a lost second
+        is harmless because the next poll re-scans the lookback overlap."""
+        with self.lock:
+            data = self._read()
+            marks = data.setdefault("crypto_poll_watermarks", {})
+            marks[str(source)] = int(timestamp_ms)
+            self._write(data)
 
     # === INCOMING PAYMENTS (webhook store-then-poll) ===
     def store_incoming_payment(self, payment: dict) -> bool:
