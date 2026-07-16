@@ -12,6 +12,7 @@ from telegram import BotCommand
 
 from binance_client import BinanceAPIError
 from core.config import (
+    BINANCE_POLL_FAIL_ALERT_THRESHOLD,
     BINANCE_POLL_INTERVAL,
     CRYPTO_ORDER_TIMEOUT_SECONDS,
     DATA_DIR,
@@ -191,156 +192,163 @@ async def _payment_processor(application):
             await asyncio.sleep(10)  # Chờ 10s rồi restart
 
 
-async def poll_binance_deposits(application):
-    """Poll successful Binance USDT deposits and match exact reserved amounts."""
-    if not CRYPTO_ENABLED or binance is None:
+class _PollFailureAlert:
+    def __init__(self, name: str, threshold: int):
+        self.name = name
+        self.threshold = threshold
+        self.failures = 0
+        self.alerted = False
+
+    def record_success(self) -> None:
+        self.failures = 0
+        self.alerted = False
+
+    async def record_failure(self, application, exc: Exception) -> None:
+        self.failures += 1
+        if self.failures >= self.threshold and not self.alerted:
+            self.alerted = True
+            await _notify_all_admins(
+                application,
+                f"🚨 **{self.name} poller lỗi liên tiếp**\n"
+                f"Số lần lỗi: `{self.failures}`\nLỗi gần nhất: `{escape_md(str(exc))}`",
+            )
+
+
+async def _process_incoming_usdt(application, *, tx_key, amount, event_time_ms, source, source_label) -> None:
+    """Match one positive USDT event, atomically claim it, then fulfill its order."""
+    tx_key = str(tx_key).strip()
+    if not tx_key or db.is_txid_processed(tx_key):
+        return
+    try:
+        amount = Decimal(str(amount))
+        event_time_ms = int(event_time_ms)
+    except (InvalidOperation, TypeError, ValueError):
+        logger.warning("Ignoring malformed %s USDT event: tx=%r amount=%r", source_label, tx_key, amount)
+        return
+    if not amount.is_finite() or amount <= 0 or event_time_ms <= 0:
+        logger.warning("Ignoring invalid %s USDT event: tx=%r amount=%r time=%r", source_label, tx_key, amount, event_time_ms)
         return
 
-    # On restart, include the whole active crypto-order window so deposits received
-    # while the bot was offline can still be matched.
+    matches = []
+    for order_code, order in db.get_crypto_matchable_orders().items():
+        try:
+            expected = Decimal(str(order.get("usdt_amount")))
+        except (InvalidOperation, TypeError, ValueError):
+            continue
+        if amount == expected and (created_at_ms := order_created_at_ms(order)) is not None and event_time_ms >= created_at_ms:
+            matches.append((order_code, order))
+
+    if not matches:
+        if db.mark_txid_processed(tx_key):
+            await _notify_all_admins(application, f"⚠️ **USDT VÀO KHÔNG KHỚP ĐƠN**\n💰 `{amount}` USDT\n📥 Nguồn: `{source_label}`\n🔗 Mã GD: `{escape_md(tx_key)}`\n🕒 Thời gian: `{event_time_ms}`")
+        return
+    if len(matches) > 1:
+        if db.mark_txid_processed(tx_key):
+            codes = ", ".join(code for code, _ in matches)
+            await _notify_all_admins(application, f"🚨 **USDT KHỚP NHIỀU ĐƠN — KHÔNG TỰ GIAO**\n📋 Các mã: `{escape_md(codes)}`\n💰 `{amount}` USDT\n📥 Nguồn: `{source_label}`\n🔗 Mã GD: `{escape_md(tx_key)}`")
+        return
+
+    order_code, order = matches[0]
+    if order.get("status") == "cancelled":
+        if db.mark_txid_processed(tx_key):
+            await _notify_all_admins(application, f"⚠️ **USDT VÀO CHO ĐƠN KHÁCH ĐÃ HỦY TAY**\n📋 Mã: `{order_code}`\n💰 `{amount}` USDT\n📥 Nguồn: `{source_label}`\n🔗 Mã GD: `{escape_md(tx_key)}`")
+        return
+
+    claimed = db.claim_crypto_deposit(order_code, tx_key, event_time_ms, payment_source=source)
+    if not claimed:
+        if db.mark_txid_processed(tx_key):
+            await _notify_all_admins(application, f"⚠️ **USDT KHỚP SỐ TIỀN NHƯNG ĐƠN KHÔNG CÒN CHỜ**\n📋 Mã: `{order_code}`\n💰 `{amount}` USDT\n📥 Nguồn: `{source_label}`\n🔗 Mã GD: `{escape_md(tx_key)}`")
+        return
+    if claimed.get("crypto_claim_status") == "wallet_insufficient":
+        db.release_usdt_amount(order_code)
+        await _notify_all_admins(application, f"🚨 **USDT VÀO SAU TIMEOUT — VÍ KHÔNG ĐỦ ĐỂ TRỪ LẠI**\n📋 Mã: `{order_code}`\n👤 User: `{claimed.get('user_id')}`\n💰 Tiền vào: `{amount}` USDT\n📥 Nguồn: `{source_label}`")
+        return
+    if claimed.get("crypto_recovered_timeout"):
+        wallet_paid = int(claimed.get("wallet_paid", 0) or 0)
+        if wallet_paid > 0:
+            try:
+                await application.bot.send_message(chat_id=claimed["user_id"], text=t(claimed["user_id"], "wallet_rededucted", amount=format_money(wallet_paid), order_code=order_code))
+            except Exception:
+                pass
+        await _notify_all_admins(application, f"⚡ **PHỤC HỒI ĐƠN CRYPTO TIMEOUT**\n📋 Mã: `{order_code}`\n💰 Tiền vào chậm: `{amount}` USDT\n📥 Nguồn: `{source_label}`\n✅ Đang xử lý giao hàng...")
+    try:
+        result = await process_paid_order(application, order_code, source)
+    finally:
+        db.release_usdt_amount(order_code)
+    if result:
+        logger.info("Binance %s matched order %s: %s USDT", source, order_code, amount)
+    else:
+        logger.warning("Binance %s matched %s but fulfillment returned False", source, order_code)
+
+
+async def poll_binance_deposits(application):
+    """Poll successful on-chain USDT deposits and pass them through the shared pipeline."""
+    if not CRYPTO_ENABLED or binance is None:
+        return
     last_check = int(time.time() * 1000) - max(CRYPTO_ORDER_TIMEOUT_SECONDS * 1000, 60_000)
-    logger.info("₮ Binance USDT poller started — interval=%ss, network=%s", BINANCE_POLL_INTERVAL, USDT_NETWORK)
+    failures = _PollFailureAlert("Binance on-chain", BINANCE_POLL_FAIL_ALERT_THRESHOLD)
+    logger.info("Binance USDT on-chain poller started — interval=%ss, network=%s", BINANCE_POLL_INTERVAL, USDT_NETWORK)
     while True:
         await asyncio.sleep(BINANCE_POLL_INTERVAL)
         cycle_now = int(time.time() * 1000)
         try:
-            deposits = await asyncio.to_thread(
-                binance.get_deposit_history,
-                start_time_ms=last_check - 120_000,
-            )
+            deposits = await asyncio.to_thread(binance.get_deposit_history, start_time_ms=last_check - 120_000)
             for deposit in deposits:
-                if not crypto_network_matches(deposit.get("network", "")):
-                    continue
-                tx_id = str(deposit.get("txId") or "").strip()
-                if not tx_id or db.is_txid_processed(tx_id):
-                    continue
-                try:
-                    amount = Decimal(str(deposit.get("amount")))
-                    insert_time = int(deposit.get("insertTime", 0))
-                except (InvalidOperation, TypeError, ValueError):
-                    logger.warning("Ignoring malformed Binance deposit: %r", deposit)
-                    continue
-                if not amount.is_finite() or amount <= 0 or insert_time <= 0:
-                    logger.warning("Ignoring invalid Binance deposit values: %r", deposit)
-                    continue
-
-                matches = []
-                for order_code, order in db.get_crypto_matchable_orders().items():
-                    try:
-                        expected = Decimal(str(order.get("usdt_amount")))
-                    except (InvalidOperation, TypeError, ValueError):
-                        continue
-                    if amount != expected:
-                        continue
-                    created_at_ms = order_created_at_ms(order)
-                    if created_at_ms is None or insert_time < created_at_ms:
-                        continue
-                    matches.append((order_code, order))
-
-                if not matches:
-                    if db.mark_txid_processed(tx_id):
-                        await _notify_all_admins(
-                            application,
-                            f"⚠️ **USDT VÀO KHÔNG KHỚP ĐƠN**\n"
-                            f"💰 Số tiền: `{amount}` USDT\n"
-                            f"🌐 Mạng: `{deposit.get('network', '?')}`\n"
-                            f"🔗 TxID: `{escape_md(tx_id)}`\n"
-                            f"🕒 Thời gian: `{insert_time}`",
-                        )
-                    continue
-
-                if len(matches) > 1:
-                    if db.mark_txid_processed(tx_id):
-                        codes = ", ".join(code for code, _ in matches)
-                        await _notify_all_admins(
-                            application,
-                            f"🚨 **USDT KHỚP NHIỀU ĐƠN — KHÔNG TỰ GIAO**\n"
-                            f"📋 Các mã: `{escape_md(codes)}`\n"
-                            f"💰 `{amount}` USDT\n"
-                            f"🔗 TxID: `{escape_md(tx_id)}`\n"
-                            f"⚠️ Cần đối soát và xử lý tay.",
-                        )
-                    continue
-
-                order_code, order = matches[0]
-                if order.get("status") == "cancelled":
-                    if db.mark_txid_processed(tx_id):
-                        await _notify_all_admins(
-                            application,
-                            f"⚠️ **USDT VÀO CHO ĐƠN KHÁCH ĐÃ HỦY TAY**\n"
-                            f"📋 Mã: `{order_code}`\n"
-                            f"💰 `{amount}` USDT\n"
-                            f"🔗 TxID: `{escape_md(tx_id)}`\n"
-                            f"⚠️ Không giao tự động; cần hoàn tiền/xử lý tay.",
-                        )
-                    continue
-
-                claimed = db.claim_crypto_deposit(order_code, tx_id, insert_time)
-                if not claimed:
-                    if db.mark_txid_processed(tx_id):
-                        await _notify_all_admins(
-                            application,
-                            f"⚠️ **USDT KHỚP SỐ TIỀN NHƯNG ĐƠN KHÔNG CÒN CHỜ**\n"
-                            f"📋 Mã: `{order_code}`\n"
-                            f"💰 `{amount}` USDT\n"
-                            f"🔗 TxID: `{escape_md(tx_id)}`",
-                        )
-                    continue
-
-                if claimed.get("crypto_claim_status") == "wallet_insufficient":
-                    db.release_usdt_amount(order_code)
-                    await _notify_all_admins(
-                        application,
-                        f"🚨 **USDT VÀO SAU TIMEOUT — VÍ KHÔNG ĐỦ ĐỂ TRỪ LẠI**\n"
-                        f"📋 Mã: `{order_code}`\n"
-                        f"👤 User: `{claimed.get('user_id')}`\n"
-                        f"💳 Cần trừ lại: {format_money(int(claimed.get('wallet_paid', 0) or 0))}\n"
-                        f"💰 Tiền vào: `{amount}` USDT\n"
-                        f"⚠️ Không giao tự động; cần xử lý tay.",
-                    )
-                    continue
-
-                if claimed.get("crypto_recovered_timeout"):
-                    wallet_paid = int(claimed.get("wallet_paid", 0) or 0)
-                    if wallet_paid > 0:
-                        try:
-                            await application.bot.send_message(
-                                chat_id=claimed["user_id"],
-                                text=t(claimed["user_id"], "wallet_rededucted", amount=format_money(wallet_paid), order_code=order_code),
-                            )
-                        except Exception:
-                            pass
-                    await _notify_all_admins(
-                        application,
-                        f"⚡ **PHỤC HỒI ĐƠN CRYPTO TIMEOUT**\n"
-                        f"📋 Mã: `{order_code}`\n"
-                        f"💰 Tiền vào chậm: `{amount}` USDT\n"
-                        f"✅ Đang xử lý giao hàng...",
-                    )
-
-                try:
-                    result = await process_paid_order(application, order_code, "binance_usdt")
-                finally:
-                    db.release_usdt_amount(order_code)
-                if result:
-                    logger.info("✅ Binance deposit matched order %s: %s USDT", order_code, amount)
-                else:
-                    logger.warning("Binance deposit matched %s but fulfillment returned False", order_code)
+                if crypto_network_matches(deposit.get("network", "")):
+                    await _process_incoming_usdt(application, tx_key=deposit.get("txId", ""), amount=deposit.get("amount"), event_time_ms=deposit.get("insertTime", 0), source="binance_usdt", source_label="on-chain BEP20")
             last_check = cycle_now
+            failures.record_success()
         except BinanceAPIError as exc:
-            logger.error("Binance poll error: %s", exc)
+            logger.error("Binance on-chain poll error: %s", exc)
+            await failures.record_failure(application, exc)
             if exc.status_code in (418, 429):
                 await asyncio.sleep(max(60, BINANCE_POLL_INTERVAL * 2))
         except Exception as exc:
-            logger.error("Binance poll error: %s", exc, exc_info=True)
+            logger.error("Binance on-chain poll error: %s", exc, exc_info=True)
+            await failures.record_failure(application, exc)
+
+
+async def poll_binance_pay(application):
+    """Poll positive incoming Binance Pay USDT transfers independently from on-chain deposits."""
+    if not CRYPTO_ENABLED or binance is None:
+        return
+    last_check = int(time.time() * 1000) - max(CRYPTO_ORDER_TIMEOUT_SECONDS * 1000, 60_000)
+    failures = _PollFailureAlert("Binance Pay", BINANCE_POLL_FAIL_ALERT_THRESHOLD)
+    logger.info("Binance Pay poller started — interval=%ss", BINANCE_POLL_INTERVAL)
+    while True:
+        await asyncio.sleep(BINANCE_POLL_INTERVAL)
+        cycle_now = int(time.time() * 1000)
+        try:
+            transactions = await asyncio.to_thread(binance.get_pay_transactions, start_time_ms=last_check - 120_000)
+            for transaction in transactions:
+                if str(transaction.get("currency", "")).upper() != "USDT":
+                    continue
+                try:
+                    amount = Decimal(str(transaction.get("amount")))
+                except (InvalidOperation, TypeError, ValueError):
+                    logger.warning("Ignoring malformed Binance Pay transaction: %r", transaction)
+                    continue
+                if amount <= 0:
+                    continue
+                await _process_incoming_usdt(application, tx_key=f"PAY:{transaction.get('transactionId', '')}", amount=amount, event_time_ms=transaction.get("transactionTime", 0), source="binance_pay", source_label="chuyển nội bộ Binance")
+            last_check = cycle_now
+            failures.record_success()
+        except BinanceAPIError as exc:
+            logger.error("Binance Pay poll error: %s", exc)
+            await failures.record_failure(application, exc)
+            if exc.status_code in (418, 429):
+                await asyncio.sleep(max(60, BINANCE_POLL_INTERVAL * 2))
+        except Exception as exc:
+            logger.error("Binance Pay poll error: %s", exc, exc_info=True)
+            await failures.record_failure(application, exc)
 
 
 async def recover_confirmed_crypto_orders(application):
     """Resume crypto fulfillment after a crash that happened after txid claim."""
-    for order_code in db.get_confirmed_crypto_orders():
+    for order_code, order in db.get_confirmed_crypto_orders().items():
         logger.warning("Recovering confirmed Binance order after restart: %s", order_code)
         try:
-            await process_paid_order(application, order_code, "binance_usdt")
+            await process_paid_order(application, order_code, order.get("payment_source", "binance_usdt"))
         finally:
             db.release_usdt_amount(order_code)
 
@@ -612,6 +620,7 @@ async def post_init(application):
     # ₮ Binance poller is independent from the SePay VND processor.
     if CRYPTO_ENABLED:
         asyncio.create_task(poll_binance_deposits(application))
+        asyncio.create_task(poll_binance_pay(application))
 
     # 🔄 Retry failed orders — tự động retry đơn lỗi API tạm thời
     asyncio.create_task(_retry_failed_orders(application))

@@ -13,11 +13,13 @@ from core.config import (
     BANK_ACCOUNT_NAME,
     BANK_ACCOUNT_NUMBER,
     BANK_NAME,
+    BINANCE_PAY_UID,
     CRYPTO_ORDER_TIMEOUT_SECONDS,
     USDT_NETWORK,
     USDT_WALLET_ADDRESS,
     logger,
 )
+from i18n import get_text
 from core.helpers import (
     crypto_network_label,
     escape_html,
@@ -40,6 +42,18 @@ async def _notify_all_admins(context, text: str):
     from handlers.admin import _notify_all_admins as notify
 
     return await notify(context, text)
+
+
+def _crypto_internal_option(user_id: int, amount: str = "{amount}", lang: str | None = None) -> str:
+    """Render the optional Binance Pay/UID instruction without an empty block."""
+    if not BINANCE_PAY_UID:
+        return ""
+    return get_text(
+        lang or user_lang(user_id),
+        "crypto_internal_option",
+        pay_uid=escape_html(BINANCE_PAY_UID),
+        amount=amount,
+    )
 
 
 def get_owned_pending_order(order_code: str, user_id: int) -> dict | None:
@@ -227,6 +241,7 @@ async def handle_pay_crypto(update: Update, context: ContextTypes.DEFAULT_TYPE):
     })
     network_label = crypto_network_label()
     warning = t(user_id, "crypto_warning", network=network_label)
+    internal = _crypto_internal_option(user_id, amount_text)
     text = t(
         user_id,
         "crypto_payment",
@@ -234,6 +249,7 @@ async def handle_pay_crypto(update: Update, context: ContextTypes.DEFAULT_TYPE):
         address=escape_html(USDT_WALLET_ADDRESS),
         amount=amount_text,
         warning=warning,
+        internal=internal,
         qr_url=escape_html(qr_url),
         timeout_minutes=CRYPTO_ORDER_TIMEOUT_SECONDS // 60,
     )
@@ -244,6 +260,7 @@ async def handle_pay_crypto(update: Update, context: ContextTypes.DEFAULT_TYPE):
         address=escape_html(USDT_WALLET_ADDRESS),
         amount=amount_text,
         warning=warning,
+        internal=internal,
         timeout_minutes=CRYPTO_ORDER_TIMEOUT_SECONDS // 60,
     )
     buttons = [

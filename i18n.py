@@ -21,8 +21,9 @@ TEXTS = {
         "btn_pay_wallet": "💰 Thanh toán bằng ví ({amount})", "btn_pay_partial": "💰 Ví {balance} + CK {amount}",
         "btn_pay_bank": "💳 Chuyển khoản {amount}", "btn_pay_crypto": "₮ USDT Crypto ({amount})",
         "crypto_warning": "⚠️ Chỉ gửi USDT qua đúng mạng {network}. Sai mạng có thể mất tiền; sai số tiền sẽ không được xác nhận tự động.",
-        "crypto_payment": "₮ <b>THANH TOÁN USDT</b>\n\n<blockquote>🌐 Mạng: <b>{network}</b>\n📬 Địa chỉ: <code>{address}</code>\n💰 Số tiền chính xác: <code>{amount}</code> USDT</blockquote>\n\n<b>Hãy chuyển CHÍNH XÁC số tiền trên.</b>\n\n{warning}\n\n📱 <a href=\"{qr_url}\">Mở mã QR ví</a>\n⏰ Đơn crypto tự hủy sau <b>{timeout_minutes} phút</b>.",
-        "crypto_payment_caption": "₮ <b>THANH TOÁN USDT</b>\n\n<blockquote>🌐 Mạng: <b>{network}</b>\n📬 Địa chỉ: <code>{address}</code>\n💰 Số tiền chính xác: <code>{amount}</code> USDT</blockquote>\n\n<b>Quét mã QR và chuyển CHÍNH XÁC số tiền trên.</b>\n\n{warning}\n\n⏰ Đơn crypto tự hủy sau <b>{timeout_minutes} phút</b>.",
+        "crypto_internal_option": "Hoặc chuyển nội bộ Binance (Pay/UID, miễn phí) tới UID: <code>{pay_uid}</code>.\nVẫn phải gửi <b>CHÍNH XÁC {amount} USDT</b>.",
+        "crypto_payment": "₮ <b>THANH TOÁN USDT</b>\n\n<blockquote>🌐 Mạng: <b>{network}</b>\n📬 Địa chỉ: <code>{address}</code>\n💰 Số tiền chính xác: <code>{amount}</code> USDT</blockquote>\n\n{internal}\n\n<b>Hãy chuyển CHÍNH XÁC số tiền trên.</b>\n\n{warning}\n\n📱 <a href=\"{qr_url}\">Mở mã QR ví</a>\n⏰ Đơn crypto tự hủy sau <b>{timeout_minutes} phút</b>.",
+        "crypto_payment_caption": "₮ <b>THANH TOÁN USDT</b>\n\n<blockquote>🌐 Mạng: <b>{network}</b>\n📬 Địa chỉ: <code>{address}</code>\n💰 Số tiền chính xác: <code>{amount}</code> USDT</blockquote>\n\n{internal}\n\n<b>Quét mã QR và chuyển CHÍNH XÁC số tiền trên.</b>\n\n{warning}\n\n⏰ Đơn crypto tự hủy sau <b>{timeout_minutes} phút</b>.",
         "crypto_paid_waiting": "⏳ Đang chờ Binance xác nhận giao dịch blockchain. Quá trình này thường mất 1–5 phút. Bot sẽ tự động giao hàng khi tiền vào.",
         "crypto_unavailable": "❌ Thanh toán USDT hiện chưa khả dụng. Vui lòng chọn chuyển khoản ngân hàng.",
         "crypto_reservation_failed": "❌ Chưa thể tạo số tiền USDT độc nhất. Vui lòng hủy đơn và thử lại.",
@@ -64,8 +65,9 @@ TEXTS = {
         "language_prompt": "🌐 **Choose language / Chọn ngôn ngữ**", "language_updated": "✅ Language changed to English.",
         "btn_menu": "🛍️ PRODUCT MENU", "btn_wallet": "💳 Wallet", "btn_referral": "🎁 Referral", "btn_history": "📋 Order history", "btn_contact": "☎️ Contact admin", "btn_reload": "🔄 Refresh", "btn_back": "⬅️ Back", "btn_home": "🏠 Home", "btn_language": "🌐 Language / Ngôn ngữ", "btn_paid": "✅ I have transferred", "btn_cancel": "❌ Cancel order", "btn_pay_wallet": "💰 Pay with wallet ({amount})", "btn_pay_partial": "💰 Wallet {balance} + bank {amount}", "btn_pay_bank": "💳 Bank transfer {amount}", "btn_pay_crypto": "₮ USDT Crypto ({amount})",
         "crypto_warning": "⚠️ Send USDT only through the {network} network. The wrong network may lose funds; the wrong amount cannot be confirmed automatically.",
-        "crypto_payment": "₮ <b>USDT PAYMENT</b>\n\n<blockquote>🌐 Network: <b>{network}</b>\n📬 Address: <code>{address}</code>\n💰 Exact amount: <code>{amount}</code> USDT</blockquote>\n\n<b>Send EXACTLY the amount shown above.</b>\n\n{warning}\n\n📱 <a href=\"{qr_url}\">Open wallet QR code</a>\n⏰ This crypto order expires after <b>{timeout_minutes} minutes</b>.",
-        "crypto_payment_caption": "₮ <b>USDT PAYMENT</b>\n\n<blockquote>🌐 Network: <b>{network}</b>\n📬 Address: <code>{address}</code>\n💰 Exact amount: <code>{amount}</code> USDT</blockquote>\n\n<b>Scan the QR code and send EXACTLY the amount shown above.</b>\n\n{warning}\n\n⏰ This crypto order expires after <b>{timeout_minutes} minutes</b>.",
+        "crypto_internal_option": "Or transfer internally in Binance (Pay/UID, free) to UID: <code>{pay_uid}</code>.\nYou must still send <b>EXACTLY {amount} USDT</b>.",
+        "crypto_payment": "₮ <b>USDT PAYMENT</b>\n\n<blockquote>🌐 Network: <b>{network}</b>\n📬 Address: <code>{address}</code>\n💰 Exact amount: <code>{amount}</code> USDT</blockquote>\n\n{internal}\n\n<b>Send EXACTLY the amount shown above.</b>\n\n{warning}\n\n📱 <a href=\"{qr_url}\">Open wallet QR code</a>\n⏰ This crypto order expires after <b>{timeout_minutes} minutes</b>.",
+        "crypto_payment_caption": "₮ <b>USDT PAYMENT</b>\n\n<blockquote>🌐 Network: <b>{network}</b>\n📬 Address: <code>{address}</code>\n💰 Exact amount: <code>{amount}</code> USDT</blockquote>\n\n{internal}\n\n<b>Scan the QR code and send EXACTLY the amount shown above.</b>\n\n{warning}\n\n⏰ This crypto order expires after <b>{timeout_minutes} minutes</b>.",
         "crypto_paid_waiting": "⏳ Waiting for Binance to confirm the blockchain deposit. This usually takes 1–5 minutes. The bot will deliver automatically after funds arrive.",
         "crypto_unavailable": "❌ USDT payment is currently unavailable. Please use bank transfer.",
         "crypto_reservation_failed": "❌ A unique USDT amount could not be created. Please cancel the order and try again.",
@@ -74,6 +76,36 @@ TEXTS = {
         "welcome": "✨ Welcome <b>{name}</b>! ✨\n\n🏪 <b>PREMIUM ACCOUNT SHOP</b>\n\n<blockquote>⚡ Payment confirmed in <b>1 minute</b>\n📦 Receive your account <b>instantly</b>\n💬 <b>Fast</b> support\n🤖 Automated <b>24/7</b></blockquote>\n\n💰 <b>Wallet balance:</b> {balance}\n\n👇 <i>Choose an option below</i> 👇", "welcome_bonus": "\n🎁 <b>Welcome bonus: +{amount}</b> has been added to your wallet!\n", "help": "📖 **HOW TO USE**\n\n1️⃣ Send /menu to view products\n2️⃣ Choose a product\n3️⃣ Choose quantity\n4️⃣ The bot creates a payment QR code\n5️⃣ Transfer with the exact content\n6️⃣ The system confirms and sends your account automatically\n\n⏰ Payments are confirmed automatically within 1–3 minutes\n❓ Need help? Contact admin", "loading_products": "⏳ Loading products...", "products_unavailable": "❌ Products cannot be loaded right now. Please try again later!", "menu_title": "🛍️ <b>PRODUCT MENU</b>\n════════════════════\n\n💰 Wallet balance: <b>{balance}</b>\n\n👇 <i>Choose a product category</i>:", "product_missing": "❌ The product does not exist or the server has an error!", "product_out_of_stock": "❌ **{name}** is out of stock!\nPlease come back later.", "product_updating": "🔄 **{name}** inventory is being updated.\nPlease try again in 1–2 minutes.", "product_detail": "{icon} <b>{name}</b>\n\n💰 Price: <b>{price}</b> each\n📦 Stock: <b>{stock}</b> remaining\n{description}{note}\n👇 Choose quantity:", "product_auto_delivery": "\n⚡ <i>Automatic delivery after payment</i>\n", "product_email_note": "\n⚠️ <i>This product requires your email after payment</i>", "order_payment": "🛒 <b>ORDER #{order_code}</b>\n\n<blockquote>📦 {product}\n🔢 Quantity: <b>{qty}</b>\n💰 Unit price: <b>{price}</b>\n💵 Total: <u><b>{total}</b></u></blockquote>\n\n{wallet}🔽 <b>Choose a payment method:</b>\n", "wallet_balance": "💰 Wallet balance: <b>{balance}</b>\n\n", "order_invalid": "❌ This order does not exist or has already been processed.", "bank_payment": "🛒 <b>ORDER #{order_code}</b>\n\n📦 {product}\n💵 Total: <u><b>{total}</b></u>\n\n<blockquote>🏦 Bank: <b>{bank}</b>\n💳 Account: <code>{account}</code>\n👤 Name: <b>{account_name}</b>\n💰 Amount: <b>{total}</b>\n📝 Content: <code>{order_code}</code></blockquote>\n\n📱 Scan the QR code below for quick payment:\n<a href=\"{qr_url}\">Payment QR</a>\n\n⏰ This order automatically expires after <b>5 minutes</b>\n✅ Payment will be confirmed <b>AUTOMATICALLY</b>", "paid_waiting": "⏳ Order **#{order_code}** is waiting for payment confirmation.\n\nThe system will confirm automatically within **1–3 minutes** after receiving the payment.\nYou will be notified as soon as it is completed! 🔔", "wallet_paid": "✅ **{amount}** paid from your wallet!\n💰 Remaining balance: **{balance}**\n\n⏳ Processing order **#{order_code}**...", "customer_order_error": "⚠️ Order **#{order_code}** encountered an error while being processed.\n\n✅ Your payment **has been recorded** — the admin has been notified and will deliver your item or issue a refund soon.\n\n🚫 **Please DO NOT transfer again.**\n💬 For quick support, contact the admin with order code `#{order_code}`.", "deposit_success": "✅ **DEPOSIT SUCCESSFUL!**\n──────────────────\n💰 Amount: **+{amount}**\n💵 New balance: **{balance}**\n\nYou can now use your wallet to buy products! Send /menu", "command_start": "Start", "command_menu": "View products and buy", "command_orders": "Order history", "command_help": "How to use", "command_language": "Change language",
     },
 }
+
+
+TEXTS["vi"]["crypto_internal_option"] = (
+    "Hoặc chuyển nội bộ Binance (Pay/UID, miễn phí) tới UID: <code>{pay_uid}</code>.\n"
+    "Vẫn phải gửi <b>CHÍNH XÁC {amount} USDT</b>."
+)
+TEXTS["en"]["crypto_internal_option"] = (
+    "Or transfer internally in Binance (Pay/UID, free) to UID: <code>{pay_uid}</code>.\n"
+    "You must still send <b>EXACTLY {amount} USDT</b>."
+)
+
+
+TEXTS["vi"]["crypto_internal_option"] = (
+    "Hoặc chuyển nội bộ Binance (Pay/UID, miễn phí) tới UID: <code>{pay_uid}</code>.\n"
+    "Vẫn phải gửi <b>CHÍNH XÁC {amount} USDT</b>."
+)
+TEXTS["en"]["crypto_internal_option"] = (
+    "Or transfer internally in Binance (Pay/UID, free) to UID: <code>{pay_uid}</code>.\n"
+    "You must still send <b>EXACTLY {amount} USDT</b>."
+)
+for _language in LANGS:
+    for _key in ("crypto_payment", "crypto_payment_caption"):
+        TEXTS[_language][_key] = TEXTS[_language][_key].replace(
+            "\n\n{warning}", "\n\n{internal}\n\n{warning}"
+)
+for _language in LANGS:
+    for _key in ("crypto_payment", "crypto_payment_caption"):
+        TEXTS[_language][_key] = TEXTS[_language][_key].replace(
+            "\n\n{warning}", "\n\n{internal}\n\n{warning}"
+        )
 
 
 def get_text(lang: str, key: str, **kwargs) -> str:

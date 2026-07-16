@@ -101,6 +101,19 @@ def check_deposit_history(client: BinanceClient) -> tuple[bool, str]:
     return True, f"Đọc được lịch sử nạp 24 giờ: {len(deposits)} giao dịch hoàn tất."
 
 
+def check_pay_history(client: BinanceClient) -> tuple[bool, str]:
+    """Verify the read-only Binance Pay history permission from the whitelisted host."""
+    if not configured(client.api_key) or not configured(client.api_secret):
+        return False, "Thiếu API key/secret nên không thể đọc lịch sử Binance Pay."
+
+    start_time_ms = int(time.time() * 1000) - DAY_MS
+    try:
+        transactions = client.get_pay_transactions(start_time_ms)
+    except BinanceAPIError as exc:
+        return False, explain_binance_error(exc) + " Kiểm tra API key đã có quyền đọc Binance Pay."
+    return True, f"Đọc được lịch sử Binance Pay 24 giờ: {len(transactions)} giao dịch."
+
+
 def report(index: int, title: str, result: tuple[bool, str]) -> bool:
     passed, detail = result
     icon = "✅" if passed else "❌"
@@ -125,14 +138,15 @@ def main() -> int:
         report(1, "Kết nối và đồng hồ", check_server_time()),
         report(2, "Địa chỉ nạp USDT", check_deposit_address(client, network, wallet)),
         report(3, "Lịch sử nạp 24 giờ", check_deposit_history(client)),
+        report(4, "Lịch sử Binance Pay 24 giờ", check_pay_history(client)),
     ]
     passed_count = sum(results)
     if passed_count == len(results):
-        print("\n3/3 PASS")
+        print("\n4/4 PASS")
         return 0
 
     failed = ", ".join(str(index + 1) for index, passed in enumerate(results) if not passed)
-    print(f"\n{passed_count}/3 PASS; mục lỗi: {failed}")
+    print(f"\n{passed_count}/4 PASS; mục lỗi: {failed}")
     return 1
 
 

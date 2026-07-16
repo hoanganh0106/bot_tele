@@ -333,7 +333,13 @@ class Database:
                 and orders[code].get("usdt_amount")
             }
 
-    def claim_crypto_deposit(self, order_code: str, tx_id: str, insert_time: int) -> dict | None:
+    def claim_crypto_deposit(
+        self,
+        order_code: str,
+        tx_id: str,
+        insert_time: int,
+        payment_source: str = "binance_usdt",
+    ) -> dict | None:
         """Atomically bind one Binance txid and lock or recover a crypto order."""
         tx_id = str(tx_id)
         with self.lock:
@@ -356,7 +362,7 @@ class Database:
             order.update({
                 "crypto_txid": tx_id,
                 "crypto_deposit_time": int(insert_time),
-                "payment_source": "binance_usdt",
+                "payment_source": payment_source,
             })
 
             # A timeout may have already refunded the wallet-funded part. Re-deduct it

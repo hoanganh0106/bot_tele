@@ -21,10 +21,12 @@ BANK_ACCOUNT_NAME = os.getenv("BANK_ACCOUNT_NAME", "")
 BANK_BIN = os.getenv("BANK_BIN", "970436")
 BINANCE_API_KEY = os.getenv("BINANCE_API_KEY", "").strip()
 BINANCE_API_SECRET = os.getenv("BINANCE_API_SECRET", "").strip()
+BINANCE_PAY_UID = os.getenv("BINANCE_PAY_UID", "").strip()
 USDT_WALLET_ADDRESS = os.getenv("USDT_WALLET_ADDRESS", "").strip()
 USDT_NETWORK = os.getenv("USDT_NETWORK", "BEP20").strip().upper() or "BEP20"
 USDT_VND_RATE_DEFAULT = int(os.getenv("USDT_VND_RATE", "26500"))
 BINANCE_POLL_INTERVAL = max(15, int(os.getenv("BINANCE_POLL_INTERVAL", "25")))
+BINANCE_POLL_FAIL_ALERT_THRESHOLD = max(2, int(os.getenv("BINANCE_POLL_FAIL_ALERT_THRESHOLD", "5")))
 CRYPTO_ORDER_TIMEOUT_SECONDS = max(60, int(os.getenv("CRYPTO_ORDER_TIMEOUT_SECONDS", "1800")))
 
 # Logging

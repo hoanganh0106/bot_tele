@@ -94,6 +94,28 @@ class BinanceClient:
             raise BinanceAPIError("Binance deposit history response is not a list")
         return payload
 
+    def get_pay_transactions(self, start_time_ms: int) -> list[dict]:
+        """Return Binance Pay transactions received since ``start_time_ms``."""
+        payload = self._signed_request(
+            "GET",
+            "/sapi/v1/pay/transactions",
+            {"startTime": int(start_time_ms), "limit": 100},
+        )
+        if not isinstance(payload, dict):
+            raise BinanceAPIError("Binance Pay transaction response is not an object")
+
+        code = payload.get("code")
+        if code != "000000" or not payload.get("success"):
+            raise BinanceAPIError(
+                f"Binance Pay transaction request failed: code={code}, message={payload.get('message', '')}",
+                code=code,
+            )
+
+        data = payload.get("data", [])
+        if not isinstance(data, list):
+            raise BinanceAPIError("Binance Pay transaction response data is not a list", code=code)
+        return data
+
     def get_deposit_address(self, coin: str = "USDT", network: str = "BEP20") -> dict:
         payload = self._signed_request(
             "GET",
