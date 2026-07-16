@@ -78,36 +78,6 @@ TEXTS = {
 }
 
 
-TEXTS["vi"]["crypto_internal_option"] = (
-    "Hoặc chuyển nội bộ Binance (Pay/UID, miễn phí) tới UID: <code>{pay_uid}</code>.\n"
-    "Vẫn phải gửi <b>CHÍNH XÁC {amount} USDT</b>."
-)
-TEXTS["en"]["crypto_internal_option"] = (
-    "Or transfer internally in Binance (Pay/UID, free) to UID: <code>{pay_uid}</code>.\n"
-    "You must still send <b>EXACTLY {amount} USDT</b>."
-)
-
-
-TEXTS["vi"]["crypto_internal_option"] = (
-    "Hoặc chuyển nội bộ Binance (Pay/UID, miễn phí) tới UID: <code>{pay_uid}</code>.\n"
-    "Vẫn phải gửi <b>CHÍNH XÁC {amount} USDT</b>."
-)
-TEXTS["en"]["crypto_internal_option"] = (
-    "Or transfer internally in Binance (Pay/UID, free) to UID: <code>{pay_uid}</code>.\n"
-    "You must still send <b>EXACTLY {amount} USDT</b>."
-)
-for _language in LANGS:
-    for _key in ("crypto_payment", "crypto_payment_caption"):
-        TEXTS[_language][_key] = TEXTS[_language][_key].replace(
-            "\n\n{warning}", "\n\n{internal}\n\n{warning}"
-)
-for _language in LANGS:
-    for _key in ("crypto_payment", "crypto_payment_caption"):
-        TEXTS[_language][_key] = TEXTS[_language][_key].replace(
-            "\n\n{warning}", "\n\n{internal}\n\n{warning}"
-        )
-
-
 def get_text(lang: str, key: str, **kwargs) -> str:
     """Return text with safe EN -> VI -> key fallback."""
     language = lang if lang in LANGS else DEFAULT_LANG
