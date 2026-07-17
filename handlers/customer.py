@@ -192,6 +192,9 @@ async def handle_product_select(update: Update, context: ContextTypes.DEFAULT_TY
 
     product_key = query.data.replace("prod_", "")
     lang = user_lang(query.from_user.id)
+    if db.is_product_hidden(product_key):
+        await edit_navigation_message(query, t(query.from_user.id, "product_not_for_sale"))
+        return
     
     # Xóa dữ liệu cũ để tránh lẫn giá từ sản phẩm trước
     context.user_data.pop("selected_product", None)
@@ -315,6 +318,9 @@ async def handle_qty_select(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if not product_key:
         await query.edit_message_text(t(query.from_user.id, "session_error"))
+        return
+    if db.is_product_hidden(product_key):
+        await edit_navigation_message(query, t(query.from_user.id, "product_not_for_sale"))
         return
 
     # Lấy thông tin sản phẩm từ cache (instant, không block event loop)

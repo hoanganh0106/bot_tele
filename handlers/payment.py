@@ -44,6 +44,18 @@ async def _notify_all_admins(context, text: str):
     return await notify(context, text)
 
 
+async def _reject_if_hidden(query, order: dict) -> bool:
+    """Cancel a pending order when its product was hidden after UI render."""
+    if not db.is_product_hidden(order.get("product_key", "")):
+        return False
+    order_code = order["order_code"]
+    if db.cancel_order_if_pending(order_code, status="cancelled"):
+        db.release_usdt_amount(order_code)
+        db.refund_order_wallet_if_needed(order_code)
+    await edit_payment_message(query, t(query.from_user.id, "order_canceled_product_hidden"))
+    return True
+
+
 def _crypto_internal_option(user_id: int, amount: str = "{amount}", lang: str | None = None) -> str:
     """Render the optional Binance Pay/UID instruction without an empty block."""
     if not BINANCE_PAY_UID:
@@ -133,6 +145,8 @@ async def handle_pay_bank(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not order:
         await query.edit_message_text(t(query.from_user.id, "order_invalid"))
         return
+    if await _reject_if_hidden(query, order):
+        return
     db.release_usdt_amount(order_code)
     db.update_order_fields(order_code, {"payment_method": "bank"})
     order["payment_method"] = "bank"
@@ -197,6 +211,8 @@ async def handle_pay_crypto(update: Update, context: ContextTypes.DEFAULT_TYPE):
     order = get_owned_pending_order(order_code, user_id)
     if not order:
         await query.edit_message_text(t(user_id, "order_invalid"))
+        return
+    if await _reject_if_hidden(query, order):
         return
 
     crypto_created_at = order.get("crypto_created_at") or datetime.now().isoformat()
@@ -344,6 +360,8 @@ async def handle_paid_button(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if not order:
         await edit_payment_message(query, t(query.from_user.id, "order_invalid"))
         return
+    if await _reject_if_hidden(query, order):
+        return
 
     if order.get("payment_method") == "crypto":
         await edit_payment_message(
@@ -374,6 +392,10 @@ async def handle_pay_wallet(update: Update, context: ContextTypes.DEFAULT_TYPE):
     order = db.claim_order_for_payment(order_code, query.from_user.id, "wallet")
     if not order:
         await query.edit_message_text(t(query.from_user.id, "order_invalid"))
+        return
+    if db.is_product_hidden(order.get("product_key", "")):
+        db.release_order_payment_claim(order_code)
+        await _reject_if_hidden(query, order)
         return
     db.release_usdt_amount(order_code)
 
@@ -407,6 +429,9 @@ async def handle_pay_partial(update: Update, context: ContextTypes.DEFAULT_TYPE)
     order_code = query.data.replace("paypartial_", "")
     
     user_id = query.from_user.id
+    pending_order = get_owned_pending_order(order_code, user_id)
+    if pending_order and await _reject_if_hidden(query, pending_order):
+        return
     payment = db.start_partial_wallet_payment(order_code, user_id)
     if not payment:
         await query.edit_message_text(t(query.from_user.id, "order_invalid"))
@@ -500,6 +525,30 @@ async def process_paid_order(context, order_code: str, payment_source: str = "se
         return False
 
     product_key = order["product_key"]
+    if db.is_product_hidden(product_key):
+        saved = db.complete_order_payment(order_code, {
+            "status": "failed",
+            "error": "Product hidden before fulfillment",
+            "paid_at": datetime.now().isoformat(),
+            "refund_reason": "product_hidden",
+        })
+        if not saved:
+            return False
+        refund_amount = int(order.get("original_total", order.get("total", 0)))
+        new_balance = db.add_balance(order["user_id"], refund_amount, reason="product_hidden_refund")
+        await _notify_all_admins(
+            context,
+            f"⚠️ **ĐƠN SẢN PHẨM ĐÃ ẨN — ĐÃ HOÀN VÍ**\nMã: `{order_code}`\nHoàn: {format_money(refund_amount)}",
+        )
+        try:
+            await context.bot.send_message(
+                order["user_id"],
+                t(order["user_id"], "order_refunded_product_hidden", amount=format_money(refund_amount)),
+            )
+        except Exception:
+            pass
+        logger.warning("Order %s blocked because product %s is hidden; wallet balance=%s", order_code, product_key, new_balance)
+        return False
     qty = order["qty"]
     user_id = order["user_id"]
 
