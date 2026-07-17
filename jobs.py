@@ -19,6 +19,7 @@ from core.config import (
     CRYPTO_ORDER_TIMEOUT_SECONDS,
     DATA_DIR,
     DB_PATH,
+    HYPERVIN_LOW_BALANCE_ALERT,
     ORDER_TIMEOUT_SECONDS,
     USDT_NETWORK,
     WEBHOOK_PORT,
@@ -32,7 +33,7 @@ from core.helpers import (
     order_created_at_ms,
     t,
 )
-from core.products import API_CACHE_TTL, API_STALE_TTL, _api_cache, _do_refresh_products
+from core.products import API_CACHE_TTL, API_STALE_TTL, _api_cache, _do_refresh_products, get_hypervin_balance
 from core.runtime import CRYPTO_ENABLED, binance, db, get_bot_username, set_bot_username
 from handlers.admin import _notify_all_admins
 from handlers.payment import process_paid_order
@@ -95,7 +96,10 @@ async def _periodic_order_cleanup(application):
             logger.error(f"Periodic cleanup error: {e}")
 
 
-async def _periodic_product_refresh():
+_hypervin_low_balance_alerted = False
+
+
+async def _periodic_product_refresh(application):
     """Background refresh sản phẩm mỗi 60 giây.
     Giữ cache luôn tươi — user không bao giờ phải chờ API.
     Dùng asyncio.to_thread() để KHÔNG block event loop.
@@ -112,6 +116,22 @@ async def _periodic_product_refresh():
                     "stale_expiry": time.time() + API_STALE_TTL,
                 }
                 logger.debug(f"🔄 Periodic refresh: {len(products)} products")
+            global _hypervin_low_balance_alerted
+            hypervin_balance = get_hypervin_balance()
+            is_low = (
+                HYPERVIN_LOW_BALANCE_ALERT > 0
+                and hypervin_balance is not None
+                and hypervin_balance < HYPERVIN_LOW_BALANCE_ALERT
+            )
+            if is_low and not _hypervin_low_balance_alerted:
+                _hypervin_low_balance_alerted = True
+                await _notify_all_admins(
+                    application,
+                    "⚠️ **SỐ DƯ HYPERVIN THẤP**\n"
+                    f"Còn: `{hypervin_balance:,}đ` | Ngưỡng: `{HYPERVIN_LOW_BALANCE_ALERT:,}đ`",
+                )
+            elif not is_low:
+                _hypervin_low_balance_alerted = False
         except Exception as e:
             logger.error(f"Periodic product refresh error: {e}")
 
@@ -637,7 +657,7 @@ async def post_init(application):
     asyncio.create_task(_periodic_order_cleanup(application))
 
     # 🔄 Background product refresh — giữ cache luôn tươi
-    asyncio.create_task(_periodic_product_refresh())
+    asyncio.create_task(_periodic_product_refresh(application))
 
     # 💳 Payment processor — poll DB mỗi 5 giây để xử lý thanh toán
     asyncio.create_task(_payment_processor(application))

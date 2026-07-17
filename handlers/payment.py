@@ -34,7 +34,7 @@ from core.helpers import (
     user_lang,
 )
 from core.products import async_refresh_products_cache, get_all_products_merged
-from core.runtime import CRYPTO_ENABLED, api, db
+from core.runtime import CRYPTO_ENABLED, api, db, hypervin
 
 
 async def _notify_all_admins(context, text: str):
@@ -657,8 +657,10 @@ async def process_paid_order(context, order_code: str, payment_source: str = "se
         # KHÔNG force_refresh — dùng cache (background task giữ data tươi mỗi 90s)
         products, _ = get_all_products_merged()
         api_custom_local = False
+        api_source = "CTV"
         if products and product_key in products:
             api_custom_local = products[product_key].get("is_custom_local", False)
+            api_source = products[product_key].get("api_source", "CTV")
 
         # Nếu cache hoàn toàn trống (hiếm — cả 2 API chết), thử refresh 1 lần
         if not products:
@@ -667,6 +669,7 @@ async def process_paid_order(context, order_code: str, payment_source: str = "se
                 products, _ = await async_refresh_products_cache()
                 if products and product_key in products:
                     api_custom_local = products[product_key].get("is_custom_local", False)
+                    api_source = products[product_key].get("api_source", "CTV")
             except Exception:
                 pass
 
@@ -699,13 +702,16 @@ async def process_paid_order(context, order_code: str, payment_source: str = "se
 
         emails = order.get("emails")
         
-        # Gọi API đối tác (CTV) mua hàng
-        logger.info(f"  → Calling CTV API for {product_key} x{qty}")
-        
-        # FIX: Wrap API buy trong asyncio.to_thread() để KHÔNG block event loop
-        result = await asyncio.to_thread(
-            lambda: api.buy(product_key, qty, emails=emails if emails else None)
-        )
+        logger.info("Calling %s API for %s x%s", api_source, product_key, qty)
+        if api_source == "HYPERVIN":
+            if hypervin is None:
+                result = {"success": False, "error": "Nguồn Hypervin đang tắt"}
+            else:
+                result = await asyncio.to_thread(hypervin.create_order, product_key.removeprefix("hv_"), qty)
+        else:
+            result = await asyncio.to_thread(
+                lambda: api.buy(product_key, qty, emails=emails if emails else None)
+            )
 
         logger.info(f"  → API response for {order_code}: success={result.get('success')}")
 
@@ -718,7 +724,7 @@ async def process_paid_order(context, order_code: str, payment_source: str = "se
                 "paid_at": datetime.now().isoformat(),
                 "payment_source": payment_source,
                 "items": items,
-                "api_order_code": result.get("order_code", ""),
+                "api_order_code": result.get("api_order_code") or result.get("order_code", ""),
                 "cost": result.get("total_charged", 0)
             })
             if not saved:

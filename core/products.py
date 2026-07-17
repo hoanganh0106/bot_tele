@@ -6,7 +6,7 @@ from concurrent.futures import ThreadPoolExecutor
 from threading import Lock, Thread
 
 from core.config import logger
-from core.runtime import api, db
+from core.runtime import api, db, hypervin
 
 
 ALL_CATEGORIES = {
@@ -42,7 +42,10 @@ _cache_lock = Lock()  # Thread-safe guard cho _cache_refreshing
 
 _circuit_breaker = {
     "CTV": {"failures": 0, "last_fail": 0, "cooldown": 60},
+    "HYPERVIN": {"failures": 0, "last_fail": 0, "cooldown": 60},
 }
+
+_hv_balance = {"value": None, "ts": 0}
 
 
 CIRCUIT_BREAKER_THRESHOLD = 3  # Sau 3 lần lỗi liên tiếp → tạm ngắt
@@ -81,6 +84,32 @@ def _fetch_api1():
     if _is_circuit_open("CTV"):
         logger.debug("⚡ API 1 (CTV) circuit OPEN — skipping")
         return None, 0
+
+
+def _fetch_api2():
+    """Fetch Hypervin products and cache its partner-wallet balance."""
+    global _hv_balance
+    if hypervin is None:
+        return {}, None
+    if _is_circuit_open("HYPERVIN"):
+        logger.debug("Hypervin circuit open — skipping")
+        return {}, None
+    try:
+        products = hypervin.get_products()
+        balance = hypervin.get_balance()
+        _record_api_result("HYPERVIN", products is not None)
+        if balance is not None:
+            _hv_balance = {"value": balance, "ts": time.time()}
+        return products or {}, balance
+    except Exception as exc:
+        _record_api_result("HYPERVIN", False)
+        logger.error("Hypervin fetch error: %s", exc)
+        return {}, None
+
+
+def get_hypervin_balance() -> int | None:
+    """Return the most recently fetched Hypervin wallet balance."""
+    return _hv_balance["value"]
     try:
         products, balance = api.get_stock()
         _record_api_result("CTV", products is not None)
@@ -102,9 +131,12 @@ def _do_refresh_products() -> tuple[dict, int]:
     Dùng persistent thread pool — không tạo mới mỗi lần.
     """
     f1 = _api_executor.submit(_fetch_api1)
+    f2 = _api_executor.submit(_fetch_api2)
     products1, balance1 = f1.result(timeout=10)
+    products2, _ = f2.result(timeout=10)
 
     products = products1 if products1 else {}
+    products.update(products2 or {})
     balance = balance1 or 0
 
     # Merge custom products từ DB

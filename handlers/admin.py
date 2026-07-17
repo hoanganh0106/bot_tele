@@ -24,6 +24,7 @@ from core.products import (
     get_all_categories_merged,
     get_all_products_merged,
     get_products_cached,
+    get_hypervin_balance,
     invalidate_cache,
 )
 from core.runtime import api, db
@@ -430,9 +431,12 @@ async def handle_admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
             _, balance = await asyncio.to_thread(api.get_stock)
         except Exception:
             balance = 0
+        hypervin_balance = get_hypervin_balance()
+        hypervin_text = format_money(hypervin_balance) if hypervin_balance is not None else "—"
         text = (
             "📊 **THỐNG KÊ**\n━━━━━━━━━━━━━━━━━━\n\n"
             f"💰 Số dư CTV API: **{format_money(balance or 0)}**\n\n"
+            f"💰 Số dư Hypervin: **{hypervin_text}**\n\n"
             f"📦 Tổng đơn: **{stats['total_orders']}**\n"
             f"✅ Thành công: **{stats['paid_orders']}**\n"
             f"❌ Hủy: **{stats['cancelled_orders']}**\n"
