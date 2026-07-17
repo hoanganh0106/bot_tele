@@ -84,6 +84,14 @@ def _fetch_api1():
     if _is_circuit_open("CTV"):
         logger.debug("⚡ API 1 (CTV) circuit OPEN — skipping")
         return None, 0
+    try:
+        products, balance = api.get_stock()
+        _record_api_result("CTV", products is not None)
+        return products, balance
+    except Exception as exc:
+        _record_api_result("CTV", False)
+        logger.error("API 1 fetch error: %s", exc)
+        return None, 0
 
 
 def _fetch_api2():
@@ -110,14 +118,6 @@ def _fetch_api2():
 def get_hypervin_balance() -> int | None:
     """Return the most recently fetched Hypervin wallet balance."""
     return _hv_balance["value"]
-    try:
-        products, balance = api.get_stock()
-        _record_api_result("CTV", products is not None)
-        return products, balance
-    except Exception as e:
-        _record_api_result("CTV", False)
-        logger.error(f"API 1 fetch error: {e}")
-        return None, 0
 
 
 def invalidate_cache():
