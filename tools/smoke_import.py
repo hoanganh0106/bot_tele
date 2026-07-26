@@ -122,14 +122,14 @@ def check_indexes(database, fixture: dict) -> None:
     expected_confirmed_crypto = {
         code
         for code, order in orders.items()
-        if order.get("status") in ("pending", "processing", "failed")
+        if order.get("status") in ("pending", "processing")
         and order.get("payment_method") == "crypto"
         and order.get("crypto_payment_confirmed")
     }
     expected_confirmed_wallet = {
         code
         for code, order in orders.items()
-        if order.get("status") in ("pending", "processing", "failed")
+        if order.get("status") in ("pending", "processing")
         and order.get("payment_method") == "wallet"
         and order.get("wallet_payment_confirmed")
     }
