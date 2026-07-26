@@ -432,12 +432,15 @@ class Database:
             return dict(order)
 
     def get_confirmed_crypto_orders(self) -> dict:
+        # Chỉ cứu đơn dở dang (crash giữa chừng). KHÔNG gồm 'failed' —
+        # đơn failed đã báo khách + admin một lần; restart mà chạy lại sẽ
+        # spam lỗi cho khách mỗi lần bot khởi động.
         with self.lock:
             self._ensure_indexes()
             orders = self._read().get("orders", {})
             codes = set().union(*(
                 self._idx_orders_by_status.get(status, set())
-                for status in ("pending", "processing", "failed")
+                for status in ("pending", "processing")
             ))
             return {
                 code: dict(orders[code])
@@ -509,12 +512,14 @@ class Database:
             return user["balance"]
 
     def get_confirmed_wallet_orders(self) -> dict:
+        # Chỉ cứu đơn dở dang (crash giữa chừng). KHÔNG gồm 'failed' —
+        # xem ghi chú ở get_confirmed_crypto_orders.
         with self.lock:
             self._ensure_indexes()
             orders = self._read().get("orders", {})
             codes = set().union(*(
                 self._idx_orders_by_status.get(status, set())
-                for status in ("pending", "processing", "failed")
+                for status in ("pending", "processing")
             ))
             return {
                 code: dict(orders[code])
