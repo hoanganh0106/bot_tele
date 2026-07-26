@@ -60,6 +60,12 @@ class Database:
         self._idx_orders_by_status = {}
         self._txn_set = set()
         self._txid_set = set()
+        self._flush_event = threading.Event()
+        self._io_lock = threading.Lock()  # serialize ghi file giữa writer thread và flush()
+        self._writer_thread = threading.Thread(
+            target=self._writer_loop, name="db-writer", daemon=True
+        )
+        self._writer_thread.start()
 
     def _ensure_file(self):
         """Tạo file nếu chưa có."""
@@ -108,57 +114,88 @@ class Database:
         self._txid_set = set(data.get("processed_crypto_txids", []))
         self._idx_built_at = self._idx_version
 
-    def _flush_to_disk(self):
-        """Ghi cache hiện tại ra file (atomic write)."""
-        self._pending_write = False
+    def _serialize(self) -> str:
+        """Snapshot cache thành chuỗi JSON compact. Caller giữ lock."""
+        return json.dumps(self._cache, ensure_ascii=False, separators=(",", ":"))
+
+    def _write_payload(self, payload: str):
+        """Ghi chuỗi JSON ra file (atomic write). KHÔNG cần giữ lock."""
         try:
             dir_name = os.path.dirname(self.filepath)
             with tempfile.NamedTemporaryFile(
                 mode="w", suffix=".tmp", dir=dir_name,
                 delete=False, encoding="utf-8"
             ) as tmp:
-                json.dump(self._cache, tmp, ensure_ascii=False, indent=2)
+                tmp.write(payload)
                 tmp_path = tmp.name
             os.replace(tmp_path, self.filepath)
         except Exception as e:
             logger.error(f"Failed to write database: {e}")
             try:
                 with open(self.filepath, "w", encoding="utf-8") as f:
-                    json.dump(self._cache, f, ensure_ascii=False, indent=2)
+                    f.write(payload)
             except Exception as e2:
                 logger.error(f"Fallback write also failed: {e2}")
 
+    def _writer_loop(self):
+        """Thread nền: chờ tín hiệu, snapshot dưới lock, ghi file ngoài lock.
+
+        Event loop của bot không bao giờ phải chờ đĩa — chỉ set event.
+        """
+        while True:
+            self._flush_event.wait()
+            self._flush_event.clear()
+            try:
+                with self.lock:
+                    if not self._pending_write:
+                        continue
+                    self._pending_write = False
+                    payload = self._serialize()
+                with self._io_lock:
+                    self._write_payload(payload)
+            except Exception as e:
+                logger.error(f"DB writer thread error: {e}")
+
     def _write(self, data: dict, immediate: bool = False):
-        """Cập nhật cache + schedule ghi file.
-        
-        immediate=True: ghi ngay (orders, payments — dữ liệu critical)
+        """Cập nhật cache + schedule ghi file (writer thread lo phần đĩa).
+
+        immediate=True: đánh thức writer ngay (orders, payments — dữ liệu critical)
         immediate=False: debounce 2s (settings, prices — dữ liệu ít quan trọng)
         """
         self._cache = data
         self._idx_version += 1
-        
+        self._pending_write = True
+
         if immediate:
             if self._debounce_timer:
                 self._debounce_timer.cancel()
                 self._debounce_timer = None
-            self._flush_to_disk()
+            self._flush_event.set()
             return
-        
-        self._pending_write = True
+
         if self._debounce_timer:
             self._debounce_timer.cancel()
-        self._debounce_timer = threading.Timer(DEBOUNCE_INTERVAL, self._flush_to_disk)
+        self._debounce_timer = threading.Timer(DEBOUNCE_INTERVAL, self._flush_event.set)
         self._debounce_timer.daemon = True
         self._debounce_timer.start()
 
     def flush(self):
-        """Force flush pending writes to disk. Gọi khi shutdown."""
+        """Force flush pending writes to disk (đồng bộ). Gọi khi shutdown.
+
+        Sau khi flush() trả về, dữ liệu chắc chắn đã nằm trên đĩa và
+        writer thread không còn thao tác I/O dở dang nào.
+        """
+        payload = None
         with self.lock:
             if self._debounce_timer:
                 self._debounce_timer.cancel()
                 self._debounce_timer = None
             if self._pending_write:
-                self._flush_to_disk()
+                self._pending_write = False
+                payload = self._serialize()
+        with self._io_lock:  # chờ writer đang ghi dở (nếu có) xong
+            if payload is not None:
+                self._write_payload(payload)
 
 
     # === ORDERS ===

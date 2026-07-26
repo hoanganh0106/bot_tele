@@ -9,6 +9,7 @@ import time
 from urllib.parse import urlencode
 
 import requests
+from requests.adapters import HTTPAdapter
 
 
 logger = logging.getLogger(__name__)
@@ -30,6 +31,10 @@ class BinanceClient:
         self.api_key = api_key.strip()
         self.api_secret = api_secret.strip()
         self.timeout = timeout
+        self.session = requests.Session()
+        adapter = HTTPAdapter(pool_connections=2, pool_maxsize=4)
+        self.session.mount("https://", adapter)
+        self.session.headers.update({"X-MBX-APIKEY": self.api_key})
 
     def _signed_request(self, method: str, path: str, params: dict | None = None):
         if not self.api_key or not self.api_secret:
@@ -46,11 +51,10 @@ class BinanceClient:
         ).hexdigest()
 
         try:
-            response = requests.request(
+            response = self.session.request(
                 method.upper(),
                 f"{self.BASE_URL}{path}",
                 params=signed_params,
-                headers={"X-MBX-APIKEY": self.api_key},
                 timeout=self.timeout,
             )
         except requests.RequestException as exc:

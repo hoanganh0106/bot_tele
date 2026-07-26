@@ -33,7 +33,7 @@ from core.helpers import (
     order_created_at_ms,
     t,
 )
-from core.products import API_CACHE_TTL, API_STALE_TTL, _api_cache, _do_refresh_products, get_hypervin_balance
+from core.products import _do_refresh_products, get_hypervin_balance, set_api_cache
 from core.runtime import CRYPTO_ENABLED, binance, db, get_bot_username, set_bot_username
 from handlers.admin import _notify_all_admins
 from handlers.payment import process_paid_order
@@ -109,12 +109,7 @@ async def _periodic_product_refresh(application):
         try:
             products, balance = await asyncio.to_thread(_do_refresh_products)
             if products:
-                global _api_cache
-                _api_cache = {
-                    "data": (products, balance),
-                    "expiry": time.time() + API_CACHE_TTL,
-                    "stale_expiry": time.time() + API_STALE_TTL,
-                }
+                set_api_cache(products, balance)
                 logger.debug(f"🔄 Periodic refresh: {len(products)} products")
             global _hypervin_low_balance_alerted
             hypervin_balance = get_hypervin_balance()
@@ -623,11 +618,7 @@ async def post_init(application):
     # để /menu đầu tiên không phải chờ
     try:
         products, balance = _do_refresh_products()
-        _api_cache.update({
-            "data": (products, balance),
-            "expiry": time.time() + API_CACHE_TTL,
-            "stale_expiry": time.time() + API_STALE_TTL,
-        })
+        set_api_cache(products, balance)
         # Log kết quả
         api1_count = sum(1 for v in products.values() if v.get("api_source") == "CTV")
         custom_count = sum(1 for v in products.values() if v.get("is_custom_local"))

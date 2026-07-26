@@ -126,6 +126,20 @@ def invalidate_cache():
     _api_cache = {"data": None, "expiry": 0}
 
 
+def set_api_cache(products: dict, balance: int):
+    """Cập nhật cache sản phẩm từ module khác (jobs.py).
+
+    Phải dùng hàm này thay vì import `_api_cache` rồi gán lại —
+    gán lại chỉ rebind tên ở module import, cache thật không đổi.
+    """
+    global _api_cache
+    _api_cache = {
+        "data": (products, balance),
+        "expiry": time.time() + API_CACHE_TTL,
+        "stale_expiry": time.time() + API_STALE_TTL,
+    }
+
+
 def _do_refresh_products() -> tuple[dict, int]:
     """Gọi API 1 (CTV), merge với custom products.
     Dùng persistent thread pool — không tạo mới mỗi lần.

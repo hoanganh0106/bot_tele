@@ -260,6 +260,12 @@ def run() -> None:
         check(indexed_database.is_txid_processed("index-txid"), "txid set stayed stale")
         print("PASS indexes match raw scans for 200 orders and invalidate after writes")
 
+        # Drain async DB writers trước khi TemporaryDirectory bị xóa —
+        # nếu không, writer thread có thể tạo file đúng lúc rmtree đang chạy.
+        database.flush()
+        indexed_database.flush()
+        runtime_db.flush()
+
 
 if __name__ == "__main__":
     try:

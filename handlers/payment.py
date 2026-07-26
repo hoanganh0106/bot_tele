@@ -502,19 +502,37 @@ async def handle_cancel_order(update: Update, context: ContextTypes.DEFAULT_TYPE
             parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup(buttons)
         )
-        db.release_usdt_amount(order_code)
     else:
         await edit_payment_message(query, t(query.from_user.id, "order_already_processed"))
+
+
+# Khóa fulfillment theo mã đơn — mọi caller (payment processor, Binance poller,
+# retry job, wallet handler) đều chạy chung event loop nên asyncio.Lock đủ.
+# Không có khóa này, 2 luồng cùng qua bước check status rồi cùng gọi api.buy
+# → mua 2 lần từ nhà cung cấp (chỉ phát hiện sau khi đã mất tiền).
+_fulfill_locks: dict[str, asyncio.Lock] = {}
 
 
 async def process_paid_order(context, order_code: str, payment_source: str = "sepay"):
     """Xử lý đơn hàng đã thanh toán.
     Dùng atomic complete_order_payment để tránh race condition.
-    
+
     CRITICAL: Toàn bộ body được wrap trong try/except để đảm bảo
     MỌI lỗi đều set order = 'failed' + thông báo admin.
     Trước đây chỉ có phần API call được bảo vệ → orders bị treo vĩnh viễn.
     """
+    lock = _fulfill_locks.setdefault(order_code, asyncio.Lock())
+    if lock.locked():
+        logger.warning(f"Order {order_code} is already being fulfilled — skipping duplicate call")
+        return False
+    async with lock:
+        try:
+            return await _process_paid_order_locked(context, order_code, payment_source)
+        finally:
+            _fulfill_locks.pop(order_code, None)
+
+
+async def _process_paid_order_locked(context, order_code: str, payment_source: str = "sepay"):
     order = db.get_order(order_code)
     if not order:
         logger.warning(f"Order {order_code} not found")
