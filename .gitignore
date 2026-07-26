@@ -7,3 +7,5 @@ data/
 venv/
 .venv/
 *.patch
+bottele2.pem
+*.pem
