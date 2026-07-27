@@ -97,9 +97,16 @@ class HypervinApi:
             if data.get("success") is not True:
                 return {"success": False, "error": str(data.get("error") or "Đặt đơn Hypervin thất bại")}
 
-            items = data.get("items") or data.get("accounts") or data.get("data")
-            order_code = data.get("order_id") or data.get("order_code") or data.get("code")
-            total_charged = data.get("total_charged") or data.get("total") or data.get("amount")
+            nested_order = data.get("order")
+            order_data = nested_order if isinstance(nested_order, dict) else data
+            items = order_data.get("items") or order_data.get("accounts") or order_data.get("data")
+            order_code = order_data.get("order_id") or order_data.get("order_code") or order_data.get("code")
+            total_charged = (
+                order_data.get("total_charged")
+                or order_data.get("total_price")
+                or order_data.get("total")
+                or order_data.get("amount")
+            )
             if not isinstance(items, list) or order_code is None or total_charged is None:
                 logger.error("Hypervin returned an unrecognized successful order response")
                 return {"success": False, "error": "Hypervin trả về đơn hàng không đủ dữ liệu"}

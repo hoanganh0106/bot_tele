@@ -79,6 +79,31 @@ def test_create_order_normalizes_successful_response(monkeypatch):
     assert captured["timeout"] == 30
 
 
+def test_create_order_normalizes_nested_order_response(monkeypatch):
+    client = HypervinApi("https://hypervin.xyz", "sk_test")
+    monkeypatch.setattr(
+        client.session,
+        "post",
+        lambda *_args, **_kwargs: FakeResponse(
+            {
+                "success": True,
+                "order": {
+                    "order_id": "HV-NESTED-123",
+                    "total_price": 26000,
+                    "items": ["https://example.test/recovered-item"],
+                },
+            }
+        ),
+    )
+
+    assert client.create_order("gemini_pro_link_18_thang_5tb", 1) == {
+        "success": True,
+        "items": ["https://example.test/recovered-item"],
+        "total_charged": 26000,
+        "api_order_code": "HV-NESTED-123",
+    }
+
+
 def test_create_order_returns_safe_error_for_api_failure(monkeypatch):
     client = HypervinApi("https://hypervin.xyz", "sk_test")
     monkeypatch.setattr(
