@@ -94,6 +94,51 @@ should remove their optional key so the built-in default is used.
 
 ---
 
+## Money Mutations Must Be Flagged, Not Assumed Once
+
+`_process_paid_order_locked` accepts `status == "failed"`, so every branch it
+contains is re-entrant: an admin can press "✅ Xác nhận thanh toán" again, a late
+transfer can match a failed order (`find_order_by_content` ranks `failed` first),
+the retry job and after-restart recovery both call it again. Any branch that
+moves money must therefore carry its own one-time flag, set inside the same
+`self.lock` and the same `_write()` as the money change:
+
+```python
+def credit_order_refund_once(self, order_code, amount, reason="order_refund"):
+    with self.lock:
+        ...
+        if order.get("refund_credited"):
+            return 0, int(user.get("balance", 0))
+        user["balance"] = int(user.get("balance", 0)) + amount
+        order["refund_credited"] = True
+```
+
+Existing flags: `stats_counted` (revenue counted), `spent_reverted` (revenue
+reversed), `wallet_refunded` (partial wallet returned), `refund_credited`
+(refund paid into the wallet). Never call bare `add_balance()` from a re-entrant
+fulfillment branch — it has no flag and credits again on every replay. When a
+flagged refund covers the whole order, also set `wallet_refunded` so the
+cancel/timeout path cannot return the wallet part a second time.
+
+---
+
+## Never Delete an Order That Still Owes the Customer Money
+
+`failed` means the customer paid and received nothing. For wallet-funded orders
+the money sits in the bot's own ledger and the order record is the only proof of
+the debt, so `purge_junk_orders()` and `tools/purge_junk.py` both skip orders
+where `core.order_values.holds_unrefunded_wallet_money()` is true — at any age —
+and the startup job alerts admins with the outstanding total instead. Bank and
+crypto orders carry no in-ledger debt, so they follow the normal 24h grace.
+
+Deletion is only allowed after its trace is durable: write `purged_orders.log`
+(including `paid_at`, `payment_method`, `payment_source`, `wallet_paid`,
+`wallet_refunded`, `refund_credited`) **before** removing the orders, and abort
+the whole purge if the log cannot be written. A silent delete of a paid order is
+unrecoverable — `backups/` rotates.
+
+---
+
 ## Verification
 
 After changing `database.py`:

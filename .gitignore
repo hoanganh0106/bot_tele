@@ -9,3 +9,6 @@ venv/
 *.patch
 bottele2.pem
 *.pem
+# Bản sao DB production + dry-run migration (chứa dữ liệu khách) — chỉ để local
+backup_pre_fix_*/
+migration_dryrun_*/

@@ -1,0 +1,4 @@
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "Tieu chuan kiem tra chung truoc khi bao xong"}
+{"file": ".trellis/spec/backend/database-guidelines.md", "reason": "Verify moi cap nhat counter nam trong cung lock + cung _write voi thay doi order"}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "total_spent hien o 3 tang (vi khach, khach gan day, tra cuu admin) phai cung mot nguon"}
+{"file": ".trellis/spec/guides/code-reuse-thinking-guide.md", "reason": "Kiem tra khong con cho nao tu tinh lai doanh thu ngoai order_revenue()"}
