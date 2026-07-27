@@ -8,6 +8,7 @@ Tối ưu:
 - Atomic write — ghi file .tmp rồi rename để tránh corruption
 """
 
+import copy
 import json
 import os
 import threading
@@ -15,7 +16,22 @@ import tempfile
 import logging
 from datetime import datetime
 
+from core.order_values import (
+    JUNK_STATUSES,
+    REVENUE_STATUSES,
+    holds_unrefunded_wallet_money,
+    order_cost,
+    order_revenue,
+)
+
 logger = logging.getLogger(__name__)
+
+_DEFAULT_STATS = {
+    "lifetime_revenue": 0,
+    "lifetime_cost": 0,
+    "lifetime_paid_orders": 0,
+    "lifetime_refunded": 0,
+}
 
 _DEFAULT_DATA = {
     "orders": {},
@@ -40,7 +56,8 @@ _DEFAULT_DATA = {
     "incoming_payments": [],
     "users": {},
     "deposits": {},
-    "user_list": []
+    "user_list": [],
+    "stats": _DEFAULT_STATS,
 }
 
 DEBOUNCE_INTERVAL = 2.0  # Giây — gom writes trong khoảng này
@@ -82,11 +99,14 @@ class Database:
             # Đảm bảo tất cả key mặc định đều tồn tại
             for key, default_val in _DEFAULT_DATA.items():
                 if key not in data:
-                    data[key] = type(default_val)() if isinstance(default_val, (dict, list)) else default_val
+                    data[key] = copy.deepcopy(default_val)
+            stats = data.setdefault("stats", {})
+            for key, value in _DEFAULT_STATS.items():
+                stats.setdefault(key, value)
             return data
         except (json.JSONDecodeError, FileNotFoundError):
             logger.warning("Database file corrupted or missing, using defaults")
-            return dict(_DEFAULT_DATA)
+            return copy.deepcopy(_DEFAULT_DATA)
 
     def _read(self) -> dict:
         """Trả về cache (không đọc file)."""
@@ -419,7 +439,6 @@ class Database:
                     return dict(order)
                 if amount > 0:
                     user["balance"] = current - amount
-                    user["total_spent"] = int(user.get("total_spent", 0)) + amount
                 order["wallet_refunded"] = False
 
             order.update({
@@ -463,9 +482,126 @@ class Database:
             if not order or order.get("status") not in ("pending", "processing", "failed", "cancelled_timeout"):
                 return None
             # Apply tất cả updates (status, paid_at, items, etc.) trong 1 lock
+            previous_counted_revenue = int(
+                order.get("stats_counted_revenue", order_revenue(order))
+            )
+            previous_counted_cost = int(
+                order.get("stats_counted_cost", order_cost(order))
+            )
             order.update(updates)
+            if order.get("status") in REVENUE_STATUSES:
+                stats = data.setdefault("stats", copy.deepcopy(_DEFAULT_STATS))
+                for key, value in _DEFAULT_STATS.items():
+                    stats.setdefault(key, value)
+                revenue = order_revenue(order)
+                cost = order_cost(order)
+                if not order.get("stats_counted"):
+                    stats["lifetime_revenue"] += revenue
+                    stats["lifetime_cost"] += cost
+                    stats["lifetime_paid_orders"] += 1
+                    users = data.setdefault("users", {})
+                    user = users.setdefault(
+                        str(order.get("user_id")), {"balance": 0}
+                    )
+                    user["total_spent"] = (
+                        int(user.get("total_spent", 0)) + revenue
+                    )
+                    order["stats_counted"] = True
+                elif not order.get("spent_reverted"):
+                    revenue_delta = revenue - previous_counted_revenue
+                    cost_delta = cost - previous_counted_cost
+                    stats["lifetime_revenue"] += revenue_delta
+                    stats["lifetime_cost"] += cost_delta
+                    if revenue_delta:
+                        users = data.setdefault("users", {})
+                        user = users.setdefault(
+                            str(order.get("user_id")), {"balance": 0}
+                        )
+                        user["total_spent"] = max(
+                            0,
+                            int(user.get("total_spent", 0)) + revenue_delta,
+                        )
+                order["stats_counted_revenue"] = revenue
+                order["stats_counted_cost"] = cost
             self._write(data, immediate=True)
-            return dict(order)  # Trả bản sao an toàn
+            return dict(order)
+
+    def revert_order_spend(self, order_code: str) -> bool:
+        """Reverse one completed order from lifetime totals exactly once."""
+        with self.lock:
+            data = self._read()
+            order = data.get("orders", {}).get(order_code)
+            if (
+                not order
+                or not order.get("stats_counted")
+                or order.get("spent_reverted")
+            ):
+                return False
+
+            stats = data.setdefault("stats", copy.deepcopy(_DEFAULT_STATS))
+            for key, value in _DEFAULT_STATS.items():
+                stats.setdefault(key, value)
+            revenue = int(order.get("stats_counted_revenue", order_revenue(order)))
+            cost = int(order.get("stats_counted_cost", order_cost(order)))
+            stats["lifetime_revenue"] = max(
+                0, int(stats["lifetime_revenue"]) - revenue
+            )
+            stats["lifetime_cost"] = max(0, int(stats["lifetime_cost"]) - cost)
+            stats["lifetime_paid_orders"] = max(
+                0, int(stats["lifetime_paid_orders"]) - 1
+            )
+            stats["lifetime_refunded"] = (
+                int(stats["lifetime_refunded"]) + revenue
+            )
+            users = data.setdefault("users", {})
+            user = users.setdefault(str(order.get("user_id")), {"balance": 0})
+            user["total_spent"] = max(
+                0, int(user.get("total_spent", 0)) - revenue
+            )
+            order["spent_reverted"] = True
+            self._write(data, immediate=True)
+            return True
+
+    def credit_order_refund_once(
+        self,
+        order_code: str,
+        amount: int,
+        reason: str = "order_refund",
+    ) -> tuple[int, int]:
+        """Hoàn tiền một đơn vào ví khách **đúng một lần**.
+
+        CRITICAL: `_process_paid_order_locked` nhận cả `status == "failed"`, nên
+        nhánh hoàn tiền có thể chạy lại nhiều lần cho cùng một đơn (admin bấm
+        "✅ Xác nhận thanh toán" lần 2, tiền vào muộn khớp đơn failed, recover
+        sau restart, retry job). `add_balance()` không có cờ chống lặp → mỗi lần
+        chạy lại là một lần cộng ví nữa.
+
+        Returns: (số tiền vừa cộng, số dư mới). Cộng 0 nghĩa là đã hoàn trước đó.
+        """
+        with self.lock:
+            data = self._read()
+            order = data.get("orders", {}).get(order_code)
+            if not order:
+                return 0, 0
+            users = data.setdefault("users", {})
+            user = users.setdefault(str(order.get("user_id")), {"balance": 0})
+            if order.get("refund_credited"):
+                return 0, int(user.get("balance", 0))
+
+            amount = int(amount or 0)
+            if amount <= 0:
+                return 0, int(user.get("balance", 0))
+
+            user["balance"] = int(user.get("balance", 0)) + amount
+            order["refund_credited"] = True
+            order["refund_credited_amount"] = amount
+            order["refund_credited_reason"] = reason
+            if int(order.get("wallet_paid", 0) or 0) > 0:
+                # Phần ví đã nằm trong khoản hoàn đầy đủ này → chặn
+                # refund_order_wallet_if_needed cộng thêm lần nữa.
+                order["wallet_refunded"] = True
+            self._write(data, immediate=True)
+            return amount, int(user["balance"])
 
     def claim_order_for_payment(self, order_code: str, user_id: int, payment_method: str) -> dict | None:
         """Atomically reserve a pending order for a user-triggered payment flow."""
@@ -505,7 +641,6 @@ class Database:
             ):
                 return None
             user["balance"] = current - amount
-            user["total_spent"] = int(user.get("total_spent", 0)) + amount
             order["wallet_payment_confirmed"] = True
             order["payment_source"] = "wallet"
             self._write(data, immediate=True)
@@ -552,7 +687,6 @@ class Database:
             wallet_amount = min(current, total)
             remaining = total - wallet_amount
             user["balance"] = current - wallet_amount
-            user["total_spent"] = int(user.get("total_spent", 0)) + wallet_amount
 
             if remaining == 0:
                 order.update({
@@ -606,7 +740,6 @@ class Database:
             if amount <= 0 or order.get("wallet_refunded"):
                 return 0, int(user.get("balance", 0))
             user["balance"] = int(user.get("balance", 0)) + amount
-            user["total_spent"] = max(0, int(user.get("total_spent", 0)) - amount)
             order["wallet_refunded"] = True
             self._write(data, immediate=True)
             return amount, user["balance"]
@@ -628,7 +761,6 @@ class Database:
                 return False
             else:
                 user["balance"] = current - amount
-                user["total_spent"] = int(user.get("total_spent", 0)) + amount
                 order["wallet_refunded"] = False
             self._write(data, immediate=True)
             return True
@@ -1260,112 +1392,170 @@ class Database:
                 data["incoming_payments"] = payments[-500:]
             self._write(data, immediate=True)
 
-    def cleanup_old_orders(self, days: int = 7) -> int:
-        """Archive đơn hàng đã hoàn tất/hủy quá N ngày.
-        Giữ DB nhẹ → find_order_by_content nhanh hơn.
-        Returns: số đơn đã archive.
+    def purge_junk_orders(
+        self,
+        junk_grace_hours: int = 1,
+        failed_grace_hours: int = 24,
+        log_path: str | None = None,
+    ) -> dict:
+        """Delete stale junk orders while preserving every revenue order.
+
+        Đơn `failed` còn giữ tiền ví khách chưa hoàn thì **không xoá** — xem
+        `holds_unrefunded_wallet_money`. `log_path` được ghi TRƯỚC khi xoá; nếu
+        không ghi được log thì huỷ luôn việc xoá để không mất dấu.
         """
-        import json as _json
-        cutoff = datetime.now()
-        archived = 0
-        
+        now = datetime.now()
+        purged = {}
+        retained = {}
+
         with self.lock:
             data = self._read()
             orders = data.get("orders", {})
-            to_archive = {}
-            
             for code, order in list(orders.items()):
-                # Chỉ archive đơn đã xong (paid, cancelled, cancelled_timeout, failed đã cũ)
-                if order.get("status") not in ("paid", "cancelled", "cancelled_timeout"):
+                status = order.get("status")
+                if status in JUNK_STATUSES:
+                    grace_hours = junk_grace_hours
+                elif status == "failed":
+                    if holds_unrefunded_wallet_money(order):
+                        retained[code] = dict(order)
+                        continue
+                    grace_hours = failed_grace_hours
+                else:
                     continue
-                created_str = order.get("created_at", "")
-                if not created_str:
+
+                timestamp = order.get("paid_at") or order.get("created_at")
+                if not timestamp:
                     continue
                 try:
-                    created = datetime.fromisoformat(created_str)
-                    if (cutoff - created).days >= days:
-                        to_archive[code] = order
-                except (ValueError, TypeError):
+                    age_hours = (
+                        now - datetime.fromisoformat(timestamp)
+                    ).total_seconds() / 3600
+                except (TypeError, ValueError):
                     continue
-            
-            if not to_archive:
-                return 0
-            
-            # Lưu archive ra file riêng
-            archive_path = self.filepath.replace(".json", "_archive.json")
-            existing_archive = {}
-            if os.path.exists(archive_path):
+                if age_hours < grace_hours:
+                    continue
+                purged[code] = dict(order)
+
+            if purged and log_path:
                 try:
-                    with open(archive_path, "r", encoding="utf-8") as f:
-                        existing_archive = _json.load(f)
-                    if not isinstance(existing_archive, dict):
-                        raise ValueError("archive root must be an object")
-                except Exception as exc:
-                    raise ValueError(
-                        f"Cannot read order archive {archive_path}; aborting cleanup"
-                    ) from exc
-            
-            existing_archive.update(to_archive)
-            tmp_path = None
-            try:
-                archive_dir = os.path.dirname(archive_path) or "."
-                with tempfile.NamedTemporaryFile(
-                    mode="w",
-                    suffix=".tmp",
-                    dir=archive_dir,
-                    delete=False,
-                    encoding="utf-8",
-                ) as tmp:
-                    _json.dump(existing_archive, tmp, ensure_ascii=False, indent=2)
-                    tmp_path = tmp.name
-                os.replace(tmp_path, archive_path)
-            except Exception as e:
-                if tmp_path and os.path.exists(tmp_path):
-                    try:
-                        os.remove(tmp_path)
-                    except OSError:
-                        pass
-                logger.error(f"Failed to write archive: {e}")
-                return 0
-            
-            # Xóa khỏi DB chính
-            for code in to_archive:
+                    self._append_purge_log(log_path, purged)
+                except OSError as exc:
+                    logger.error(
+                        "Cannot write purge log %s; keeping %s junk orders: %s",
+                        log_path,
+                        len(purged),
+                        exc,
+                    )
+                    return {}
+
+            for code in purged:
                 del orders[code]
-            
-            archived = len(to_archive)
-            self._write(data, immediate=True)
-        
-        if archived:
-            logger.info(f"🗑️ Archived {archived} old orders (>{days} days)")
-        return archived
+            if purged:
+                self._write(data, immediate=True)
+
+        if retained:
+            logger.warning(
+                "⚠️ Giữ lại %s đơn failed còn nợ tiền ví khách (%sđ): %s",
+                len(retained),
+                sum(order_revenue(o) for o in retained.values()),
+                ", ".join(sorted(retained)),
+            )
+        return purged
+
+    @staticmethod
+    def _append_purge_log(log_path: str, purged: dict) -> None:
+        """Ghi dấu vết đơn sắp bị xoá (mã đơn, tiền, dấu vết thanh toán)."""
+        with open(log_path, "a", encoding="utf-8") as handle:
+            for code, order in sorted(purged.items()):
+                record = {
+                    "order_code": code,
+                    "user_id": order.get("user_id"),
+                    "revenue": order_revenue(order),
+                    "status": order.get("status"),
+                    "error": order.get("error"),
+                    "created_at": order.get("created_at"),
+                    "paid_at": order.get("paid_at"),
+                    "payment_method": order.get("payment_method"),
+                    "payment_source": order.get("payment_source"),
+                    "wallet_paid": order.get("wallet_paid"),
+                    "wallet_refunded": order.get("wallet_refunded"),
+                    "refund_credited": order.get("refund_credited"),
+                }
+                handle.write(
+                    json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n"
+                )
+
+    def get_unrefunded_failed_orders(self) -> dict:
+        """Đơn `failed` còn giữ tiền ví của khách — admin cần hoàn tay."""
+        with self.lock:
+            orders = self._read().get("orders", {})
+            return {
+                code: dict(order)
+                for code, order in orders.items()
+                if order.get("status") == "failed"
+                and holds_unrefunded_wallet_money(order)
+            }
 
 
     # === STATS ===
     def get_stats(self) -> dict:
         with self.lock:
-            orders = self._read().get("orders", {})
-
-            paid_orders = [o for o in orders.values() if o.get("status") == "paid"]
+            data = self._read()
+            orders = data.get("orders", {})
+            stats = data.setdefault("stats", copy.deepcopy(_DEFAULT_STATS))
+            for key, value in _DEFAULT_STATS.items():
+                stats.setdefault(key, value)
 
             total = len(orders)
-            paid = len(paid_orders)
+            paid = sum(1 for o in orders.values() if o.get("status") == "paid")
+            waiting_email = sum(
+                1 for o in orders.values()
+                if o.get("status") == "paid_waiting_email"
+            )
             cancelled = sum(1 for o in orders.values() if o.get("status") in ("cancelled", "cancelled_timeout"))
-            pending = sum(1 for o in orders.values() if o.get("status") == "pending")
+            pending = sum(
+                1 for o in orders.values()
+                if o.get("status") in ("pending", "processing")
+            )
             failed = sum(1 for o in orders.values() if o.get("status") == "failed")
 
-            revenue = sum(o.get("total", 0) for o in paid_orders)
-            cost = sum(o.get("cost", 0) for o in paid_orders)
+            revenue = int(stats["lifetime_revenue"])
+            cost = int(stats["lifetime_cost"])
 
             return {
                 "total_orders": total,
                 "paid_orders": paid,
+                "waiting_email_orders": waiting_email,
                 "cancelled_orders": cancelled,
                 "pending_orders": pending,
                 "failed_orders": failed,
                 "total_revenue": revenue,
                 "total_cost": cost,
-                "total_profit": revenue - cost
+                "total_profit": revenue - cost,
+                "lifetime_refunded": int(stats["lifetime_refunded"]),
             }
+
+    def warn_if_lifetime_stats_mismatch(self) -> bool:
+        """Log when detailed successful orders disagree with lifetime counters."""
+        with self.lock:
+            data = self._read()
+            detailed_revenue = sum(
+                order_revenue(order)
+                for order in data.get("orders", {}).values()
+                if order.get("status") in REVENUE_STATUSES
+                and not order.get("spent_reverted")
+            )
+            counter_revenue = int(
+                data.get("stats", {}).get("lifetime_revenue", 0)
+            )
+        if detailed_revenue != counter_revenue:
+            logger.warning(
+                "Lifetime revenue mismatch: orders=%s counter=%s",
+                detailed_revenue,
+                counter_revenue,
+            )
+            return False
+        return True
 
     # === USERS ===
     def _migrate_users(self, data: dict):
@@ -1515,8 +1705,6 @@ class Database:
             users[uid]["balance"] = users[uid].get("balance", 0) + amount
             if reason == "deposit":
                 users[uid]["total_deposited"] = users[uid].get("total_deposited", 0) + amount
-            elif reason == "refund":
-                users[uid]["total_spent"] = max(0, users[uid].get("total_spent", 0) - amount)
             new_balance = users[uid]["balance"]
             self._write(data, immediate=True)
             return new_balance
@@ -1531,7 +1719,6 @@ class Database:
             if current < amount:
                 return False
             users[uid]["balance"] = current - amount
-            users[uid]["total_spent"] = users[uid].get("total_spent", 0) + amount
             self._write(data, immediate=True)
             return True
 

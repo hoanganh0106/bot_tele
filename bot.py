@@ -104,7 +104,10 @@ def main():
     app.add_handler(CallbackQueryHandler(handle_admin_confirm_pay, pattern="^adminpay_"))
     app.add_handler(CallbackQueryHandler(handle_admin_cancel, pattern="^admincx_"))
     app.add_handler(CallbackQueryHandler(handle_admin_cb, pattern="^(admin_|broadcast_)"))
-    app.add_handler(CallbackQueryHandler(handle_category_click, pattern="^viewcat_|^(?:open|reload)_menu$|^btn_myorders$"))
+    app.add_handler(CallbackQueryHandler(
+        handle_category_click,
+        pattern="^viewcat_|^(?:open|reload)_menu$|^btn_myorders$|^orders_page_",
+    ))
 
     # Text input handler
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_input))

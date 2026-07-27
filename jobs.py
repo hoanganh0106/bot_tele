@@ -30,6 +30,7 @@ from core.helpers import (
     crypto_poll_start_ms,
     escape_md,
     format_money,
+    order_revenue,
     order_created_at_ms,
     t,
 )
@@ -639,10 +640,36 @@ async def post_init(application):
     # Dọn dẹp đơn pending cũ từ lần chạy trước
     await _cleanup_stale_orders(application)
 
-    # Archive đơn cũ > 7 ngày → giữ DB nhẹ
-    archived = db.cleanup_old_orders(days=7)
-    if archived:
-        logger.info(f"🗑️ Archived {archived} old orders at startup")
+    # Log ghi trước khi xoá (trong purge_junk_orders) để không mất dấu đơn rác
+    purged = db.purge_junk_orders(
+        log_path=os.path.join(DATA_DIR, "purged_orders.log")
+    )
+    if purged:
+        logger.info("🗑️ Purged %s stale junk orders", len(purged))
+
+    # Đơn failed còn giữ tiền ví khách: KHÔNG bị xoá, nhắc admin hoàn tay
+    outstanding = db.get_unrefunded_failed_orders()
+    if outstanding:
+        lines = "\n".join(
+            f"• `{code}` — {format_money(order_revenue(order))} "
+            f"(user {order.get('user_id')})"
+            for code, order in sorted(outstanding.items())[:10]
+        )
+        more = "" if len(outstanding) <= 10 else f"\n_...và {len(outstanding) - 10} đơn nữa_"
+        total_owed = sum(order_revenue(order) for order in outstanding.values())
+        logger.warning(
+            "⚠️ %s đơn failed còn nợ ví khách, tổng %sđ", len(outstanding), total_owed
+        )
+        await _notify_all_admins(
+            application,
+            f"⚠️ **ĐƠN LỖI CHƯA HOÀN TIỀN VÍ**\n"
+            f"━━━━━━━━━━━━━━━━━━\n"
+            f"Số đơn: **{len(outstanding)}** | Tổng: **{format_money(total_owed)}**\n"
+            f"{lines}{more}\n\n"
+            f"_Các đơn này được giữ lại (không bị dọn) tới khi hoàn tiền._",
+        )
+
+    db.warn_if_lifetime_stats_mismatch()
 
     # Job định kỳ hủy đơn quá hạn
     asyncio.create_task(_periodic_order_cleanup(application))

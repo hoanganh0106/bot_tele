@@ -17,6 +17,12 @@ from core.config import (
     USDT_VND_RATE_DEFAULT,
 )
 from core.runtime import _lang_cache, db
+from core.order_values import (
+    JUNK_STATUSES,
+    REVENUE_STATUSES,
+    order_cost,
+    order_revenue,
+)
 
 
 UI_BUTTONS = {
@@ -69,7 +75,7 @@ def estimate_order_usdt(order: dict) -> Decimal:
         return (Decimal(str(custom_price)) * int(order.get("qty", 1))).quantize(
             Decimal("0.001"), rounding=ROUND_HALF_UP
         )
-    total_vnd = Decimal(str(order.get("original_total", order.get("total", 0))))
+    total_vnd = Decimal(str(order_revenue(order)))
     return (total_vnd / Decimal(get_usdt_vnd_rate())).quantize(
         Decimal("0.01"), rounding=ROUND_HALF_UP
     )

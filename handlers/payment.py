@@ -29,6 +29,7 @@ from core.helpers import (
     format_usdt_exact,
     format_user_link,
     generate_qr_url,
+    order_revenue,
     product_display_desc,
     t,
     user_lang,
@@ -552,8 +553,20 @@ async def _process_paid_order_locked(context, order_code: str, payment_source: s
         })
         if not saved:
             return False
-        refund_amount = int(order.get("original_total", order.get("total", 0)))
-        new_balance = db.add_balance(order["user_id"], refund_amount, reason="product_hidden_refund")
+        refund_amount = order_revenue(order)
+        # CRITICAL: hàm này chạy lại được cho đơn failed (admin xác nhận lần 2,
+        # tiền vào muộn, recover sau restart) → phải cộng ví đúng 1 lần.
+        refund_amount, new_balance = db.credit_order_refund_once(
+            order_code, refund_amount, reason="product_hidden_refund"
+        )
+        db.revert_order_spend(order_code)
+        if refund_amount <= 0:
+            logger.warning(
+                "Order %s (product %s hidden) đã được hoàn trước đó — bỏ qua hoàn lần nữa",
+                order_code,
+                product_key,
+            )
+            return False
         await _notify_all_admins(
             context,
             f"⚠️ **ĐƠN SẢN PHẨM ĐÃ ẨN — ĐÃ HOÀN VÍ**\nMã: `{order_code}`\nHoàn: {format_money(refund_amount)}",
@@ -589,7 +602,8 @@ async def _process_paid_order_locked(context, order_code: str, payment_source: s
                 "status": "paid_waiting_email",
                 "paid_at": datetime.now().isoformat(),
                 "payment_source": payment_source,
-                "is_custom_local": is_custom_local
+                "is_custom_local": is_custom_local,
+                **({"cost": 0} if is_custom_local else {}),
             })
             if not result:
                 logger.info(f"Order {order_code} was taken by another thread")
@@ -617,7 +631,8 @@ async def _process_paid_order_locked(context, order_code: str, payment_source: s
                     result = db.complete_order_payment(order_code, {
                         "status": "paid",
                         "paid_at": datetime.now().isoformat(),
-                        "payment_source": payment_source
+                        "payment_source": payment_source,
+                        "cost": 0,
                     })
                     if not result:
                         return False
@@ -645,7 +660,8 @@ async def _process_paid_order_locked(context, order_code: str, payment_source: s
                     "status": "paid",
                     "items": accounts,
                     "paid_at": datetime.now().isoformat(),
-                    "payment_source": payment_source
+                    "payment_source": payment_source,
+                    "cost": 0,
                 })
                 if not result:
                     return False
@@ -681,7 +697,8 @@ async def _process_paid_order_locked(context, order_code: str, payment_source: s
                 result = db.complete_order_payment(order_code, {
                     "status": "paid",
                     "paid_at": datetime.now().isoformat(),
-                    "payment_source": payment_source
+                    "payment_source": payment_source,
+                    "cost": 0,
                 })
                 if not result:
                     return False
@@ -815,14 +832,14 @@ async def _process_paid_order_locked(context, order_code: str, payment_source: s
                 logger.error(f"Failed to send items to user: {e}")
 
             # Thông báo admin
-            profit = order["total"] - result.get("total_charged", 0)
+            profit = order_revenue(order) - result.get("total_charged", 0)
             admin_text = (
                 f"🔔 **ĐƠN HÀNG MỚI THÀNH CÔNG**\n"
                 f"━━━━━━━━━━━━━━━━━━\n"
                 f"📋 Mã: `{order_code}`\n"
                 f"👤 Khách: {format_user_link(order.get('username'), user_id)}\n"
                 f"📦 {order.get('product_name', '?')} x{qty}\n"
-                f"💰 Thu: {format_money(order['total'])} | Gốc: {format_money(result.get('total_charged', 0))}\n"
+                f"💰 Thu: {format_money(order_revenue(order))} | Gốc: {format_money(result.get('total_charged', 0))}\n"
                 f"📈 Lãi: **{format_money(profit)}**\n"
                 f"💳 Nguồn: {payment_source}"
             )

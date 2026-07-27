@@ -664,8 +664,8 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         recent = sorted(user_orders.items(), key=lambda x: x[1].get("created_at", ""), reverse=True)[:10]
-        total_spent = sum(o.get("total", 0) for o in user_orders.values() if o.get("status") == "paid")
         user_info = db.get_user(target_id)
+        total_spent = int(user_info.get("total_spent", 0))
         user_balance = db.get_user_balance(target_id)
         display_username = target_username or user_info.get("username") or "Không có"
         display_name = user_info.get("first_name") or "Không rõ"

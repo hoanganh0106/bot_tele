@@ -1,33 +1,7 @@
 import os
-from datetime import datetime, timedelta
+from datetime import datetime
 
-import pytest
-
-from database import Database
 import jobs
-
-
-def test_cleanup_old_orders_aborts_when_archive_is_corrupt(tmp_path):
-    data_path = tmp_path / "bot_data.json"
-    archive_path = tmp_path / "bot_data_archive.json"
-    archive_path.write_text("{not-json", encoding="utf-8")
-
-    db = Database(str(data_path))
-    db.save_order(
-        "BOT-OLD",
-        {
-            "user_id": 1,
-            "status": "paid",
-            "total": 100_000,
-            "created_at": (datetime.now() - timedelta(days=30)).isoformat(),
-        },
-    )
-
-    with pytest.raises(ValueError, match="archive"):
-        db.cleanup_old_orders(days=7)
-
-    assert archive_path.read_text(encoding="utf-8") == "{not-json"
-    assert db.get_order("BOT-OLD") is not None
 
 
 def test_backup_rotation_keeps_newest_files_by_mtime(tmp_path, monkeypatch):

@@ -474,6 +474,18 @@ async def handle_category_click(update: Update, context: ContextTypes.DEFAULT_TY
         await query.edit_message_text(text, parse_mode="Markdown", reply_markup=keyboard)
         return
 
+    if data.startswith("orders_page_"):
+        user_id = update.effective_user.id
+        try:
+            page = int(data.rsplit("_", 1)[1])
+        except (TypeError, ValueError):
+            page = 0
+        text, keyboard = build_orders_screen(user_id, page=page)
+        await query.edit_message_text(
+            text, parse_mode="Markdown", reply_markup=keyboard
+        )
+        return
+
     cat_id = data.replace("viewcat_", "")
     products, _ = get_products_cached()
     if not products:

@@ -152,14 +152,18 @@ async def build_menu_screen(user_id: int, refresh: bool = False):
     return text, InlineKeyboardMarkup(buttons)
 
 
-def build_orders_screen(user_id: int):
+def build_orders_screen(user_id: int, page: int = 0, page_size: int = 8):
     orders = db.get_user_orders(user_id)
     text = t(user_id, "orders_title") if orders else t(user_id, "no_orders")
+    navigation = []
     if orders:
-        recent = sorted(
+        ordered = sorted(
             orders.items(), key=lambda item: item[1].get("created_at", ""), reverse=True
-        )[:10]
-        for code, order in recent:
+        )
+        total_pages = max(1, (len(ordered) + page_size - 1) // page_size)
+        page = max(0, min(page, total_pages - 1))
+        start = page * page_size
+        for code, order in ordered[start:start + page_size]:
             status_icon = {
                 "pending": "⏳", "processing": "⏳", "paid": "✅",
                 "paid_waiting_email": "📧", "cancelled": "❌",
@@ -171,8 +175,27 @@ def build_orders_screen(user_id: int):
                 f"{format_money(order.get('original_total', order.get('total', 0)))}\n"
                 f"   {order.get('created_at', '?')[:16]}\n\n"
             )
-    keyboard = InlineKeyboardMarkup([[
+        if total_pages > 1:
+            if page > 0:
+                navigation.append(
+                    InlineKeyboardButton(
+                        "⬅️", callback_data=f"orders_page_{page - 1}"
+                    )
+                )
+            navigation.append(
+                InlineKeyboardButton(f"{page + 1}/{total_pages}", callback_data="noop")
+            )
+            if page + 1 < total_pages:
+                navigation.append(
+                    InlineKeyboardButton(
+                        "➡️", callback_data=f"orders_page_{page + 1}"
+                    )
+                )
+    rows = []
+    if navigation:
+        rows.append(navigation)
+    rows.append([
         ui_btn("menu", callback_data="back_menu", user_id=user_id),
         ui_btn("home", callback_data="back_start", user_id=user_id),
-    ]])
-    return text[:4000], keyboard
+    ])
+    return text, InlineKeyboardMarkup(rows)
