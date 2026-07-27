@@ -1298,14 +1298,33 @@ class Database:
                 try:
                     with open(archive_path, "r", encoding="utf-8") as f:
                         existing_archive = _json.load(f)
-                except Exception:
-                    existing_archive = {}
+                    if not isinstance(existing_archive, dict):
+                        raise ValueError("archive root must be an object")
+                except Exception as exc:
+                    raise ValueError(
+                        f"Cannot read order archive {archive_path}; aborting cleanup"
+                    ) from exc
             
             existing_archive.update(to_archive)
+            tmp_path = None
             try:
-                with open(archive_path, "w", encoding="utf-8") as f:
-                    _json.dump(existing_archive, f, ensure_ascii=False, indent=2)
+                archive_dir = os.path.dirname(archive_path) or "."
+                with tempfile.NamedTemporaryFile(
+                    mode="w",
+                    suffix=".tmp",
+                    dir=archive_dir,
+                    delete=False,
+                    encoding="utf-8",
+                ) as tmp:
+                    _json.dump(existing_archive, tmp, ensure_ascii=False, indent=2)
+                    tmp_path = tmp.name
+                os.replace(tmp_path, archive_path)
             except Exception as e:
+                if tmp_path and os.path.exists(tmp_path):
+                    try:
+                        os.remove(tmp_path)
+                    except OSError:
+                        pass
                 logger.error(f"Failed to write archive: {e}")
                 return 0
             

@@ -686,7 +686,8 @@ def _backup_database():
         # Giữ tối đa 20 bản backup gần nhất
         backups = sorted(
             [f for f in os.listdir(backup_dir) if f.startswith("bot_data_")],
-            reverse=True
+            key=lambda filename: os.path.getmtime(os.path.join(backup_dir, filename)),
+            reverse=True,
         )
         for old in backups[20:]:
             try:
