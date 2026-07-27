@@ -139,34 +139,58 @@ Panel admin đang hiện **2.187.000đ** trong khi doanh thu thật là **8.475.
 
 ## Acceptance Criteria
 
-- [ ] **AC1** — Panel "📊 Doanh thu" hiện: Tổng thu **8.475.000**, Tổng gốc **4.739.000**,
+- [x] **AC1** — Panel "📊 Doanh thu" hiện: Tổng thu **8.475.000**, Tổng gốc **4.739.000**,
       Lợi nhuận **3.736.000**, đơn thành công **62**.
-- [ ] **AC2** — Restart bot 2 lần liên tiếp, ba số ở AC1 **không đổi**.
-- [ ] **AC3** — `Tổng đơn` = tổng các dòng con hiển thị (thêm dòng `📧 Chờ email` và `💔 Lỗi`).
-- [ ] **AC4** — Sau khi dọn rác: 0 đơn `cancelled`/`cancelled_timeout` trong DB;
+- [x] **AC2** — Restart bot 2 lần liên tiếp, ba số ở AC1 **không đổi**.
+- [x] **AC3** — `Tổng đơn` = tổng các dòng con hiển thị (thêm dòng `📧 Chờ email` và `💔 Lỗi`).
+- [x] **AC4** — Sau khi dọn rác: 0 đơn `cancelled`/`cancelled_timeout` trong DB;
       0 đơn `failed` cũ hơn 24h **trừ 4 đơn còn nợ tiền ví** (860.000đ, xem AC17);
       62 đơn `paid`/`paid_waiting_email` còn nguyên.
-- [ ] **AC5** — Đơn `failed` mới tạo 20 phút **không** bị xoá (retry vẫn chạy được);
+- [x] **AC5** — Đơn `failed` mới tạo 20 phút **không** bị xoá (retry vẫn chạy được);
       đơn `failed` 25h bị xoá.
-- [ ] **AC6** — 20 đơn `custom_local` có `cost == 0` **tồn tại như một field**, không phải thiếu field.
-- [ ] **AC7** — `sum(users[*].total_spent)` == **8.475.000** (giảm 1.471.000 so với 9.946.000 hiện tại).
-- [ ] **AC8** — Số khách có `total_spent > 0` tăng từ **6** lên **23** (đúng số khách đã mua thành công).
-- [ ] **AC8b** — Kiểm 3 mốc cụ thể sau backfill:
+- [x] **AC6** — 20 đơn `custom_local` có `cost == 0` **tồn tại như một field**, không phải thiếu field.
+- [x] **AC7** — `sum(users[*].total_spent)` == **8.475.000** (giảm 1.471.000 so với 9.946.000 hiện tại).
+- [x] **AC8** — Số khách có `total_spent > 0` tăng từ **6** lên **23** (đúng số khách đã mua thành công).
+- [x] **AC8b** — Kiểm 3 mốc cụ thể sau backfill:
       `427734870` (trả bank 100%) → `total_spent == 735_000` (hiện 0);
       `5846376104` (bị phồng) → `total_spent == 4_582_000` (hiện 9.497.000);
       `5333398836` (chưa mua gì) → `total_spent == 0` (hiện 155.000).
-- [ ] **AC9** — Admin bấm "➕ Cộng ví" / "➖ Trừ ví" → `total_spent` của khách **không đổi**.
-- [ ] **AC10** — Gọi hàm hoàn tiền 2 lần cho cùng một đơn → `total_spent` chỉ giảm 1 lần.
-- [ ] **AC11** — Đơn `bank_partial` (ví + bank) tính doanh thu = `original_total`, không phải `remaining`.
-- [ ] **AC12** — Tra cứu khách và ví khách hiện **cùng một con số** "đã chi" cho cùng một khách.
-- [ ] **AC13** — Khách `5846376104` (48 đơn) bấm "📋 Lịch sử" xem được hết đơn mua thành công qua phân trang.
-- [ ] **AC14** — Chạy `backfill_stats.py` hai lần → kết quả giống nhau (idempotent).
-- [ ] **AC15** — `bot_data_archive.json` ghi atomic; mô phỏng đọc lỗi → **abort**, không ghi đè rỗng.
-- [ ] **AC16** — Đơn sản phẩm ẩn bị xử lý lại (2 lần `process_paid_order`) → ví khách chỉ
+- [x] **AC9** — Admin bấm "➕ Cộng ví" / "➖ Trừ ví" → `total_spent` của khách **không đổi**.
+- [x] **AC10** — Gọi hàm hoàn tiền 2 lần cho cùng một đơn → `total_spent` chỉ giảm 1 lần.
+- [x] **AC11** — Đơn `bank_partial` (ví + bank) tính doanh thu = `original_total`, không phải `remaining`.
+- [x] **AC12** — Tra cứu khách và ví khách hiện **cùng một con số** "đã chi" cho cùng một khách.
+- [x] **AC13** — Khách `5846376104` (48 đơn) bấm "📋 Lịch sử" xem được hết đơn mua thành công qua phân trang.
+- [x] **AC14** — Chạy `backfill_stats.py` hai lần → kết quả giống nhau (idempotent).
+- [x] **AC15** — `bot_data_archive.json` ghi atomic; mô phỏng đọc lỗi → **abort**, không ghi đè rỗng.
+- [x] **AC16** — Đơn sản phẩm ẩn bị xử lý lại (2 lần `process_paid_order`) → ví khách chỉ
       được cộng hoàn **một lần**; lần 2 chỉ log, không cộng, không nhắn lại khách.
       Nhánh hủy/timeout sau đó cũng không cộng thêm phần ví (`wallet_refunded` đã set).
-- [ ] **AC17** — Đơn `failed` còn nợ tiền ví khách **không bị xoá** bởi cả
+- [x] **AC17** — Đơn `failed` còn nợ tiền ví khách **không bị xoá** bởi cả
       `purge_junk_orders` (runtime) và `tools/purge_junk.py` (migration), ở mọi tuổi đơn;
       admin nhận cảnh báo lúc khởi động kèm tổng tiền còn nợ. Sau migration: 4 đơn / 860.000đ.
-- [ ] **AC18** — `purge_junk_orders` ghi `purged_orders.log` **trước** khi xoá; nếu không ghi
+- [x] **AC18** — `purge_junk_orders` ghi `purged_orders.log` **trước** khi xoá; nếu không ghi
       được log thì không xoá đơn nào.
+
+## Xác minh (2026-07-27, sau migration production)
+
+Deploy: `bot_tele@ce3c3e6` → EC2 `/home/ubuntu/ctv-bot/`. Migration chạy lúc 13:32 UTC.
+
+| Nguồn xác minh | AC |
+|---|---|
+| `get_stats()` chạy trên DB production sau migration: 8.475.000 / 4.739.000 / 3.736.000, 60 paid + 2 chờ email, Tổng đơn 66 = tổng 5 dòng con | AC1, AC3, AC12 |
+| `systemctl restart` **3 lần**, `data["stats"]` không đổi, không còn log `Lifetime revenue mismatch` | AC2 |
+| Đếm trực tiếp trên `bot_data.json`: 0 đơn `cancelled*`, 4 đơn `failed` (đúng 4 đơn nợ ví), 62 đơn doanh thu, 62/62 có `stats_counted`, 0 đơn doanh thu thiếu field `cost`, 20 đơn `cost == 0` đều `is_custom_local` | AC4, AC6 |
+| `sum(total_spent) == 8.475.000`, 23 khách > 0; `427734870 = 735.000`, `5846376104 = 4.582.000`, `5333398836 = 0` | AC7, AC8, AC8b |
+| `backfill_stats.py` chạy 2 lần trên production → output y hệt | AC14 |
+| Log khởi động: `Giữ lại 4 đơn failed còn nợ tiền ví khách (860000đ)` + Telegram alert tới admin gửi thành công | AC17 |
+| `pytest -q` 56 test xanh (`tests/test_revenue_stats.py`, `test_revenue_migrations.py`, `test_hidden_product_guard.py`, `test_order_history_pagination.py`) + `tools/smoke_import.py` PASS | AC5, AC9, AC10, AC11, AC13, AC15, AC16, AC18 |
+
+**Còn cần chủ bot bấm thử trên bot thật** (logic đã có test, chỉ thiếu mắt người trên UI):
+AC13 phân trang "📋 Lịch sử" của khách `5846376104` (48 đơn), và AC9 bấm "➕ Cộng ví" 10.000đ
+cho 1 khách test rồi tra cứu lại "đã chi".
+
+**Việc nghiệp vụ còn treo (không thuộc code):** 4 đơn `failed` của khách `5846376104` còn nợ
+ví **860.000đ** (`BOT1784953670BCD31F` 300k, `BOT1784953708B0A99F` 300k,
+`BOT1785060685ECF0F9` 130k, `BOT17850607091FD9B2` 130k). Bot sẽ nhắc admin mỗi lần khởi động
+tới khi được hoàn. Sau khi hoàn tay, set `wallet_refunded: true` (hoặc `refund_credited: true`)
+cho 4 đơn này thì lần khởi động sau chúng sẽ được dọn và hết cảnh báo.
