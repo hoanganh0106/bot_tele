@@ -21,6 +21,7 @@ from core.helpers import (
     fmt_icon,
     format_money,
     format_usdt,
+    from_short_key,
     generate_order_code,
     generate_qr_url,
     get_sell_price,
@@ -30,6 +31,7 @@ from core.helpers import (
     product_display_price,
     set_user_lang,
     t,
+    to_short_key,
     ui_btn,
     user_lang,
 )
@@ -190,7 +192,7 @@ async def handle_product_select(update: Update, context: ContextTypes.DEFAULT_TY
     query = update.callback_query
     await query.answer()
 
-    product_key = query.data.replace("prod_", "")
+    product_key = from_short_key(query.data.replace("prod_", ""))
     lang = user_lang(query.from_user.id)
     if db.is_product_hidden(product_key):
         await edit_navigation_message(query, t(query.from_user.id, "product_not_for_sale"))
@@ -244,9 +246,10 @@ async def handle_product_select(update: Update, context: ContextTypes.DEFAULT_TY
     max_qty = min(info["stock"], 10)
     qty_buttons = []
     row = []
+    sk = to_short_key(product_key)
     for i in range(1, max_qty + 1):
         # Lưu ID sản phẩm vào callback_data để tránh lỗi phiên khi bot restart
-        row.append(InlineKeyboardButton(str(i), callback_data=f"qty_{i}_{product_key}"))
+        row.append(InlineKeyboardButton(str(i), callback_data=f"qty_{i}_{sk}"))
         if len(row) == 5:
             qty_buttons.append(row)
             row = []
@@ -314,7 +317,8 @@ async def handle_qty_select(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Format mới: qty_SỐ_LƯỢNG_MÃ_SẢN_PHẨM
     parts = query.data.split("_")
     qty = int(parts[1])
-    product_key = "_".join(parts[2:]) if len(parts) > 2 else context.user_data.get("selected_product")
+    raw_key = "_".join(parts[2:]) if len(parts) > 2 else context.user_data.get("selected_product")
+    product_key = from_short_key(raw_key)
     
     if not product_key:
         await query.edit_message_text(t(query.from_user.id, "session_error"))
@@ -545,7 +549,7 @@ async def handle_category_click(update: Update, context: ContextTypes.DEFAULT_TY
             api_tag = f"[{api_source}] " if not info.get("is_custom_local") else "[TỰ BÁN] "
         
         display_price = product_display_price(key, sell_price, user_lang(query.from_user.id), include_vnd=False)
-        buttons.append([InlineKeyboardButton(f"{api_tag}{dname} | {display_price} | {status}", callback_data=f"prod_{key}")])
+        buttons.append([InlineKeyboardButton(f"{api_tag}{dname} | {display_price} | {status}", callback_data=f"prod_{to_short_key(key)}")])
            
     if total_pages > 1:
         nav_row = []
@@ -583,8 +587,10 @@ async def handle_category_click(update: Update, context: ContextTypes.DEFAULT_TY
             reply_markup=InlineKeyboardMarkup(buttons)
         )
     except Exception as err:
-        logger.error(f"Error rendering customer viewcat: {err}")
-        await query.answer("❌ Lỗi hiển thị danh mục!", show_alert=True)
+        if "Message is not modified" in str(err):
+            pass
+        else:
+            logger.error(f"Error rendering customer viewcat: {err}")
 
 
 async def handle_wallet_home(update: Update, context: ContextTypes.DEFAULT_TYPE):

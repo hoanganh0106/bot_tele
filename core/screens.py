@@ -2,7 +2,7 @@
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
-from core.helpers import escape_html, format_money, is_admin, t, ui_btn, user_lang
+from core.helpers import escape_html, format_money, is_admin, t, to_short_key, ui_btn, user_lang
 from core.products import (
     async_refresh_products_cache,
     classify_product,
@@ -71,7 +71,7 @@ def build_product_back_keyboard(user_id: int, category_id: str) -> InlineKeyboar
 
 def build_admin_product_back_keyboard(product_key: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([[
-        InlineKeyboardButton("⬅️ Quay lại", callback_data=f"admin_price_{product_key}"),
+        InlineKeyboardButton("⬅️ Quay lại", callback_data=f"admin_price_{to_short_key(product_key)}"),
         InlineKeyboardButton("🏠 Thoát", callback_data="admin_home"),
     ]])
 

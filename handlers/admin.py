@@ -14,10 +14,12 @@ from core.helpers import (
     format_money,
     format_usdt,
     format_user_link,
+    from_short_key,
     get_sell_price,
     get_usdt_vnd_rate,
     is_admin,
     t,
+    to_short_key,
 )
 from core.products import (
     classify_product,
@@ -265,20 +267,21 @@ async def render_admin_product_detail(update, context, key):
     )
     
     _, _, cid = classify_product(key, info if info else {"name": key})
+    sk = to_short_key(key)
     
     buttons = [
-        [InlineKeyboardButton("💰 Sửa giá", callback_data=f"admin_do_price_{key}"),
-         InlineKeyboardButton("💵 Giá USDT (EN)", callback_data=f"admin_do_price_usdt_{key}")],
-        [InlineKeyboardButton("📦 Sửa tồn kho", callback_data=f"admin_do_stock_{key}")],
-        [InlineKeyboardButton("✏️ Đổi tên hiển thị", callback_data=f"admin_do_name_{key}"),
-         InlineKeyboardButton(hide_btn_txt, callback_data=f"admin_toggle_hide_{key}")],
-        [InlineKeyboardButton("📜 Sửa nội dung/Mô tả", callback_data=f"admin_do_desc_{key}")],
-        [InlineKeyboardButton("✏️ Tên EN", callback_data=f"admin_do_name_en_{key}"), InlineKeyboardButton("📝 Mô tả EN", callback_data=f"admin_do_desc_en_{key}")],
-        [InlineKeyboardButton("🔀 Chuyển danh mục", callback_data=f"admin_do_cat_{key}")]
+        [InlineKeyboardButton("💰 Sửa giá", callback_data=f"admin_do_price_{sk}"),
+         InlineKeyboardButton("💵 Giá USDT (EN)", callback_data=f"admin_do_price_usdt_{sk}")],
+        [InlineKeyboardButton("📦 Sửa tồn kho", callback_data=f"admin_do_stock_{sk}")],
+        [InlineKeyboardButton("✏️ Đổi tên hiển thị", callback_data=f"admin_do_name_{sk}"),
+         InlineKeyboardButton(hide_btn_txt, callback_data=f"admin_toggle_hide_{sk}")],
+        [InlineKeyboardButton("📜 Sửa nội dung/Mô tả", callback_data=f"admin_do_desc_{sk}"),
+         InlineKeyboardButton("🔀 Chuyển danh mục", callback_data=f"admin_do_cat_{sk}")],
+        [InlineKeyboardButton("✏️ Tên EN", callback_data=f"admin_do_name_en_{sk}"), InlineKeyboardButton("📝 Mô tả EN", callback_data=f"admin_do_desc_en_{sk}")],
     ]
     
     if is_custom_local:
-        buttons.append([InlineKeyboardButton("🗑️ Xóa sản phẩm (Chỉ Hàng tự bán)", callback_data=f"admin_del_prod_{key}_{cid}")])
+        buttons.append([InlineKeyboardButton("🗑️ Xóa sản phẩm (Chỉ Hàng tự bán)", callback_data=f"admin_del_prod_{sk}_{cid}")])
         
     back_page = context.user_data.get("admin_viewcat_page", 0)
     buttons.append([
@@ -647,7 +650,8 @@ async def handle_admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
     elif data.startswith("admin_do_stock_"):
-        key = data.replace("admin_do_stock_", "")
+        key = from_short_key(data.replace("admin_do_stock_", ""))
+        sk = to_short_key(key)
         
         # Hiển thị thông tin kho hiện tại
         has_auto = db.has_custom_accounts_enabled(key)
@@ -668,17 +672,18 @@ async def handle_admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"🔢 **Số lượng liên hệ trực tiếp** — Chỉ đặt số lượng hiển thị, khách mua sẽ liên hệ Admin nhận hàng.",
             parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("📥 Thêm sản phẩm vào kho", callback_data=f"admin_stock_add_items_{key}")],
-                [InlineKeyboardButton("👁️ Xem tài khoản trong kho", callback_data=f"admin_stock_view_{key}")],
-                [InlineKeyboardButton("🔢 Số lượng liên hệ trực tiếp", callback_data=f"admin_stock_manual_{key}")],
-                [InlineKeyboardButton("🗑️ Xóa sạch kho", callback_data=f"admin_stock_reset_{key}")],
-                [InlineKeyboardButton("⬅️ Quay lại", callback_data=f"admin_price_{key}"),
+                [InlineKeyboardButton("📥 Thêm sản phẩm vào kho", callback_data=f"admin_stock_add_items_{sk}")],
+                [InlineKeyboardButton("👁️ Xem tài khoản trong kho", callback_data=f"admin_stock_view_{sk}")],
+                [InlineKeyboardButton("🔢 Số lượng liên hệ trực tiếp", callback_data=f"admin_stock_manual_{sk}")],
+                [InlineKeyboardButton("🗑️ Xóa sạch kho", callback_data=f"admin_stock_reset_{sk}")],
+                [InlineKeyboardButton("⬅️ Quay lại", callback_data=f"admin_price_{sk}"),
                  InlineKeyboardButton("🏠 Thoát", callback_data="admin_home")]
             ])
         )
 
     elif data.startswith("admin_stock_view_"):
-        key = data.replace("admin_stock_view_", "")
+        key = from_short_key(data.replace("admin_stock_view_", ""))
+        sk = to_short_key(key)
         accounts = db.get_custom_accounts(key)
         
         if not accounts:
@@ -687,8 +692,8 @@ async def handle_admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"📭 Kho trống — chưa có tài khoản nào.",
                 parse_mode="Markdown",
                 reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("📥 Thêm vào kho", callback_data=f"admin_stock_add_items_{key}")],
-                    [InlineKeyboardButton("⬅️ Quay lại", callback_data=f"admin_do_stock_{key}")]
+                    [InlineKeyboardButton("📥 Thêm vào kho", callback_data=f"admin_stock_add_items_{sk}")],
+                    [InlineKeyboardButton("⬅️ Quay lại", callback_data=f"admin_do_stock_{sk}")]
                 ])
             )
             return
@@ -713,15 +718,16 @@ async def handle_admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
             text,
             parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("📥 Thêm tiếp", callback_data=f"admin_stock_add_items_{key}")],
-                [InlineKeyboardButton("🗑️ Xóa sạch kho", callback_data=f"admin_stock_reset_{key}")],
-                [InlineKeyboardButton("⬅️ Quay lại", callback_data=f"admin_do_stock_{key}"),
+                [InlineKeyboardButton("📥 Thêm tiếp", callback_data=f"admin_stock_add_items_{sk}")],
+                [InlineKeyboardButton("🗑️ Xóa sạch kho", callback_data=f"admin_stock_reset_{sk}")],
+                [InlineKeyboardButton("⬅️ Quay lại", callback_data=f"admin_do_stock_{sk}"),
                  InlineKeyboardButton("🏠 Thoát", callback_data="admin_home")]
             ])
         )
 
     elif data.startswith("admin_stock_add_items_"):
-        key = data.replace("admin_stock_add_items_", "")
+        key = from_short_key(data.replace("admin_stock_add_items_", ""))
+        sk = to_short_key(key)
         context.user_data["awaiting_stock_items_for"] = key
         await query.edit_message_text(
             f"📥 **THÊM SẢN PHẨM VÀO KHO — `{key}`**\n"
@@ -733,13 +739,14 @@ async def handle_admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"_Bot sẽ tự cắt từng sản phẩm giao cho khách khi có đơn._",
             parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("⬅️ Quay lại", callback_data=f"admin_do_stock_{key}"),
+                [InlineKeyboardButton("⬅️ Quay lại", callback_data=f"admin_do_stock_{sk}"),
                  InlineKeyboardButton("🏠 Thoát", callback_data="admin_home")]
             ])
         )
 
     elif data.startswith("admin_stock_manual_"):
-        key = data.replace("admin_stock_manual_", "")
+        key = from_short_key(data.replace("admin_stock_manual_", ""))
+        sk = to_short_key(key)
         context.user_data["awaiting_stock_manual_for"] = key
         await query.edit_message_text(
             f"🔢 **SỐ LƯỢNG LIÊN HỆ TRỰC TIẾP — `{key}`**\n"
@@ -749,13 +756,13 @@ async def handle_admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"VD: nhắn `10` để đặt tồn kho là 10.",
             parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("⬅️ Quay lại", callback_data=f"admin_do_stock_{key}"),
+                [InlineKeyboardButton("⬅️ Quay lại", callback_data=f"admin_do_stock_{sk}"),
                  InlineKeyboardButton("🏠 Thoát", callback_data="admin_home")]
             ])
         )
 
     elif data.startswith("admin_stock_reset_"):
-        key = data.replace("admin_stock_reset_", "")
+        key = from_short_key(data.replace("admin_stock_reset_", ""))
         db.set_custom_stock(key, None)
         db.clear_custom_accounts(key)
         invalidate_cache()
@@ -767,13 +774,14 @@ async def handle_admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
     elif data.startswith("admin_do_desc_en_"):
-        key = data.replace("admin_do_desc_en_", "")
+        key = from_short_key(data.replace("admin_do_desc_en_", ""))
+        sk = to_short_key(key)
         context.user_data["awaiting_desc_en_for"] = key
         current = db.get_custom_description_en(key) or "(chưa có)"
-        await query.edit_message_text(f"📝 Gửi MÔ TẢ TIẾNG ANH cho `{key}`.\n\nHiện tại:\n`{escape_md(current)}`\n\nNhắn `reset` để xóa.", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Quay lại", callback_data=f"admin_price_{key}")]]))
+        await query.edit_message_text(f"📝 Gửi MÔ TẢ TIẾNG ANH cho `{key}`.\n\nHiện tại:\n`{escape_md(current)}`\n\nNhắn `reset` để xóa.", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Quay lại", callback_data=f"admin_price_{sk}")]]))
 
     elif data.startswith("admin_do_desc_"):
-        key = data.replace("admin_do_desc_", "")
+        key = from_short_key(data.replace("admin_do_desc_", ""))
         context.user_data["awaiting_desc_for"] = key
         
         # Lấy mô tả hiện tại: custom > API
@@ -957,7 +965,7 @@ async def handle_admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 type_icon = "📝"
                 
             hidden_icon = "🙈 " if db.is_product_hidden(key) else ""
-            buttons.append([InlineKeyboardButton(f"{hidden_icon}{type_icon} [{stock_icon}] {dname} ({price_str})", callback_data=f"admin_price_{key}")])
+            buttons.append([InlineKeyboardButton(f"{hidden_icon}{type_icon} [{stock_icon}] {dname} ({price_str})", callback_data=f"admin_price_{to_short_key(key)}")])
                    
         if total_pages > 1:
             nav_row = []
@@ -985,7 +993,7 @@ async def handle_admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         try:
             await query.edit_message_text(
-                f"🛒 **CHỌN SẢN PHẨM ĐỂ SỬA — {cicon} {cname}** ({total_items} SP){page_info}\n"
+                f"🛒 **CHỌN SẢN PHẨM ĐỂ SỬA — {cicon} {escape_md(cname)}** ({total_items} SP){page_info}\n"
                 f"━━━━━━━━━━━━━━━━━━\n"
                 f"💡 _Chú thích phân loại:_\n"
                 f"🌐 `Hàng đối tác API`\n"
@@ -995,15 +1003,17 @@ async def handle_admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 reply_markup=InlineKeyboardMarkup(buttons)
             )
         except Exception as err:
-            logger.error(f"Error editing admin_viewcat message: {err}")
-            await query.answer("❌ Lỗi hiển thị danh sách sản phẩm!", show_alert=True)
+            if "Message is not modified" in str(err):
+                pass
+            else:
+                logger.error(f"Error editing admin_viewcat message: {err}")
         
     elif data.startswith("admin_price_"):
-        key = data.replace("admin_price_", "")
+        key = from_short_key(data.replace("admin_price_", ""))
         await render_admin_product_detail(update, context, key)
         
     elif data.startswith("admin_do_price_usdt_"):
-        key = data.replace("admin_do_price_usdt_", "")
+        key = from_short_key(data.replace("admin_do_price_usdt_", ""))
         context.user_data["awaiting_price_usdt_for"] = key
         current = db.get_custom_price_usdt(key)
         current_text = format_usdt(current) if current is not None else "Chưa đặt"
@@ -1014,11 +1024,11 @@ async def handle_admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "bot vẫn thu tiền VNĐ theo giá bán hiện tại.\n\n"
             "Nhập `reset` để xóa giá USDT.",
             parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Quay lại", callback_data=f"admin_price_{key}")]]),
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Quay lại", callback_data=f"admin_price_{to_short_key(key)}")]])
         )
 
     elif data.startswith("admin_do_price_"):
-        key = data.replace("admin_do_price_", "")
+        key = from_short_key(data.replace("admin_do_price_", ""))
         context.user_data["awaiting_price_for"] = key
         
         # Lấy giá gốc hiện tại để hiển thị cho admin
@@ -1044,7 +1054,7 @@ async def handle_admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
     elif data.startswith("admin_toggle_hide_"):
-        key = data.replace("admin_toggle_hide_", "")
+        key = from_short_key(data.replace("admin_toggle_hide_", ""))
         is_hidden = db.toggle_hidden_product(key)
         await query.answer(f"{'✅ Đã ẩn' if is_hidden else '👁️ Đã hiện lại'} sản phẩm!")
         await render_admin_product_detail(update, context, key)
@@ -1054,10 +1064,9 @@ async def handle_admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
         raw = data.replace("admin_del_prod_", "")
         # Tách CID từ cuối (rsplit để giữ nguyên KEY chứa dấu _)
         parts = raw.rsplit("_", 1)
-        key = parts[0]
+        key = from_short_key(parts[0])
         cid = parts[1] if len(parts) > 1 else "khac"
 
-        
         # Xóa sản phẩm
         db.delete_custom_product(key)
         invalidate_cache()
@@ -1069,13 +1078,13 @@ async def handle_admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await handle_admin_cb(update, context)
 
     elif data.startswith("admin_do_name_en_"):
-        key = data.replace("admin_do_name_en_", "")
+        key = from_short_key(data.replace("admin_do_name_en_", ""))
         context.user_data["awaiting_name_en_for"] = key
         current = db.get_custom_name_en(key) or "(chưa có)"
-        await query.edit_message_text(f"✏️ Gửi TÊN TIẾNG ANH cho `{key}`.\n\nHiện tại: **{escape_md(current)}**\n\nNhắn `reset` để xóa.", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Quay lại", callback_data=f"admin_price_{key}")]]))
+        await query.edit_message_text(f"✏️ Gửi TÊN TIẾNG ANH cho `{key}`.\n\nHiện tại: **{escape_md(current)}**\n\nNhắn `reset` để xóa.", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Quay lại", callback_data=f"admin_price_{to_short_key(key)}")]]))
 
     elif data.startswith("admin_do_name_"):
-        key = data.replace("admin_do_name_", "")
+        key = from_short_key(data.replace("admin_do_name_", ""))
         context.user_data["awaiting_name_for"] = key
         await query.edit_message_text(
             f"✏️ Vui lòng **nhắn tin gửi TÊN MỚI** cho `{key}`.\n\n"
@@ -1085,19 +1094,20 @@ async def handle_admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
     elif data.startswith("admin_do_cat_"):
-        key = data.replace("admin_do_cat_", "")
+        key = from_short_key(data.replace("admin_do_cat_", ""))
+        sk = to_short_key(key)
         buttons = []
         row = []
         for cid, (cname, cicon) in get_all_categories_merged().items():
-            row.append(InlineKeyboardButton(f"{cicon} {cname}", callback_data=f"admin_set_cat_{key}_{cid}"))
+            row.append(InlineKeyboardButton(f"{cicon} {cname}", callback_data=f"admin_set_cat_{sk}_{cid}"))
             if len(row) == 2:
                 buttons.append(row)
                 row = []
         if row: buttons.append(row)
         buttons.append([InlineKeyboardButton("➕ Tạo ds danh mục mới", callback_data="admin_add_cat")])
-        buttons.append([InlineKeyboardButton("♻️ Reset (Máy tự chọn)", callback_data=f"admin_set_cat_{key}_reset")])
+        buttons.append([InlineKeyboardButton("♻️ Reset (Máy tự chọn)", callback_data=f"admin_set_cat_{sk}_reset")])
         buttons.append([
-            InlineKeyboardButton("⬅️ Quay lại", callback_data=f"admin_price_{key}"),
+            InlineKeyboardButton("⬅️ Quay lại", callback_data=f"admin_price_{sk}"),
             InlineKeyboardButton("🏠 Thoát", callback_data="admin_home")
         ])
         
@@ -1107,7 +1117,9 @@ async def handle_admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Format: admin_set_cat_KEY_CATID
         parts = data[14:].split("_")
         cid = parts[-1]
-        key = "_".join(parts[:-1])
+        raw_key = "_".join(parts[:-1])
+        key = from_short_key(raw_key)
+        sk = to_short_key(key)
         
         if cid == "reset":
             db.set_custom_category(key, None)
@@ -1117,7 +1129,7 @@ async def handle_admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
             msg = f"✅ Đã chuyển sản phẩm sang danh mục {get_all_categories_merged()[cid][1]} {get_all_categories_merged()[cid][0]}."
             
         await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("⬅️ Quay lại", callback_data=f"admin_price_{key}"),
+            [InlineKeyboardButton("⬅️ Quay lại", callback_data=f"admin_price_{sk}"),
              InlineKeyboardButton("🏠 Thoát", callback_data="admin_home")]
         ]))
 

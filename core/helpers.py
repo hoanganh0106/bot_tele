@@ -1,5 +1,6 @@
 """Formatting, localization, and shared Telegram UI helpers."""
 
+import hashlib
 import time
 import unicodedata
 import uuid
@@ -251,3 +252,41 @@ def generate_qr_url(amount: int, content: str) -> str:
         f"&amount={amount}"
         f"&des={content}"
     )
+
+
+_SHORT_KEY_REGISTRY: dict[str, str] = {}
+_REVERSE_KEY_REGISTRY: dict[str, str] = {}
+
+
+def to_short_key(key: str) -> str:
+    """Nếu key dài hơn 28 bytes UTF-8, chuyển thành token ngắn 'k_<12_hex>' để đảm bảo callback_data <= 64 bytes."""
+    if not key or len(key.encode("utf-8")) <= 28:
+        return key
+    if key in _REVERSE_KEY_REGISTRY:
+        return _REVERSE_KEY_REGISTRY[key]
+    short = f"k_{hashlib.md5(key.encode('utf-8')).hexdigest()[:12]}"
+    _SHORT_KEY_REGISTRY[short] = key
+    _REVERSE_KEY_REGISTRY[key] = short
+    return short
+
+
+def from_short_key(token: str) -> str:
+    """Khôi phục token ngắn về key sản phẩm gốc."""
+    if not token:
+        return token
+    if token in _SHORT_KEY_REGISTRY:
+        return _SHORT_KEY_REGISTRY[token]
+    if token.startswith("k_") and len(token) == 14:
+        try:
+            from core.products import get_products_cached
+            products, _ = get_products_cached()
+            if products:
+                for k in products.keys():
+                    if hashlib.md5(k.encode("utf-8")).hexdigest()[:12] == token[2:]:
+                        _SHORT_KEY_REGISTRY[token] = k
+                        _REVERSE_KEY_REGISTRY[k] = token
+                        return k
+        except Exception:
+            pass
+    return token
+
