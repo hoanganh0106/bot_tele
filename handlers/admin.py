@@ -5,7 +5,7 @@ import asyncio
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes
 
-from core.config import ADMIN_IDS
+from core.config import ADMIN_IDS, logger
 from core.helpers import (
     UI_BUTTONS,
     escape_html,
@@ -280,8 +280,9 @@ async def render_admin_product_detail(update, context, key):
     if is_custom_local:
         buttons.append([InlineKeyboardButton("🗑️ Xóa sản phẩm (Chỉ Hàng tự bán)", callback_data=f"admin_del_prod_{key}_{cid}")])
         
+    back_page = context.user_data.get("admin_viewcat_page", 0)
     buttons.append([
-        InlineKeyboardButton("⬅️ Quay lại", callback_data=f"admin_viewcat_{cid}"),
+        InlineKeyboardButton("⬅️ Quay lại", callback_data=f"admin_viewcat_{cid}:{back_page}"),
         InlineKeyboardButton("🏠 Thoát", callback_data="admin_home")
     ])
     await query.edit_message_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(buttons))
@@ -900,49 +901,102 @@ async def handle_admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
     elif data.startswith("admin_viewcat_"):
-        cat_id = data.replace("admin_viewcat_", "")
+        raw_target = data.replace("admin_viewcat_", "")
+        if ":" in raw_target:
+            cat_id, page_str = raw_target.split(":", 1)
+            try:
+                page = int(page_str)
+            except ValueError:
+                page = 0
+            context.user_data["admin_viewcat_cat"] = cat_id
+            context.user_data["admin_viewcat_page"] = page
+        else:
+            cat_id = raw_target
+            if context.user_data.get("admin_viewcat_cat") == cat_id:
+                page = context.user_data.get("admin_viewcat_page", 0)
+            else:
+                page = 0
+                context.user_data["admin_viewcat_cat"] = cat_id
+                context.user_data["admin_viewcat_page"] = 0
         
         products, _ = get_all_products_merged()
         if not products:
             return await query.edit_message_text("❌ Lỗi tải dữ liệu.")
             
-        buttons = []
+        cat_products = []
         for key, info in products.items():
             _, _, c_id = classify_product(key, info)
             if c_id == cat_id:
-                price_str = format_money(get_sell_price(key, info['price'], info.get("is_custom_local", False)))
-                dname = db.get_custom_name(key) or info['name']
-                stock = info.get('stock', 0)
-                if stock > 0: stock_icon = f"✅ Còn: {stock}"
-                elif stock == -1: stock_icon = f"🔄 Load"
-                else: stock_icon = f"❌ Hết"
+                cat_products.append((key, info))
                 
-                is_local = info.get("is_custom_local", False)
-                if not is_local:
-                    type_icon = "🌐"
-                elif db.has_custom_accounts_enabled(key):
-                    type_icon = "⚡"
-                else:
-                    type_icon = "📝"
-                    
-                hidden_icon = "🙈 " if db.is_product_hidden(key) else ""
-                buttons.append([InlineKeyboardButton(f"{hidden_icon}{type_icon} [{stock_icon}] {dname} ({price_str})", callback_data=f"admin_price_{key}")])
+        total_items = len(cat_products)
+        page_size = 10
+        total_pages = max(1, (total_items + page_size - 1) // page_size)
+        page = max(0, min(page, total_pages - 1))
+        context.user_data["admin_viewcat_page"] = page
+        context.user_data["admin_viewcat_cat"] = cat_id
+        
+        start_idx = page * page_size
+        page_items = cat_products[start_idx : start_idx + page_size]
+        
+        buttons = []
+        for key, info in page_items:
+            price_str = format_money(get_sell_price(key, info['price'], info.get("is_custom_local", False)))
+            dname = db.get_custom_name(key) or info.get('name', key)
+            stock = info.get('stock', 0)
+            if stock > 0: stock_icon = f"✅ Còn: {stock}"
+            elif stock == -1: stock_icon = "🔄 Load"
+            else: stock_icon = "❌ Hết"
+            
+            is_local = info.get("is_custom_local", False)
+            if not is_local:
+                type_icon = "🌐"
+            elif db.has_custom_accounts_enabled(key):
+                type_icon = "⚡"
+            else:
+                type_icon = "📝"
+                
+            hidden_icon = "🙈 " if db.is_product_hidden(key) else ""
+            buttons.append([InlineKeyboardButton(f"{hidden_icon}{type_icon} [{stock_icon}] {dname} ({price_str})", callback_data=f"admin_price_{key}")])
                    
+        if total_pages > 1:
+            nav_row = []
+            if page > 1:
+                nav_row.append(InlineKeyboardButton("⏮️", callback_data=f"admin_viewcat_{cat_id}:0"))
+            if page > 0:
+                nav_row.append(InlineKeyboardButton("⬅️", callback_data=f"admin_viewcat_{cat_id}:{page - 1}"))
+            nav_row.append(InlineKeyboardButton(f"{page + 1}/{total_pages}", callback_data="noop"))
+            if page + 1 < total_pages:
+                nav_row.append(InlineKeyboardButton("➡️", callback_data=f"admin_viewcat_{cat_id}:{page + 1}"))
+            if page < total_pages - 2:
+                nav_row.append(InlineKeyboardButton("⏭️", callback_data=f"admin_viewcat_{cat_id}:{total_pages - 1}"))
+            buttons.append(nav_row)
+
         buttons.append([
-            InlineKeyboardButton("⬅️ Quay lại", callback_data="admin_products"),
+            InlineKeyboardButton("⬅️ Quay lại danh mục", callback_data="admin_products"),
             InlineKeyboardButton("🏠 Thoát", callback_data="admin_home")
         ])
         
-        await query.edit_message_text(
-            f"🛒 **CHỌN SẢN PHẨM ĐỂ SỬA**\n"
-            f"━━━━━━━━━━━━━━━━━━\n"
-            f"💡 _Chú thích phân loại:_\n"
-            f"🌐 `Hàng đối tác API`\n"
-            f"⚡ `Tự bán (Tự động giao từ kho)`\n"
-            f"📝 `Tự bán (Liên hệ trực tiếp)`",
-            parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup(buttons)
-        )
+        all_cats = get_all_categories_merged()
+        cat_info = all_cats.get(cat_id, ("Khác", "📦"))
+        cname = cat_info[0] if isinstance(cat_info, (list, tuple)) else str(cat_info)
+        cicon = cat_info[1] if isinstance(cat_info, (list, tuple)) and len(cat_info) > 1 else "📦"
+        page_info = f" (Trang {page + 1}/{total_pages})" if total_pages > 1 else ""
+        
+        try:
+            await query.edit_message_text(
+                f"🛒 **CHỌN SẢN PHẨM ĐỂ SỬA — {cicon} {cname}** ({total_items} SP){page_info}\n"
+                f"━━━━━━━━━━━━━━━━━━\n"
+                f"💡 _Chú thích phân loại:_\n"
+                f"🌐 `Hàng đối tác API`\n"
+                f"⚡ `Tự bán (Tự động giao từ kho)`\n"
+                f"📝 `Tự bán (Liên hệ trực tiếp)`",
+                parse_mode="Markdown",
+                reply_markup=InlineKeyboardMarkup(buttons)
+            )
+        except Exception as err:
+            logger.error(f"Error editing admin_viewcat message: {err}")
+            await query.answer("❌ Lỗi hiển thị danh sách sản phẩm!", show_alert=True)
         
     elif data.startswith("admin_price_"):
         key = data.replace("admin_price_", "")
@@ -1010,7 +1064,8 @@ async def handle_admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer("✅ Đã xóa sản phẩm thành công!", show_alert=True)
         
         # Quay lại menu trước đó bằng cách tạo data giả và chuyển hướng
-        query.data = f"admin_viewcat_{cid}"
+        back_page = context.user_data.get("admin_viewcat_page", 0)
+        query.data = f"admin_viewcat_{cid}:{back_page}"
         await handle_admin_cb(update, context)
 
     elif data.startswith("admin_do_name_en_"):

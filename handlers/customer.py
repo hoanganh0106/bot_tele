@@ -486,13 +486,30 @@ async def handle_category_click(update: Update, context: ContextTypes.DEFAULT_TY
         )
         return
 
-    cat_id = data.replace("viewcat_", "")
+    raw_cat = data.replace("viewcat_", "")
+    if ":" in raw_cat:
+        cat_id, page_str = raw_cat.split(":", 1)
+        try:
+            page = int(page_str)
+        except ValueError:
+            page = 0
+        context.user_data["customer_viewcat_cat"] = cat_id
+        context.user_data["customer_viewcat_page"] = page
+    else:
+        cat_id = raw_cat
+        if context.user_data.get("customer_viewcat_cat") == cat_id:
+            page = context.user_data.get("customer_viewcat_page", 0)
+        else:
+            page = 0
+            context.user_data["customer_viewcat_cat"] = cat_id
+            context.user_data["customer_viewcat_page"] = 0
+
     products, _ = get_products_cached()
     if not products:
         await query.edit_message_text(t(query.from_user.id, "products_unavailable"))
         return
         
-    buttons = []
+    cat_products = []
     for key, info in products.items():
         stock = info.get("stock", 0)
         
@@ -502,19 +519,47 @@ async def handle_category_click(update: Update, context: ContextTypes.DEFAULT_TY
             
         _, _, c_id = classify_product(key, info)
         if c_id == cat_id:
-            sell_price = get_sell_price(key, info['price'], info.get('is_custom_local', False))
-            status = "🔄" if stock == -1 else f"✅{stock}"
-            dname = product_display_name(key, info, user_lang(query.from_user.id))
-            
-            # Phân biệt nguồn API (Chỉ cho Admin)
-            api_tag = ""
-            if is_admin(update.effective_user.id):
-                api_source = info.get("api_source", "CTV")
-                api_tag = f"[{api_source}] " if not info.get("is_custom_local") else "[TỰ BÁN] "
-            
-            display_price = product_display_price(key, sell_price, user_lang(query.from_user.id), include_vnd=False)
-            buttons.append([InlineKeyboardButton(f"{api_tag}{dname} | {display_price} | {status}", callback_data=f"prod_{key}")])
-               
+            cat_products.append((key, info))
+
+    total_items = len(cat_products)
+    page_size = 10
+    total_pages = max(1, (total_items + page_size - 1) // page_size)
+    page = max(0, min(page, total_pages - 1))
+    context.user_data["customer_viewcat_page"] = page
+    context.user_data["customer_viewcat_cat"] = cat_id
+    
+    start_idx = page * page_size
+    page_items = cat_products[start_idx : start_idx + page_size]
+    
+    buttons = []
+    for key, info in page_items:
+        stock = info.get("stock", 0)
+        sell_price = get_sell_price(key, info['price'], info.get('is_custom_local', False))
+        status = "🔄" if stock == -1 else f"✅{stock}"
+        dname = product_display_name(key, info, user_lang(query.from_user.id))
+        
+        # Phân biệt nguồn API (Chỉ cho Admin)
+        api_tag = ""
+        if is_admin(update.effective_user.id):
+            api_source = info.get("api_source", "CTV")
+            api_tag = f"[{api_source}] " if not info.get("is_custom_local") else "[TỰ BÁN] "
+        
+        display_price = product_display_price(key, sell_price, user_lang(query.from_user.id), include_vnd=False)
+        buttons.append([InlineKeyboardButton(f"{api_tag}{dname} | {display_price} | {status}", callback_data=f"prod_{key}")])
+           
+    if total_pages > 1:
+        nav_row = []
+        if page > 1:
+            nav_row.append(InlineKeyboardButton("⏮️", callback_data=f"viewcat_{cat_id}:0"))
+        if page > 0:
+            nav_row.append(InlineKeyboardButton("⬅️", callback_data=f"viewcat_{cat_id}:{page - 1}"))
+        nav_row.append(InlineKeyboardButton(f"{page + 1}/{total_pages}", callback_data="noop"))
+        if page + 1 < total_pages:
+            nav_row.append(InlineKeyboardButton("➡️", callback_data=f"viewcat_{cat_id}:{page + 1}"))
+        if page < total_pages - 2:
+            nav_row.append(InlineKeyboardButton("⏭️", callback_data=f"viewcat_{cat_id}:{total_pages - 1}"))
+        buttons.append(nav_row)
+
     buttons.append([
         ui_btn("back", t(query.from_user.id, "btn_back_categories"), callback_data="back_menu", user_id=query.from_user.id),
         ui_btn("home", callback_data="back_start", user_id=query.from_user.id),
@@ -527,11 +572,19 @@ async def handle_category_click(update: Update, context: ContextTypes.DEFAULT_TY
         cat_name = t(query.from_user.id, "category_other")
     cat_icon_html = fmt_icon(cat_id, cat_emoji)
     
-    await query.edit_message_text(
-        t(query.from_user.id, "category_panel", icon=cat_icon_html, name=escape_html(cat_name)),
-        parse_mode="HTML",
-        reply_markup=InlineKeyboardMarkup(buttons)
-    )
+    panel_title = t(query.from_user.id, "category_panel", icon=cat_icon_html, name=escape_html(cat_name))
+    if total_pages > 1:
+        panel_title += f"\n<i>(Trang {page + 1}/{total_pages})</i>"
+
+    try:
+        await query.edit_message_text(
+            panel_title,
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(buttons)
+        )
+    except Exception as err:
+        logger.error(f"Error rendering customer viewcat: {err}")
+        await query.answer("❌ Lỗi hiển thị danh mục!", show_alert=True)
 
 
 async def handle_wallet_home(update: Update, context: ContextTypes.DEFAULT_TYPE):
