@@ -3,7 +3,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 from handlers import phone_rental as h
-from core.phone_rental import customer_message, decode_response, NUMBER_FAULT_MESSAGE, parse_otp, PhoneNumberFault
+from core.phone_rental import customer_message, decode_response, NUMBER_FAULT_MESSAGE, parse_otp, PhoneNumberFault, validate_response
 
 
 def test_plain_text_status_and_private_fields():
@@ -25,14 +25,14 @@ def test_poll_updates_then_records_otp(monkeypatch):
     screen = AsyncMock()
     monkeypatch.setattr(h, "show_screen", screen)
     monkeypatch.setattr(h.asyncio, "sleep", AsyncMock())
-    responses = iter([None, {"message": "Your login code: 001234. Do not share it."}])
+    responses = iter([None, [{"brandname": "AUTHMSG", "content": "Mã xác thực của bạn là: 001234", "time": "095001", "timestamp": "07092026 095001", "partner": "MIRINDA"}]])
 
     async def request(*args, on_response, **kwargs):
         value = next(responses)
         if value is None:
             raise PhoneNumberFault(NUMBER_FAULT_MESSAGE)
         await on_response(str(value))
-        return value
+        return validate_response(value, 200, "/get-otp")
 
     monkeypatch.setattr(h, "request_api", request)
     asyncio.run(h.poll_otp(SimpleNamespace(from_user=SimpleNamespace(id=42)), state))
@@ -82,6 +82,12 @@ def test_poll_stops_at_deadline(monkeypatch):
 
 
 def test_six_digit_extraction():
+    payload = decode_response('[{"brandname":"AUTHMSG","content":"Mã xác thực của bạn là: 096534","time":"095001","timestamp":"07092026 095001","partner":"MIRINDA"}]')
+    assert parse_otp(validate_response(payload, 200, "/get-otp")) == "096534"
+    assert parse_otp({"data": payload}) == "096534"
+    assert parse_otp([]) is None
+    assert parse_otp([{"time": "095001", "content": "Đang chờ"}]) is None
+    assert parse_otp([{"content": "123456"}, {"content": "654321"}]) is None
     assert parse_otp(decode_response("Your OTP is 001234.")) == "001234"
     assert parse_otp({"data": {"message": "Mã xác nhận: 987654"}}) == "987654"
     assert parse_otp({"otp": "12345"}) is None

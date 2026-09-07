@@ -45,6 +45,10 @@ def customer_message(payload):
 
 
 def validate_response(payload, status, path):
+    if path == "/get-otp" and isinstance(payload, list):
+        if status == 200 and all(isinstance(item, dict) for item in payload):
+            return payload
+        raise PhoneApiError("Chưa thể xử lý yêu cầu. Vui lòng thử lại sau.")
     if not isinstance(payload, dict):
         raise PhoneApiError("API trả về dữ liệu không hợp lệ.")
     containers = [payload]
@@ -93,8 +97,13 @@ def parse_phone(payload):
 
 def parse_otp(payload):
     """Extract a unique six-digit code from explicit OTP or message fields only."""
+    if isinstance(payload, list):
+        codes = {code for item in payload if (code := parse_otp(item))}
+        return codes.pop() if len(codes) == 1 else None
     if not isinstance(payload, dict):
         return None
+    if isinstance(payload.get("data"), list):
+        return parse_otp(payload["data"])
     containers = [payload]
     if isinstance(payload.get("data"), dict):
         containers.insert(0, payload["data"])
