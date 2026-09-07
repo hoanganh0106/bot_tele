@@ -123,8 +123,12 @@ def parse_otp(payload):
     return None
 
 
-async def get_phone():
-    return parse_phone(await request_api("/get_phone"))
+async def get_phone(phone=None):
+    params = {"phone": phone} if phone else {}
+    result = parse_phone(await request_api("/get_phone", **params))
+    if phone and result["phone"] != str(phone):
+        raise PhoneApiError("Không lấy được đúng số đã yêu cầu.")
+    return result
 
 
 async def get_otp(phone):

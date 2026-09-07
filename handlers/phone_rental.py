@@ -3,6 +3,7 @@
 import time
 import uuid
 import asyncio
+import re
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.error import BadRequest
@@ -58,6 +59,7 @@ async def show_screen(query, state, note="", *, waiting=False, otp=None):
     if otp:
         text += "\n\n✅ OTP: <code>" + escape_html(otp) + "</code>"
     rows.append([InlineKeyboardButton("📱 Thuê số khác" if state else "📱 Nhận số", callback_data="phone_new")])
+    rows.append([InlineKeyboardButton("♻️ Thuê lại số", callback_data="phone_rerent")])
     rows.append([ui_btn("deposit", callback_data="deposit_start", user_id=query.from_user.id)])
     rows.append([ui_btn("home", callback_data="back_start", user_id=query.from_user.id)])
     try:
@@ -94,6 +96,13 @@ async def _handle_phone_rental(update, context):
     key = f"phone_rental_user_{query.from_user.id}"
     state = db.get_setting(key)
     action = query.data
+    if action == "phone_rerent":
+        context.user_data["awaiting_phone_rerent"] = True
+        await query.edit_message_text(
+            "Gửi số điện thoại muốn thuê lại.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Quay lại", callback_data="phone_home")]]),
+        )
+        return
     if action.startswith("phone_cancel_"):
         if not state or action.removeprefix("phone_cancel_") != state["token"]:
             await show_screen(query, state, "Số này không còn hiệu lực.")
@@ -254,3 +263,37 @@ async def deliver_phone_otp(query, state, otp):
         return
     await show_screen(query, state, otp=otp)
     db.record_phone_otp(query.from_user.id, state["token"])
+
+
+async def rent_requested_phone(update, context, requested_phone):
+    user_id = update.effective_user.id
+    if not re.fullmatch(r"\+?[0-9]{5,15}", requested_phone):
+        await update.message.reply_text("Số điện thoại không hợp lệ. Hãy nhập 5–15 chữ số.")
+        return False
+    token = uuid.uuid4().hex[:16]
+    price = rental_price()
+    name = db.get_setting("phone_rental_button_name") or DEFAULT_BUTTON_NAME
+    if not db.reserve_phone_rental(user_id, token, price, name):
+        await update.message.reply_text(f"Ví cần ít nhất {format_money(price)}.")
+        return True
+    try:
+        phone = await get_phone(requested_phone)
+    except PhoneApiError as exc:
+        db.refund_phone_rental(token)
+        await update.message.reply_text(f"{exc} Đã hoàn khoản giữ.")
+        return True
+    if not db.finish_phone_rental(user_id, token, phone):
+        db.refund_phone_rental(token)
+        await update.message.reply_text("Chưa thể hoàn tất. Vui lòng thử lại.")
+        return True
+    text = (
+        f"Số điện thoại: <code>{escape_html(phone['phone'])}</code>"
+        + (f"\nMã quốc gia: <code>+{escape_html(phone['prefix'])}</code>" if phone.get("prefix") else "")
+    )
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("📩 Lấy OTP", callback_data="phone_otp_" + token)],
+        [InlineKeyboardButton("🔄 Đổi số", callback_data="phone_change_" + token),
+         InlineKeyboardButton("❌ Hủy", callback_data="phone_cancel_" + token)],
+    ])
+    await update.message.reply_text(text, parse_mode="HTML", reply_markup=keyboard)
+    return True

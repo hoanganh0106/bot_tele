@@ -49,6 +49,13 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
     db.add_user(user_id)
 
+    if context.user_data.pop("awaiting_phone_rerent", False):
+        from handlers.phone_rental import rent_requested_phone
+        handled = await rent_requested_phone(update, context, text.replace(" ", ""))
+        if not handled:
+            context.user_data["awaiting_phone_rerent"] = True
+        return
+
     if context.user_data.pop("awaiting_phone_name", False):
         if not is_admin(user_id):
             return

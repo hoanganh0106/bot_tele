@@ -304,6 +304,7 @@ def _clear_admin_state(context: ContextTypes.DEFAULT_TYPE):
         "awaiting_welcome_msg", "awaiting_welcome_msg_en",
         "awaiting_menu_title", "awaiting_menu_title_en", "awaiting_ui_emoji",
         "awaiting_phone_name", "awaiting_phone_price",
+        "awaiting_phone_rerent",
         "awaiting_block_id",
     ]:
         context.user_data.pop(key_to_clear, None)
