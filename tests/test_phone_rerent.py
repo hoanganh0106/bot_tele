@@ -29,6 +29,8 @@ def test_rerent_allocates_requested_number(monkeypatch):
     db.get_setting.side_effect = lambda key, default=None: default
     db.reserve_phone_rental.return_value = True
     db.finish_phone_rental.return_value = True
+    db.get_user_orders.return_value = {"old": {"user_id": 42, "product_key": "phone_rental",
+        "phone": {"phone": "182915080", "prefix": "855"}}}
     monkeypatch.setattr(handler, "db", db)
     supplier = AsyncMock(return_value={"phone": "182915080", "prefix": "855"})
     monkeypatch.setattr(handler, "get_phone", supplier)
@@ -36,7 +38,7 @@ def test_rerent_allocates_requested_number(monkeypatch):
     update = SimpleNamespace(effective_user=SimpleNamespace(id=42), message=message)
     handled = asyncio.run(handler.rent_requested_phone(update, SimpleNamespace(), "182915080"))
     assert handled is True
-    supplier.assert_awaited_once_with("182915080")
+    supplier.assert_not_awaited()
     db.reserve_phone_rental.assert_called_once()
     db.finish_phone_rental.assert_called_once()
     assert "<code>182915080</code>" in message.reply_text.await_args.args[0]

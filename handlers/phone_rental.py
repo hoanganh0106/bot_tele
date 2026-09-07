@@ -278,6 +278,17 @@ async def rent_requested_phone(update, context, requested_phone):
     if not re.fullmatch(r"\+?[0-9]{5,15}", requested_phone):
         await update.message.reply_text("Số điện thoại không hợp lệ. Hãy nhập 5–15 chữ số.")
         return False
+    # Reuse the user's previously allocated number, not the random allocator.
+    phone = None
+    for order in db.get_user_orders(user_id).values():
+        previous = order.get("phone")
+        if (order.get("user_id") == user_id and order.get("product_key") == "phone_rental"
+                and isinstance(previous, dict) and previous.get("phone") == requested_phone):
+            phone = {"phone": previous["phone"], "prefix": previous.get("prefix", "")}
+            break
+    if phone is None:
+        await update.message.reply_text("Chỉ thuê lại được số bạn đã thuê trước đó. Hãy nhập đúng số trong lịch sử.")
+        return False
     token = uuid.uuid4().hex[:16]
     price = rental_price()
     name = db.get_setting("phone_rental_button_name") or DEFAULT_BUTTON_NAME
@@ -285,7 +296,6 @@ async def rent_requested_phone(update, context, requested_phone):
         await update.message.reply_text(f"Ví cần ít nhất {format_money(price)}.")
         return True
     try:
-        phone = await get_phone(requested_phone)
         phone["otp_baseline"] = await get_otp_baseline(phone["phone"])
         phone["rental_started_at"] = time.time()
     except PhoneApiError as exc:
