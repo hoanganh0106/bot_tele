@@ -42,20 +42,30 @@ def test_poll_updates_then_records_otp(monkeypatch):
     db.record_phone_otp.assert_called_once_with(42, state["token"])
 
 
-def test_change_requests_confirmation_without_charging(monkeypatch):
+def test_change_immediately_without_cooldown(monkeypatch):
     state = {"phone": "012345678", "token": "a" * 16}
     db = Mock()
     db.get_setting.return_value = state
+    db.get_order.return_value = {"phone_otp_seen": False}
+    db.reserve_phone_rental.return_value = True
+    db.finish_phone_rental.return_value = True
     monkeypatch.setattr(h, "db", db)
+    supplier = AsyncMock(return_value={"phone": "098765432", "prefix": "855"})
+    monkeypatch.setattr(h, "get_phone", supplier)
+    monkeypatch.setattr(h, "show_screen", AsyncMock())
     query = SimpleNamespace(data="phone_change_" + state["token"],
                             from_user=SimpleNamespace(id=42), answer=AsyncMock(),
                             edit_message_text=AsyncMock())
     update = SimpleNamespace(callback_query=query, effective_chat=SimpleNamespace(type="private"))
-    context = SimpleNamespace(user_data={})
+    context = SimpleNamespace(user_data={"phone_last_rent": h.time.monotonic()})
     asyncio.run(h.handle_phone_rental(update, context))
-    assert "phone_confirm" in context.user_data
-    assert "4.000đ" in query.edit_message_text.await_args.args[0]
-    db.reserve_phone_rental.assert_not_called()
+    supplier.assert_awaited_once()
+    db.reserve_phone_rental.assert_called_once()
+    query.edit_message_text.assert_not_awaited()
+    # Replaying the old number's callback after replacement cannot charge again.
+    db.get_setting.return_value = {"phone": "098765432", "token": "b" * 16}
+    asyncio.run(h.handle_phone_rental(update, context))
+    db.reserve_phone_rental.assert_called_once()
 
 
 def test_poll_stops_at_deadline(monkeypatch):

@@ -29,19 +29,18 @@ async def cmd_setphonename(update, context):
 async def show_screen(query, state, note="", *, waiting=False, otp=None):
     rows = []
     text = "<b>" + escape_html(db.get_setting("phone_rental_button_name") or DEFAULT_BUTTON_NAME) + "</b>"
-    text += "\nGiá: <b>4.000đ / số</b> · Thanh toán bằng ví."
+    text += "\n<b>4.000đ / số</b>"
     if state:
         text += "\n\nSố điện thoại: <code>" + escape_html(state["phone"]) + "</code>"
         if state.get("prefix"):
             text += "\nMã quốc gia: <code>+" + escape_html(state["prefix"]) + "</code>"
         rows.append([InlineKeyboardButton("📩 Lấy OTP", callback_data="phone_otp_" + state["token"])])
         rows.append([
-            InlineKeyboardButton("🔄 Đổi số khác", callback_data="phone_change_" + state["token"]),
+            InlineKeyboardButton("🔄 Đổi số · 4.000đ", callback_data="phone_change_" + state["token"]),
             InlineKeyboardButton("❌ Hủy", callback_data="phone_cancel_" + state["token"]),
         ])
-        text += "\nĐổi số mới: 4.000đ, cần xác nhận. Hủy hoàn tiền chỉ khi API xác minh số lỗi và chưa nhận OTP."
     else:
-        text += "\n\nNhấn Nhận số để thuê một số điện thoại, sau đó nhấn Lấy OTP."
+        text += "\n\nNhấn Nhận số để bắt đầu."
     if note:
         text += "\n\n" + escape_html(note)
     if waiting:
@@ -89,7 +88,13 @@ async def _handle_phone_rental(update, context):
         if not state or action.removeprefix("phone_change_") != state["token"]:
             await show_screen(query, state, "Nút này không thuộc số hiện tại của bạn.")
             return
-        action = "phone_new"
+        order = db.get_order("PHONE" + state["token"])
+        if order and order.get("phone_otp_seen"):
+            await show_screen(query, state, "Số đã nhận OTP. Chọn Thuê số khác để mua mới.")
+            return
+        token = uuid.uuid4().hex[:16]
+        context.user_data["phone_confirm"] = token
+        action = "phone_confirm_" + token
     if action == "phone_home":
         await show_screen(query, state)
         return
@@ -152,10 +157,6 @@ async def _handle_phone_rental(update, context):
                 await show_screen(query, state, "Yêu cầu này đã được xử lý hoặc hết hiệu lực.")
                 return
             del context.user_data["phone_confirm"]
-            if time.monotonic() - context.user_data.get("phone_last_rent", -60) < 30:
-                await show_screen(query, state, "Vui lòng chờ 30 giây giữa hai lần thuê số.")
-                return
-            context.user_data["phone_last_rent"] = time.monotonic()
             name = db.get_setting("phone_rental_button_name") or DEFAULT_BUTTON_NAME
             if not db.reserve_phone_rental(query.from_user.id, token, RENTAL_PRICE, name):
                 await show_screen(query, state, "Ví cần ít nhất 4.000đ và không có yêu cầu thuê số đang xử lý. Vui lòng nạp tiền nếu thiếu số dư.")
@@ -172,7 +173,7 @@ async def _handle_phone_rental(update, context):
                 await show_screen(query, state, "Chưa thể hoàn tất đơn. Vui lòng liên hệ admin.")
                 return
             state = db.get_setting(key)
-            await show_screen(query, state, "Đã thanh toán 4.000đ từ ví. Lấy OTP không thu thêm phí.")
+            await show_screen(query, state, "Đã nhận số. Nhấn Lấy OTP.")
         elif action.startswith("phone_otp_"):
             if not state or action.removeprefix("phone_otp_") != state["token"]:
                 await show_screen(query, state, "Nút OTP này không thuộc số hiện tại của bạn.")
