@@ -25,7 +25,13 @@ def decode_response(raw):
     # This endpoint also returns its number-fault message as plain text.
     if raw.strip() == NUMBER_FAULT_MESSAGE:
         return {"message": NUMBER_FAULT_MESSAGE}
-    return json.loads(raw)
+    try:
+        payload = json.loads(raw)
+    except ValueError:
+        return {"message": raw[:8000]}
+    if isinstance(payload, (str, int)):
+        return {"message": str(payload)}
+    return payload
 
 
 def customer_message(payload):
@@ -34,7 +40,7 @@ def customer_message(payload):
     if containers and isinstance(payload.get("data"), dict):
         containers.append(payload["data"])
     if any(c.get(k) == NUMBER_FAULT_MESSAGE for c in containers for k in ("message", "error")):
-        return NUMBER_FAULT_MESSAGE
+        return "đang chờ OTP"
     return "Chưa có OTP. Vui lòng chờ…"
 
 
@@ -45,7 +51,7 @@ def validate_response(payload, status, path):
     if isinstance(payload.get("data"), dict):
         containers.append(payload["data"])
     # A code/OTP takes precedence over a contradictory error message.
-    has_otp = any(c.get(k) not in (None, "") for c in containers for k in ("otp", "code"))
+    has_otp = bool(parse_otp(payload)) if path == "/get-otp" else False
     fault = any(c.get(k) == NUMBER_FAULT_MESSAGE for c in containers for k in ("message", "error"))
     if path == "/get-otp" and status in (200, 400, 404) and fault and not has_otp:
         raise PhoneNumberFault(NUMBER_FAULT_MESSAGE)
@@ -86,20 +92,26 @@ def parse_phone(payload):
 
 
 def parse_otp(payload):
-    data = payload.get("data", payload)
-    if data is None:
+    """Extract a unique six-digit code from explicit OTP or message fields only."""
+    if not isinstance(payload, dict):
         return None
-    if not isinstance(data, dict):
-        raise PhoneApiError("Định dạng OTP chưa được hỗ trợ; vui lòng liên hệ admin.")
-    for key in ("otp", "code"):
-        value = data.get(key)
-        if value is not None and value != "":
-            if not isinstance(value, (str, int)) or isinstance(value, bool):
-                raise PhoneApiError("API trả về OTP không hợp lệ.")
-            return str(value)[:512]
-    if any(key in data for key in ("otp", "code")) or payload.get("status") in ("pending", "waiting"):
-        return None
-    raise PhoneApiError("Chưa nhận diện được phản hồi OTP; vui lòng liên hệ admin.")
+    containers = [payload]
+    if isinstance(payload.get("data"), dict):
+        containers.insert(0, payload["data"])
+    for keys in (("otp", "code"), ("message", "text", "sms", "content", "body")):
+        codes = set()
+        for container in containers:
+            for key in keys:
+                value = container.get(key)
+                if isinstance(value, (str, int)) and not isinstance(value, bool):
+                    codes.update(re.findall(r"(?<![\w])([0-9]{6})(?![\w])", str(value)))
+        if len(codes) == 1:
+            return codes.pop()
+        if codes:
+            return None
+    if isinstance(payload.get("data"), str):
+        return parse_otp({"message": payload["data"]})
+    return None
 
 
 async def get_phone():

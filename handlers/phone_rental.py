@@ -26,7 +26,7 @@ async def cmd_setphonename(update, context):
     await update.message.reply_text(f"Đã đổi tên nút thành: {name}\nMở lại /start hoặc /menu để xem.")
 
 
-async def show_screen(query, state, note=""):
+async def show_screen(query, state, note="", *, waiting=False, otp=None):
     rows = []
     text = "<b>" + escape_html(db.get_setting("phone_rental_button_name") or DEFAULT_BUTTON_NAME) + "</b>"
     text += "\nGiá: <b>4.000đ / số</b> · Thanh toán bằng ví."
@@ -44,12 +44,20 @@ async def show_screen(query, state, note=""):
         text += "\n\nNhấn Nhận số để thuê một số điện thoại, sau đó nhấn Lấy OTP."
     if note:
         text += "\n\n" + escape_html(note)
+    if waiting:
+        text += '\n\n<tg-emoji emoji-id="5215579104807497179">⏳</tg-emoji> đang chờ OTP'
+    if otp:
+        text += "\n\n✅ OTP: <code>" + escape_html(otp) + "</code>"
     rows.append([InlineKeyboardButton("📱 Thuê số khác" if state else "📱 Nhận số", callback_data="phone_new")])
     rows.append([ui_btn("deposit", callback_data="deposit_start", user_id=query.from_user.id)])
     rows.append([ui_btn("home", callback_data="back_start", user_id=query.from_user.id)])
     try:
         await query.edit_message_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(rows))
     except BadRequest as exc:
+        if waiting and "emoji" in str(exc).lower():
+            text = text.replace('<tg-emoji emoji-id="5215579104807497179">⏳</tg-emoji>', '⏳')
+            await query.edit_message_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(rows))
+            return
         if "message is not modified" not in str(exc).lower():
             raise
 
@@ -173,7 +181,7 @@ async def _handle_phone_rental(update, context):
                 await show_screen(query, state, "Vui lòng chờ 5 giây rồi lấy OTP lại.")
                 return
             context.user_data["phone_last_otp"] = time.monotonic()
-            await show_screen(query, state, "Đang chờ OTP…")
+            await show_screen(query, state, waiting=True)
             context.user_data["_phone_poll"] = context.application.create_task(poll_otp(query, state))
     except PhoneNumberFault:
         await show_screen(query, state, "API báo số lỗi. Bạn có thể nhấn Hủy hoặc Đổi số khác để xác minh và hoàn tiền.")
@@ -204,17 +212,15 @@ async def poll_otp(query, state):
             otp = parse_otp(payload)
             if otp:
                 if db.record_phone_otp(query.from_user.id, state["token"]):
-                    await show_screen(query, state, f"OTP: {otp}")
+                    await show_screen(query, state, otp=otp)
                 return
             db.reset_phone_fault(query.from_user.id, state["token"])
         except PhoneNumberFault:
-            await show_screen(query, state, latest)
-            return
+            pass
         except PhoneApiError:
             latest = "Tạm thời chưa nhận được kết quả. Vui lòng chờ…"
         except asyncio.TimeoutError:
             latest = "Tạm thời chưa nhận được kết quả. Vui lòng chờ…"
-        elapsed = min(180, int(time.monotonic() - started))
-        await show_screen(query, state, latest)
+        await show_screen(query, state, waiting=True)
         await asyncio.sleep(max(0, min(tick + 5, deadline) - time.monotonic()))
     await show_screen(query, state, "Đã hết 3 phút chờ. Nhấn Lấy OTP để thử lại.")
