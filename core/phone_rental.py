@@ -21,6 +21,23 @@ class PhoneNumberFault(PhoneApiError):
     """The supplier explicitly reports the configured number fault."""
 
 
+def decode_response(raw):
+    # This endpoint also returns its number-fault message as plain text.
+    if raw.strip() == NUMBER_FAULT_MESSAGE:
+        return {"message": NUMBER_FAULT_MESSAGE}
+    return json.loads(raw)
+
+
+def customer_message(payload):
+    """Only recognized public statuses may cross into customer messages."""
+    containers = [payload] if isinstance(payload, dict) else []
+    if containers and isinstance(payload.get("data"), dict):
+        containers.append(payload["data"])
+    if any(c.get(k) == NUMBER_FAULT_MESSAGE for c in containers for k in ("message", "error")):
+        return NUMBER_FAULT_MESSAGE
+    return "Chưa có OTP. Vui lòng chờ…"
+
+
 def validate_response(payload, status, path):
     if not isinstance(payload, dict):
         raise PhoneApiError("API trả về dữ liệu không hợp lệ.")
@@ -33,7 +50,7 @@ def validate_response(payload, status, path):
     if path == "/get-otp" and status in (200, 400, 404) and fault and not has_otp:
         raise PhoneNumberFault(NUMBER_FAULT_MESSAGE)
     if status != 200 or payload.get("error") or payload.get("success") is False:
-        raise PhoneApiError(f"API chưa thực hiện được yêu cầu (HTTP {status}). Vui lòng thử lại sau.")
+        raise PhoneApiError("Chưa thể xử lý yêu cầu. Vui lòng thử lại sau.")
     return payload
 
 
@@ -43,17 +60,17 @@ async def request_api(path, on_response=None, **params):
         "https://cultural-webshots-track-say.trycloudflare.com",
     ).strip().rstrip("/")
     if not base.startswith("https://"):
-        raise PhoneApiError("URL API thuê số phải dùng HTTPS.")
+        raise PhoneApiError("Dịch vụ tạm thời không khả dụng. Vui lòng thử lại sau.")
     try:
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=20)) as session:
             async with session.get(base + path, params=params, allow_redirects=False) as response:
                 raw = await response.text()
+                payload = decode_response(raw)
                 if on_response:
-                    await on_response(f"HTTP {response.status}\n{raw[:1200]}")
-                payload = json.loads(raw)
+                    await on_response(customer_message(payload))
                 return validate_response(payload, response.status, path)
     except (aiohttp.ClientError, asyncio.TimeoutError, ValueError) as exc:
-        raise PhoneApiError(f"Chưa đọc được phản hồi API ({type(exc).__name__}).") from exc
+        raise PhoneApiError("Tạm thời chưa nhận được kết quả. Vui lòng chờ…") from exc
 
 
 def parse_phone(payload):

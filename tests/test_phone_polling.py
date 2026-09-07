@@ -3,6 +3,17 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 from handlers import phone_rental as h
+from core.phone_rental import customer_message, decode_response, NUMBER_FAULT_MESSAGE
+
+
+def test_plain_text_status_and_private_fields():
+    assert customer_message(decode_response(NUMBER_FAULT_MESSAGE)) == NUMBER_FAULT_MESSAGE
+    for payload in (
+        {"message": "Traceback: /home/ubuntu/private.py", "token": "secret"},
+        {"error": "https://private.example/api?token=secret"},
+        {"data": {"debug": "JSONDecodeError", "password": "secret"}},
+    ):
+        assert customer_message(payload) == "Chưa có OTP. Vui lòng chờ…"
 
 
 def test_poll_updates_then_records_otp(monkeypatch):

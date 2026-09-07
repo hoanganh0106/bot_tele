@@ -173,7 +173,7 @@ async def _handle_phone_rental(update, context):
                 await show_screen(query, state, "Vui lòng chờ 5 giây rồi lấy OTP lại.")
                 return
             context.user_data["phone_last_otp"] = time.monotonic()
-            await show_screen(query, state, "Đang chờ API… Cập nhật mỗi 5 giây, tối đa 3 phút.")
+            await show_screen(query, state, "Đang chờ OTP…")
             context.user_data["_phone_poll"] = context.application.create_task(poll_otp(query, state))
     except PhoneNumberFault:
         await show_screen(query, state, "API báo số lỗi. Bạn có thể nhấn Hủy hoặc Đổi số khác để xác minh và hoàn tiền.")
@@ -185,7 +185,7 @@ async def poll_otp(query, state):
     """Poll in the background so the update queue and change button stay usable."""
     started = time.monotonic()
     deadline = started + 180
-    latest = "Đang chờ phản hồi API…"
+    latest = "Đang chờ OTP…"
 
     async def capture(value):
         nonlocal latest
@@ -204,17 +204,17 @@ async def poll_otp(query, state):
             otp = parse_otp(payload)
             if otp:
                 if db.record_phone_otp(query.from_user.id, state["token"]):
-                    await show_screen(query, state, f"OTP: {otp}\n\nPhản hồi API:\n{latest}")
+                    await show_screen(query, state, f"OTP: {otp}")
                 return
             db.reset_phone_fault(query.from_user.id, state["token"])
         except PhoneNumberFault:
-            await show_screen(query, state, f"Phản hồi API:\n{latest}\nSố lỗi. Nhấn Hủy để xác minh hoàn tiền hoặc Đổi số khác để thuê mới.")
+            await show_screen(query, state, latest)
             return
-        except PhoneApiError as exc:
-            latest = f"{latest}\n{exc}"[-1500:]
+        except PhoneApiError:
+            latest = "Tạm thời chưa nhận được kết quả. Vui lòng chờ…"
         except asyncio.TimeoutError:
-            latest = "API chưa phản hồi trong 5 giây. Đang thử lại…"
+            latest = "Tạm thời chưa nhận được kết quả. Vui lòng chờ…"
         elapsed = min(180, int(time.monotonic() - started))
-        await show_screen(query, state, f"Đang chờ OTP · {elapsed}/180 giây\nPhản hồi API:\n{latest}")
+        await show_screen(query, state, latest)
         await asyncio.sleep(max(0, min(tick + 5, deadline) - time.monotonic()))
-    await show_screen(query, state, f"Đã hết 3 phút chờ. Bạn có thể nhấn Lấy OTP để thử lại.\nPhản hồi API cuối:\n{latest}")
+    await show_screen(query, state, "Đã hết 3 phút chờ. Nhấn Lấy OTP để thử lại.")
