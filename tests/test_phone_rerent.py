@@ -24,6 +24,7 @@ def test_get_phone_rejects_supplier_mismatch(monkeypatch):
 
 
 def test_rerent_allocates_requested_number(monkeypatch):
+    monkeypatch.setattr(handler, "get_otp_baseline", AsyncMock(return_value={"timestamp": "20260907120000", "ids": []}))
     db = Mock()
     db.get_setting.side_effect = lambda key, default=None: default
     db.reserve_phone_rental.return_value = True

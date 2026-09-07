@@ -14,7 +14,7 @@ class PhoneRentalStore:
                         and state.get("token") == token
                         and order.get("status") in ("phone_waiting", "paid"))
 
-    def record_phone_otp(self, user_id, token):
+    def record_phone_otp(self, user_id, token, delivered=None):
         """Settle a hold once, after Telegram acknowledges OTP display."""
         with self.lock:
             data = self._read()
@@ -31,6 +31,11 @@ class PhoneRentalStore:
                 stats["lifetime_revenue"] = int(stats.get("lifetime_revenue", 0)) + amount
                 stats["lifetime_paid_orders"] = int(stats.get("lifetime_paid_orders", 0)) + 1
             order["phone_otp_seen"] = True
+            if delivered:
+                order["phone_delivered_message"] = delivered
+                state = data.get("settings", {}).get(f"phone_rental_user_{user_id}")
+                if state and state.get("token") == token:
+                    state["delivered_message"] = delivered
             order.pop("phone_fault_first_at", None)
             self._write(data, immediate=True)
         self.flush()

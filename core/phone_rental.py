@@ -4,6 +4,8 @@ import asyncio
 import os
 import re
 import json
+import hashlib
+from datetime import datetime
 
 import aiohttp
 
@@ -133,3 +135,46 @@ async def get_phone(phone=None):
 
 async def get_otp(phone):
     return parse_otp(await request_api("/get-otp", phone=phone))
+
+
+def otp_messages(payload):
+    """Normalize supplier timestamps without assuming its timezone matches ours."""
+    if isinstance(payload, dict):
+        payload = payload.get("data", payload)
+    rows = payload if isinstance(payload, list) else [payload]
+    result = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        try:
+            stamp = datetime.strptime(str(row.get("timestamp", "")), "%d%m%Y %H%M%S").strftime("%Y%m%d%H%M%S")
+        except ValueError:
+            continue
+        code = parse_otp(row)
+        identity = hashlib.sha256(json.dumps(row, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+        result.append({"timestamp": stamp, "id": identity, "otp": code})
+    return result
+
+
+async def get_otp_baseline(phone):
+    try:
+        payload = await request_api("/get-otp", phone=phone)
+    except PhoneNumberFault:
+        payload = []
+    messages = otp_messages(payload)
+    if payload and not messages:
+        raise PhoneApiError("Chưa thể bắt đầu phiên thuê lại. Vui lòng thử lại.")
+    return {"timestamp": max((m["timestamp"] for m in messages), default=""),
+            "ids": [m["id"] for m in messages]}
+
+
+def newest_otp(payload, baseline):
+    messages = [m for m in otp_messages(payload) if m["otp"]
+                and m["timestamp"] > baseline["timestamp"] and m["id"] not in baseline["ids"]]
+    if not messages:
+        return None
+    latest = max(m["timestamp"] for m in messages)
+    candidates = [m for m in messages if m["timestamp"] == latest]
+    if len({m["otp"] for m in candidates}) != 1:
+        return None
+    return candidates[0]

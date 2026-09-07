@@ -4,6 +4,7 @@ import time
 import uuid
 import asyncio
 import re
+from core.phone_rental import get_otp_baseline, newest_otp
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.error import BadRequest
@@ -231,15 +232,19 @@ async def poll_otp(query, state):
         current = db.get_setting(f"phone_rental_user_{query.from_user.id}")
         if not current or current["token"] != state["token"]:
             return
+        if current.get("delivered_message"):
+            await show_screen(query, current, otp=current["delivered_message"]["otp"])
+            return
         try:
             payload = await asyncio.wait_for(
                 request_api("/get-otp", on_response=capture, phone=state["phone"]),
                 timeout=min(5, deadline - tick),
             )
-            otp = parse_otp(payload)
+            selected = newest_otp(payload, current["otp_baseline"]) if "otp_baseline" in current else None
+            otp = selected["otp"] if selected else (None if "otp_baseline" in current else parse_otp(payload))
             if otp:
                 # Do not interrupt between Telegram acknowledgement and settlement.
-                delivery = asyncio.create_task(deliver_phone_otp(query, state, otp))
+                delivery = asyncio.create_task(deliver_phone_otp(query, state, otp, selected))
                 try:
                     await asyncio.shield(delivery)
                 except asyncio.CancelledError:
@@ -258,11 +263,14 @@ async def poll_otp(query, state):
     await show_screen(query, state, "Đã hết 3 phút chờ. Nhấn Lấy OTP để thử lại.")
 
 
-async def deliver_phone_otp(query, state, otp):
+async def deliver_phone_otp(query, state, otp, selected=None):
     if not db.prepare_phone_delivery(query.from_user.id, state["token"]):
         return
     await show_screen(query, state, otp=otp)
-    db.record_phone_otp(query.from_user.id, state["token"])
+    if selected:
+        db.record_phone_otp(query.from_user.id, state["token"], delivered=selected)
+    else:
+        db.record_phone_otp(query.from_user.id, state["token"])
 
 
 async def rent_requested_phone(update, context, requested_phone):
@@ -278,6 +286,8 @@ async def rent_requested_phone(update, context, requested_phone):
         return True
     try:
         phone = await get_phone(requested_phone)
+        phone["otp_baseline"] = await get_otp_baseline(phone["phone"])
+        phone["rental_started_at"] = time.time()
     except PhoneApiError as exc:
         db.refund_phone_rental(token)
         await update.message.reply_text(f"{exc} Đã hoàn khoản giữ.")
