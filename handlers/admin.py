@@ -303,6 +303,7 @@ def _clear_admin_state(context: ContextTypes.DEFAULT_TYPE):
         "awaiting_set_emoji",
         "awaiting_welcome_msg", "awaiting_welcome_msg_en",
         "awaiting_menu_title", "awaiting_menu_title_en", "awaiting_ui_emoji",
+        "awaiting_phone_name", "awaiting_phone_price",
         "awaiting_block_id",
     ]:
         context.user_data.pop(key_to_clear, None)
@@ -1219,14 +1220,25 @@ async def handle_admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer("✅ Đã xuất đơn giá!")
 
     elif data == "admin_phone_name":
+        context.user_data["awaiting_phone_name"] = True
+        current = db.get_setting("phone_rental_button_name") or "📱 Thuê số"
         await query.edit_message_text(
-            "Đổi tên nút thuê số bằng lệnh:\n/setphonename Tên nút mới\n\nVí dụ: /setphonename SIM Telegram\nKhôi phục: /setphonename reset",
+            f"Tên hiện tại: {current}\n\nGửi tên mới (tối đa 64 ký tự). Gửi reset để khôi phục.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Quay lại", callback_data="admin_ui_custom")]]),
+        )
+
+    elif data == "admin_phone_price":
+        context.user_data["awaiting_phone_price"] = True
+        current = int(db.get_setting("phone_rental_price", 4000) or 4000)
+        await query.edit_message_text(
+            f"Giá hiện tại: {format_money(current)}\n\nGửi giá mới bằng VNĐ, ví dụ: 5000. Gửi reset để về 4.000đ.",
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Quay lại", callback_data="admin_ui_custom")]]),
         )
 
     elif data == "admin_ui_custom":
         buttons = [
-            [InlineKeyboardButton("Đổi tên nút thuê số", callback_data="admin_phone_name")],
+            [InlineKeyboardButton("✏️ Tên nút thuê số", callback_data="admin_phone_name"),
+             InlineKeyboardButton("💰 Giá thuê số", callback_data="admin_phone_price")],
             [InlineKeyboardButton("✏️ Sửa lời chào /start", callback_data="admin_edit_welcome")],
             [InlineKeyboardButton("✏️ Sửa lời chào EN", callback_data="admin_edit_welcome_en")],
             [InlineKeyboardButton("✏️ Sửa Menu sản phẩm VI", callback_data="admin_edit_menu_title")],

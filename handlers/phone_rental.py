@@ -7,9 +7,16 @@ import asyncio
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.error import BadRequest
 
-from core.helpers import escape_html, is_admin, ui_btn
+from core.helpers import escape_html, format_money, is_admin, ui_btn
 from core.phone_rental import DEFAULT_BUTTON_NAME, RENTAL_PRICE, PhoneApiError, PhoneNumberFault, get_otp, get_phone, request_api, parse_otp
 from core.runtime import db
+
+
+def rental_price():
+    try:
+        return max(1, int(db.get_setting("phone_rental_price", RENTAL_PRICE) or RENTAL_PRICE))
+    except (TypeError, ValueError):
+        return RENTAL_PRICE
 
 
 async def cmd_setphonename(update, context):
@@ -32,7 +39,7 @@ async def cmd_setphonename(update, context):
 async def show_screen(query, state, note="", *, waiting=False, otp=None):
     rows = []
     text = "<b>" + escape_html(db.get_setting("phone_rental_button_name") or DEFAULT_BUTTON_NAME) + "</b>"
-    text += "\n<b>4.000đ khi nhận OTP</b> · Chưa có OTP đổi miễn phí."
+    text += f"\n<b>{format_money(rental_price())} khi nhận OTP</b> · Chưa có OTP đổi miễn phí."
     if state:
         text += "\n\nSố điện thoại: <code>" + escape_html(state["phone"]) + "</code>"
         if state.get("prefix"):
@@ -92,7 +99,7 @@ async def _handle_phone_rental(update, context):
             await show_screen(query, state, "Số này không còn hiệu lực.")
             return
         refunded = db.refund_phone_rental(state["token"])
-        await show_screen(query, db.get_setting(key), "Đã hủy, hoàn 4.000đ giữ trong ví." if refunded else "Số đã nhận OTP, không thể hoàn tiền.")
+        await show_screen(query, db.get_setting(key), "Đã hủy và hoàn khoản giữ." if refunded else "Số đã nhận OTP, không thể hoàn tiền.")
         return
     if action.startswith("phone_change_"):
         if not state or action.removeprefix("phone_change_") != state["token"]:
@@ -112,7 +119,7 @@ async def _handle_phone_rental(update, context):
         token = uuid.uuid4().hex[:16]
         context.user_data["phone_confirm"] = token
         await query.edit_message_text(
-            "Giữ 4.000đ trong ví. Chỉ tính tiền khi OTP hiện trên Telegram. Đổi số miễn phí khi chưa có OTP; hủy để hoàn khoản giữ.",
+            f"Giữ {format_money(rental_price())} trong ví. Chỉ tính tiền khi OTP hiện trên Telegram. Đổi số miễn phí khi chưa có OTP.",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("✅ Nhận số", callback_data="phone_confirm_" + token)],
                 [InlineKeyboardButton("⬅️ Quay lại", callback_data="phone_home")],
@@ -167,8 +174,9 @@ async def _handle_phone_rental(update, context):
                 return
             del context.user_data["phone_confirm"]
             name = db.get_setting("phone_rental_button_name") or DEFAULT_BUTTON_NAME
-            if not db.reserve_phone_rental(query.from_user.id, token, RENTAL_PRICE, name):
-                await show_screen(query, state, "Ví cần ít nhất 4.000đ và không có yêu cầu thuê số đang xử lý. Vui lòng nạp tiền nếu thiếu số dư.")
+            price = rental_price()
+            if not db.reserve_phone_rental(query.from_user.id, token, price, name):
+                await show_screen(query, state, f"Ví cần ít nhất {format_money(price)}. Vui lòng nạp thêm tiền.")
                 return
             try:
                 phone = await get_phone()
@@ -176,7 +184,7 @@ async def _handle_phone_rental(update, context):
                     raise PhoneApiError("API trả lại đúng số hiện tại, chưa cấp số khác.")
             except PhoneApiError as exc:
                 db.refund_phone_rental(token)
-                await show_screen(query, db.get_setting(key), "Chưa cấp được số mới. Đã hoàn khoản giữ 4.000đ.")
+                await show_screen(query, db.get_setting(key), "Chưa cấp được số mới. Đã hoàn khoản giữ.")
                 return
             if not db.finish_phone_rental(query.from_user.id, token, phone):
                 await show_screen(query, state, "Chưa thể hoàn tất đơn. Vui lòng liên hệ admin.")

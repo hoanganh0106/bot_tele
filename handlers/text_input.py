@@ -49,6 +49,43 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
     db.add_user(user_id)
 
+    if context.user_data.pop("awaiting_phone_name", False):
+        if not is_admin(user_id):
+            return
+        if text.lower() == "reset":
+            db.set_setting("phone_rental_button_name", None)
+            result = "✅ Đã khôi phục tên 📱 Thuê số."
+        elif 1 <= len(text) <= 64:
+            db.set_setting("phone_rental_button_name", text)
+            result = f"✅ Đã đổi tên nút thành: {text}"
+        else:
+            context.user_data["awaiting_phone_name"] = True
+            await update.message.reply_text("❌ Tên phải từ 1–64 ký tự.")
+            return
+        db.flush()
+        await update.message.reply_text(result, reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton("⬅️ Quay lại", callback_data="admin_ui_custom")]]))
+        return
+
+    if context.user_data.pop("awaiting_phone_price", False):
+        if not is_admin(user_id):
+            return
+        cleaned = re.sub(r"[.,\sđĐ]", "", text)
+        if text.lower() == "reset":
+            price = 4000
+            db.set_setting("phone_rental_price", None)
+        elif cleaned.isdigit() and 1000 <= int(cleaned) <= 10_000_000:
+            price = int(cleaned)
+            db.set_setting("phone_rental_price", price)
+        else:
+            context.user_data["awaiting_phone_price"] = True
+            await update.message.reply_text("❌ Giá phải từ 1.000đ đến 10.000.000đ.")
+            return
+        db.flush()
+        await update.message.reply_text(f"✅ Giá thuê số: {format_money(price)}", reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton("⬅️ Quay lại", callback_data="admin_ui_custom")]]))
+        return
+
     # Giá USDT chỉ dùng để hiển thị cho giao diện tiếng Anh; thanh toán vẫn VND.
     if context.user_data.get("awaiting_price_usdt_for"):
         product_key = context.user_data["awaiting_price_usdt_for"]
