@@ -446,7 +446,7 @@ async def handle_admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"📧 Chờ email: **{stats['waiting_email_orders']}**\n"
             f"❌ Hủy: **{stats['cancelled_orders']}**\n"
             f"⏳ Đang chờ: **{stats['pending_orders']}**\n"
-            f"💔 Lỗi: **{stats['failed_orders']}**\n\n"
+            "\n"
             f"💵 Tổng thu: **{format_money(stats['total_revenue'])}**\n"
             f"💸 Tổng gốc: **{format_money(stats['total_cost'])}**\n"
             f"📈 Lợi nhuận: **{format_money(stats['total_profit'])}**\n"

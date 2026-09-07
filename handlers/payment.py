@@ -61,18 +61,6 @@ def get_owned_pending_order(order_code: str, user_id: int) -> dict | None:
     return order
 
 
-def _is_api_balance_error(error_msg: str) -> bool:
-    """Nhận diện lỗi do tài khoản API đối tác không đủ số dư."""
-    if not error_msg:
-        return False
-    msg = str(error_msg).lower()
-    keywords = [
-        "số dư", "so du", "khong du", "không đủ", "insufficient",
-        "balance", "hết tiền", "het tien",
-    ]
-    return any(keyword in msg for keyword in keywords)
-
-
 def _paid_order_customer_error_text(order_code: str, user_id: int = None) -> str:
     """Thông báo lỗi xử lý đơn cho khách, không lộ nguyên nhân nội bộ."""
     if user_id is not None:
@@ -741,13 +729,6 @@ async def _process_paid_order_locked(context, order_code: str, payment_source: s
             except Exception:
                 pass
 
-            await _notify_all_admins(context,
-                f"🚨 **SẢN PHẨM KHÔNG TỒN TẠI — CẦN HOÀN TIỀN**\n"
-                f"Mã: `{order_code}`\n"
-                f"👤 Khách: {format_user_link(order.get('username'), user_id)}\n"
-                f"Sản phẩm: `{product_key}` — ĐÃ BỊ ĐỐI TÁC XÓA/ĐỔI KEY\n"
-                f"💰 Khách đã thanh toán {format_money(order['total'])} — cần hoàn tiền!"
-            )
             return False
 
         emails = order.get("emails")
@@ -831,29 +812,6 @@ async def _process_paid_order_locked(context, order_code: str, payment_source: s
             except Exception:
                 pass
 
-            if _is_api_balance_error(error_msg):
-                admin_alert = (
-                    f"🔴🔴 **API HẾT SỐ DƯ — NẠP TIỀN GẤP!** 🔴🔴\n"
-                    f"━━━━━━━━━━━━━━━━━━\n"
-                    f"Mã đơn: `{order_code}`\n"
-                    f"👤 Khách: {format_user_link(order.get('username'), user_id)}\n"
-                    f"Sản phẩm: {order.get('product_name', '?')} x{qty}\n"
-                    f"💰 Khách đã thanh toán {format_money(order['total'])}.\n\n"
-                    f"➡️ Nạp tiền vào tài khoản CTV API rồi xử lý lại đơn.\n"
-                    f"Đã báo khách là đơn lỗi và dặn KHÔNG chuyển khoản lại.\n"
-                    f"Lỗi gốc: {escape_md(error_msg)}"
-                )
-            else:
-                admin_alert = (
-                    f"🚨 **ĐƠN LỖI — CẦN XỬ LÝ**\n"
-                    f"Mã: `{order_code}`\n"
-                    f"👤 Khách: {format_user_link(order.get('username'), user_id)}\n"
-                    f"Sản phẩm: {order.get('product_name', '?')} x{qty}\n"
-                    f"Lỗi API: {escape_md(error_msg)}\n"
-                    f"💰 Khách đã thanh toán {format_money(order['total'])} — cần hoàn tiền!"
-                )
-            await _notify_all_admins(context, admin_alert)
-
             return False
 
     except Exception as e:
@@ -883,13 +841,4 @@ async def _process_paid_order_locked(context, order_code: str, payment_source: s
         except Exception:
             pass
 
-        # Thông báo admin
-        await _notify_all_admins(context,
-            f"🚨 **ĐƠN LỖI EXCEPTION — CẦN XỬ LÝ GẤP**\n"
-            f"Mã: `{order_code}`\n"
-            f"👤 Khách: {format_user_link(order.get('username'), user_id)}\n"
-            f"Sản phẩm: {order.get('product_name', '?')} x{qty}\n"
-            f"Lỗi: `{str(e)[:200]}`\n"
-            f"💰 Khách đã thanh toán {format_money(order['total'])} — cần hoàn tiền hoặc giao tay!"
-        )
         return False
