@@ -29,14 +29,14 @@ async def cmd_setphonename(update, context):
 async def show_screen(query, state, note="", *, waiting=False, otp=None):
     rows = []
     text = "<b>" + escape_html(db.get_setting("phone_rental_button_name") or DEFAULT_BUTTON_NAME) + "</b>"
-    text += "\n<b>4.000đ / số</b>"
+    text += "\n<b>4.000đ khi nhận OTP</b> · Chưa có OTP đổi miễn phí."
     if state:
         text += "\n\nSố điện thoại: <code>" + escape_html(state["phone"]) + "</code>"
         if state.get("prefix"):
             text += "\nMã quốc gia: <code>+" + escape_html(state["prefix"]) + "</code>"
         rows.append([InlineKeyboardButton("📩 Lấy OTP", callback_data="phone_otp_" + state["token"])])
         rows.append([
-            InlineKeyboardButton("🔄 Đổi số · 4.000đ", callback_data="phone_change_" + state["token"]),
+            InlineKeyboardButton("🔄 Đổi số", callback_data="phone_change_" + state["token"]),
             InlineKeyboardButton("❌ Hủy", callback_data="phone_cancel_" + state["token"]),
         ])
     else:
@@ -84,6 +84,13 @@ async def _handle_phone_rental(update, context):
     key = f"phone_rental_user_{query.from_user.id}"
     state = db.get_setting(key)
     action = query.data
+    if action.startswith("phone_cancel_"):
+        if not state or action.removeprefix("phone_cancel_") != state["token"]:
+            await show_screen(query, state, "Số này không còn hiệu lực.")
+            return
+        refunded = db.refund_phone_rental(state["token"])
+        await show_screen(query, db.get_setting(key), "Đã hủy, hoàn 4.000đ giữ trong ví." if refunded else "Số đã nhận OTP, không thể hoàn tiền.")
+        return
     if action.startswith("phone_change_"):
         if not state or action.removeprefix("phone_change_") != state["token"]:
             await show_screen(query, state, "Nút này không thuộc số hiện tại của bạn.")
@@ -102,8 +109,7 @@ async def _handle_phone_rental(update, context):
         token = uuid.uuid4().hex[:16]
         context.user_data["phone_confirm"] = token
         await query.edit_message_text(
-            "Xác nhận thuê số mới với giá 4.000đ? Tiền được trừ từ ví khi nhận số, lấy OTP không thu thêm phí."
-            + (" Số hiện tại sẽ được thay thế trong bot; đơn cũ không tự hoàn tiền." if state else ""),
+            "Giữ 4.000đ trong ví. Chỉ tính tiền khi OTP hiện trên Telegram. Đổi số miễn phí khi chưa có OTP; hủy để hoàn khoản giữ.",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("✅ Nhận số", callback_data="phone_confirm_" + token)],
                 [InlineKeyboardButton("⬅️ Quay lại", callback_data="phone_home")],
@@ -167,7 +173,7 @@ async def _handle_phone_rental(update, context):
                     raise PhoneApiError("API trả lại đúng số hiện tại, chưa cấp số khác.")
             except PhoneApiError as exc:
                 db.refund_phone_rental(token)
-                await show_screen(query, state, f"{exc}\nĐã hoàn 4.000đ vào ví do không cấp được số.")
+                await show_screen(query, db.get_setting(key), "Chưa cấp được số mới. Đã hoàn khoản giữ 4.000đ.")
                 return
             if not db.finish_phone_rental(query.from_user.id, token, phone):
                 await show_screen(query, state, "Chưa thể hoàn tất đơn. Vui lòng liên hệ admin.")
@@ -212,8 +218,13 @@ async def poll_otp(query, state):
             )
             otp = parse_otp(payload)
             if otp:
-                if db.record_phone_otp(query.from_user.id, state["token"]):
-                    await show_screen(query, state, otp=otp)
+                # Do not interrupt between Telegram acknowledgement and settlement.
+                delivery = asyncio.create_task(deliver_phone_otp(query, state, otp))
+                try:
+                    await asyncio.shield(delivery)
+                except asyncio.CancelledError:
+                    await delivery
+                    raise
                 return
             db.reset_phone_fault(query.from_user.id, state["token"])
         except PhoneNumberFault:
@@ -225,3 +236,10 @@ async def poll_otp(query, state):
         await show_screen(query, state, waiting=True)
         await asyncio.sleep(max(0, min(tick + 5, deadline) - time.monotonic()))
     await show_screen(query, state, "Đã hết 3 phút chờ. Nhấn Lấy OTP để thử lại.")
+
+
+async def deliver_phone_otp(query, state, otp):
+    if not db.prepare_phone_delivery(query.from_user.id, state["token"]):
+        return
+    await show_screen(query, state, otp=otp)
+    db.record_phone_otp(query.from_user.id, state["token"])

@@ -5,13 +5,31 @@ import time
 
 
 class PhoneRentalStore:
-    def record_phone_otp(self, user_id, token):
-        """Persist OTP observation before displaying it; permanently deny refunds."""
+    def prepare_phone_delivery(self, user_id, token):
         with self.lock:
             data = self._read()
             order = data.get("orders", {}).get("PHONE" + token)
-            if not order or order.get("user_id") != user_id or order.get("status") != "paid":
+            state = data.get("settings", {}).get(f"phone_rental_user_{user_id}")
+            return bool(order and order.get("user_id") == user_id and state
+                        and state.get("token") == token
+                        and order.get("status") in ("phone_waiting", "paid"))
+
+    def record_phone_otp(self, user_id, token):
+        """Settle a hold once, after Telegram acknowledges OTP display."""
+        with self.lock:
+            data = self._read()
+            order = data.get("orders", {}).get("PHONE" + token)
+            if not order or order.get("user_id") != user_id or order.get("status") not in ("phone_waiting", "paid"):
                 return False
+            if order["status"] == "phone_waiting":
+                amount = order["total"]
+                order.update(status="paid", paid_at=datetime.now().isoformat(),
+                             stats_counted=True, stats_counted_revenue=amount, stats_counted_cost=0)
+                user = data["users"][str(user_id)]
+                user["total_spent"] = int(user.get("total_spent", 0)) + amount
+                stats = data.setdefault("stats", {})
+                stats["lifetime_revenue"] = int(stats.get("lifetime_revenue", 0)) + amount
+                stats["lifetime_paid_orders"] = int(stats.get("lifetime_paid_orders", 0)) + 1
             order["phone_otp_seen"] = True
             order.pop("phone_fault_first_at", None)
             self._write(data, immediate=True)
@@ -97,11 +115,18 @@ class PhoneRentalStore:
             orders = data.setdefault("orders", {})
             code = "PHONE" + token
             user = data.setdefault("users", {}).setdefault(str(user_id), {"balance": 0})
-            if code in orders or int(user.get("balance", 0)) < amount:
+            previous = data.get("settings", {}).get(f"phone_rental_user_{user_id}")
+            old = orders.get("PHONE" + previous["token"]) if previous else None
+            credit = int(old["wallet_paid"]) if old and old.get("status") == "phone_waiting" else 0
+            if code in orders or int(user.get("balance", 0)) + credit < amount:
                 return False
             if any(o.get("user_id") == user_id and o.get("status") == "phone_allocating" for o in orders.values()):
                 return False
-            user["balance"] -= amount
+            if credit:
+                old.update(status="cancelled", wallet_refunded=True, refund_credited=True,
+                           refund_amount=credit, error="Replaced before OTP delivery")
+                data["settings"].pop(f"phone_rental_user_{user_id}", None)
+            user["balance"] += credit - amount
             orders[code] = {
                 "order_code": code, "user_id": user_id, "product_key": "phone_rental",
                 "product_name": name, "qty": 1, "total": amount, "original_total": amount,
@@ -122,15 +147,9 @@ class PhoneRentalStore:
             amount = order["total"]
             state = dict(phone, token=token)
             data.setdefault("settings", {})[f"phone_rental_user_{user_id}"] = state
-            order.update(status="paid", paid_at=datetime.now().isoformat(),
-                         items=[phone["phone"]], phone=state, stats_counted=True,
-                         stats_counted_revenue=amount, stats_counted_cost=0,
+            order.update(status="phone_waiting",
+                         items=[phone["phone"]], phone=state, stats_counted=False,
                          phone_refund_eligible=True)
-            user = data["users"][str(user_id)]
-            user["total_spent"] = int(user.get("total_spent", 0)) + amount
-            stats = data.setdefault("stats", {})
-            stats["lifetime_revenue"] = int(stats.get("lifetime_revenue", 0)) + amount
-            stats["lifetime_paid_orders"] = int(stats.get("lifetime_paid_orders", 0)) + 1
             self._write(data, immediate=True)
         self.flush()
         return True
@@ -139,12 +158,15 @@ class PhoneRentalStore:
         with self.lock:
             data = self._read()
             order = data.get("orders", {}).get("PHONE" + token)
-            if not order or order["status"] != "phone_allocating":
+            if not order or order["status"] not in ("phone_allocating", "phone_waiting"):
                 return False
             user = data["users"][str(order["user_id"])]
             user["balance"] += order["wallet_paid"]
             order.update(status="cancelled", wallet_refunded=True, refund_credited=True,
                          refund_amount=order["wallet_paid"], error="Phone allocation did not complete")
+            key = f"phone_rental_user_{order['user_id']}"
+            if data.get("settings", {}).get(key, {}).get("token") == token:
+                data["settings"].pop(key, None)
             self._write(data, immediate=True)
         self.flush()
         return True
@@ -152,6 +174,23 @@ class PhoneRentalStore:
     def recover_phone_rentals(self):
         """Refund interrupted allocations at startup; never allocate another number."""
         with self.lock:
+            data = self._read()
+            # Convert only the current, undelivered legacy rental to a hold.
+            for key, state in data.get("settings", {}).items():
+                if not key.startswith("phone_rental_user_") or not isinstance(state, dict):
+                    continue
+                order = data.get("orders", {}).get("PHONE" + state.get("token", ""))
+                if not order or order.get("status") != "paid" or order.get("phone_otp_seen"):
+                    continue
+                amount = int(order["wallet_paid"])
+                user = data["users"][str(order["user_id"])]
+                user["total_spent"] = max(0, int(user.get("total_spent", 0)) - amount)
+                stats = data.setdefault("stats", {})
+                stats["lifetime_revenue"] = max(0, int(stats.get("lifetime_revenue", 0)) - amount)
+                stats["lifetime_paid_orders"] = max(0, int(stats.get("lifetime_paid_orders", 0)) - 1)
+                order.update(status="phone_waiting", stats_counted=False, stats_counted_revenue=0)
+                order.pop("paid_at", None)
+            self._write(data, immediate=True)
             tokens = [code[5:] for code, order in self._read().get("orders", {}).items()
                       if code.startswith("PHONE") and order.get("status") == "phone_allocating"]
         return sum(self.refund_phone_rental(token) for token in tokens)

@@ -1,5 +1,16 @@
 # Thuê số Telegram
 
+## Chính sách hiện hành: trả tiền khi nhận OTP
+
+Phần này thay thế các mô tả tính tiền lúc cấp số và đổi số có phí bên dưới.
+
+- Giữ 4.000đ từ ví khi cấp số, trạng thái `phone_waiting`; chưa ghi doanh thu hay chi tiêu.
+- Chưa nhận OTP: đổi số ngay, chuyển khoản giữ sang số mới, không thu thêm. Hủy hoàn khoản giữ một lần.
+- Sau khi Telegram xác nhận hiển thị OTP, chuyển đơn thành `paid` và ghi nhận doanh thu đúng một lần.
+- Telegram gửi lỗi: chưa tính tiền, khoản giữ còn có thể hủy hoặc dùng đổi số. Nếu tiến trình chết giữa Telegram xác nhận và ghi sổ, ưu tiên không thu khi chưa có bằng chứng lưu thành công; hai hệ thống không có giao dịch chung.
+- Khởi động lại giữ nguyên đơn chờ; hoàn khoản cấp số bị gián đoạn. Đơn hiện tại từ phiên bản cũ chưa ghi nhận OTP được chuyển thành khoản giữ và đảo phần doanh thu đã ghi; không sửa lịch sử các số cũ đã thay thế.
+- Kiểm thử: `tests/test_phone_billing.py` và `tests/test_phone_polling.py`.
+
 ## Cập nhật luồng OTP và đổi số
 
 - Lấy OTP chạy nền, cập nhật phản hồi API trên cùng tin nhắn mỗi 5 giây, tối đa 180 giây; dừng sớm khi có OTP hoặc API xác nhận số lỗi.
