@@ -20,8 +20,11 @@ async def cmd_setphonename(update, context):
     if not name or len(name) > 64:
         await update.message.reply_text("Dùng /setphonename Tên nút mới (1–64 ký tự). Gửi /setphonename reset để khôi phục.")
         return
-    name = DEFAULT_BUTTON_NAME if name.lower() == "reset" else name
-    db.set_setting("phone_rental_button_name", name)
+    if name.lower() == "reset":
+        db.set_setting("phone_rental_button_name", None)
+        name = DEFAULT_BUTTON_NAME
+    else:
+        db.set_setting("phone_rental_button_name", name)
     db.flush()
     await update.message.reply_text(f"Đã đổi tên nút thành: {name}\nMở lại /start hoặc /menu để xem.")
 

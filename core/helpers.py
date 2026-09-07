@@ -27,6 +27,7 @@ from core.order_values import (
 
 
 UI_BUTTONS = {
+    "phone_rental": "📱 Thuê số",
     "menu": "🛒 MENU SẢN PHẨM",
     "wallet": "💰 Ví",
     "referral": "🎁 Giới thiệu",
@@ -289,4 +290,3 @@ def from_short_key(token: str) -> str:
         except Exception:
             pass
     return token
-

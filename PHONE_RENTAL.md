@@ -40,6 +40,9 @@ Khôi phục tên mặc định:
 /setphonename reset
 ```
 
+Icon của nút có thể đổi tại **Admin → Giao diện → Đổi icon nút bấm → Thuê số**.
+Gửi custom emoji hoặc nhập emoji ID; gửi `reset` để dùng lại icon mặc định.
+
 Mở lại `/start` hoặc `/menu` để cập nhật nút trên tin nhắn mới.
 
 ## Hủy và đổi số lỗi
