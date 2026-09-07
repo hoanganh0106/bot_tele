@@ -1,5 +1,6 @@
 """Formatting, localization, and shared Telegram UI helpers."""
 
+import hashlib
 import time
 import unicodedata
 import uuid
@@ -17,6 +18,12 @@ from core.config import (
     USDT_VND_RATE_DEFAULT,
 )
 from core.runtime import _lang_cache, db
+from core.order_values import (
+    JUNK_STATUSES,
+    REVENUE_STATUSES,
+    order_cost,
+    order_revenue,
+)
 
 
 UI_BUTTONS = {
@@ -69,7 +76,7 @@ def estimate_order_usdt(order: dict) -> Decimal:
         return (Decimal(str(custom_price)) * int(order.get("qty", 1))).quantize(
             Decimal("0.001"), rounding=ROUND_HALF_UP
         )
-    total_vnd = Decimal(str(order.get("original_total", order.get("total", 0))))
+    total_vnd = Decimal(str(order_revenue(order)))
     return (total_vnd / Decimal(get_usdt_vnd_rate())).quantize(
         Decimal("0.01"), rounding=ROUND_HALF_UP
     )
@@ -97,6 +104,21 @@ def order_created_at_ms(order: dict) -> int | None:
         return int(datetime.fromisoformat(order.get("created_at", "")).timestamp() * 1000)
     except (TypeError, ValueError):
         return None
+
+
+def crypto_poll_start_ms(watermark_ms: int, cycle_now_ms: int, lookback_ms: int, max_lookback_ms: int) -> int:
+    """Compute the Binance poll window start (ms).
+
+    Extends the query window back far enough to (a) re-scan deposits that only
+    reach 'success' minutes after they first appear, so a slow confirmation no
+    longer falls outside a narrow window, and (b) cover downtime since the last
+    persisted watermark. Both are bounded by ``max_lookback_ms`` so a very old
+    watermark cannot force an unbounded query. Txid dedup makes the repeated
+    overlap safe (already-processed transactions are skipped).
+    """
+    start = min(int(watermark_ms), int(cycle_now_ms)) - int(lookback_ms)
+    floor = int(cycle_now_ms) - int(max_lookback_ms)
+    return max(start, floor)
 
 
 def user_lang(user_id: int) -> str:
@@ -230,3 +252,41 @@ def generate_qr_url(amount: int, content: str) -> str:
         f"&amount={amount}"
         f"&des={content}"
     )
+
+
+_SHORT_KEY_REGISTRY: dict[str, str] = {}
+_REVERSE_KEY_REGISTRY: dict[str, str] = {}
+
+
+def to_short_key(key: str) -> str:
+    """Nếu key dài hơn 28 bytes UTF-8, chuyển thành token ngắn 'k_<12_hex>' để đảm bảo callback_data <= 64 bytes."""
+    if not key or len(key.encode("utf-8")) <= 28:
+        return key
+    if key in _REVERSE_KEY_REGISTRY:
+        return _REVERSE_KEY_REGISTRY[key]
+    short = f"k_{hashlib.md5(key.encode('utf-8')).hexdigest()[:12]}"
+    _SHORT_KEY_REGISTRY[short] = key
+    _REVERSE_KEY_REGISTRY[key] = short
+    return short
+
+
+def from_short_key(token: str) -> str:
+    """Khôi phục token ngắn về key sản phẩm gốc."""
+    if not token:
+        return token
+    if token in _SHORT_KEY_REGISTRY:
+        return _SHORT_KEY_REGISTRY[token]
+    if token.startswith("k_") and len(token) == 14:
+        try:
+            from core.products import get_products_cached
+            products, _ = get_products_cached()
+            if products:
+                for k in products.keys():
+                    if hashlib.md5(k.encode("utf-8")).hexdigest()[:12] == token[2:]:
+                        _SHORT_KEY_REGISTRY[token] = k
+                        _REVERSE_KEY_REGISTRY[k] = token
+                        return k
+        except Exception:
+            pass
+    return token
+

@@ -47,6 +47,7 @@ from handlers.payment import (
     handle_pay_wallet,
 )
 from handlers.text_input import handle_media_input, handle_text_input
+from handlers.phone_rental import cmd_setphonename, handle_phone_rental
 from jobs import post_init
 
 
@@ -68,11 +69,15 @@ def main():
     if cleared:
         logger.info(f"🔄 Đã xóa {cleared} custom_prices cũ. Admin cần set lại giá nếu muốn.")
 
+    db.recover_phone_rentals()
+
     # Build bot
     app = ApplicationBuilder().token(BOT_TOKEN).post_init(post_init).build()
 
     # Commands
     app.add_handler(CommandHandler("start", cmd_start))
+    app.add_handler(CommandHandler("setphonename", cmd_setphonename))
+    app.add_handler(CallbackQueryHandler(handle_phone_rental, pattern="^phone_(?:home|new|confirm_[a-f0-9]{16}|otp_[a-f0-9]{16}|cancel_[a-f0-9]{16}|change_[a-f0-9]{16})$"))
     app.add_handler(CommandHandler("help", cmd_help))
     app.add_handler(CommandHandler("language", cmd_language))
     app.add_handler(CommandHandler("menu", cmd_menu))

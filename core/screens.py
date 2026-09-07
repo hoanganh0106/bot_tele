@@ -2,7 +2,7 @@
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
-from core.helpers import escape_html, format_money, is_admin, t, ui_btn, user_lang
+from core.helpers import escape_html, format_money, is_admin, t, to_short_key, ui_btn, user_lang
 from core.products import (
     async_refresh_products_cache,
     classify_product,
@@ -10,6 +10,7 @@ from core.products import (
     get_products_cached,
 )
 from core.runtime import db
+from core.phone_rental import DEFAULT_BUTTON_NAME
 
 
 def render_home_text(user_id: int, first_name: str | None, balance: int) -> str:
@@ -29,6 +30,7 @@ def render_home_text(user_id: int, first_name: str | None, balance: int) -> str:
 
 def build_home_keyboard(user_id: int, balance: int) -> InlineKeyboardMarkup:
     rows = [
+        [ui_btn("phone_rental", db.get_setting("phone_rental_button_name") or DEFAULT_BUTTON_NAME, callback_data="phone_home", user_id=user_id)],
         [ui_btn("menu", callback_data="open_menu", user_id=user_id)],
         [
             ui_btn("wallet", f"{t(user_id, 'btn_wallet')}: {format_money(balance)}", callback_data="wallet_home", user_id=user_id),
@@ -47,6 +49,7 @@ def build_home_keyboard(user_id: int, balance: int) -> InlineKeyboardMarkup:
 
 def build_menu_footer(user_id: int, balance: int) -> list[list[InlineKeyboardButton]]:
     return [
+        [ui_btn("phone_rental", db.get_setting("phone_rental_button_name") or DEFAULT_BUTTON_NAME, callback_data="phone_home", user_id=user_id)],
         [
             ui_btn("history", callback_data="btn_myorders", user_id=user_id),
             ui_btn("home", callback_data="back_start", user_id=user_id),
@@ -71,7 +74,7 @@ def build_product_back_keyboard(user_id: int, category_id: str) -> InlineKeyboar
 
 def build_admin_product_back_keyboard(product_key: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([[
-        InlineKeyboardButton("⬅️ Quay lại", callback_data=f"admin_price_{product_key}"),
+        InlineKeyboardButton("⬅️ Quay lại", callback_data=f"admin_price_{to_short_key(product_key)}"),
         InlineKeyboardButton("🏠 Thoát", callback_data="admin_home"),
     ]])
 
@@ -138,7 +141,7 @@ def build_category_grid(products, callback_prefix, is_admin=False, user_id=None)
 async def build_menu_screen(user_id: int, refresh: bool = False):
     products, _ = await async_refresh_products_cache() if refresh else get_products_cached()
     if not products:
-        return t(user_id, "products_unavailable"), None
+        return t(user_id, "products_unavailable"), InlineKeyboardMarkup(build_menu_footer(user_id, db.get_user_balance(user_id)))
     balance = db.get_user_balance(user_id)
     buttons, _ = build_category_grid(products, "viewcat", is_admin=False, user_id=user_id)
     buttons.extend(build_menu_footer(user_id, balance))
@@ -152,14 +155,18 @@ async def build_menu_screen(user_id: int, refresh: bool = False):
     return text, InlineKeyboardMarkup(buttons)
 
 
-def build_orders_screen(user_id: int):
+def build_orders_screen(user_id: int, page: int = 0, page_size: int = 8):
     orders = db.get_user_orders(user_id)
     text = t(user_id, "orders_title") if orders else t(user_id, "no_orders")
+    navigation = []
     if orders:
-        recent = sorted(
+        ordered = sorted(
             orders.items(), key=lambda item: item[1].get("created_at", ""), reverse=True
-        )[:10]
-        for code, order in recent:
+        )
+        total_pages = max(1, (len(ordered) + page_size - 1) // page_size)
+        page = max(0, min(page, total_pages - 1))
+        start = page * page_size
+        for code, order in ordered[start:start + page_size]:
             status_icon = {
                 "pending": "⏳", "processing": "⏳", "paid": "✅",
                 "paid_waiting_email": "📧", "cancelled": "❌",
@@ -171,8 +178,27 @@ def build_orders_screen(user_id: int):
                 f"{format_money(order.get('original_total', order.get('total', 0)))}\n"
                 f"   {order.get('created_at', '?')[:16]}\n\n"
             )
-    keyboard = InlineKeyboardMarkup([[
+        if total_pages > 1:
+            if page > 0:
+                navigation.append(
+                    InlineKeyboardButton(
+                        "⬅️", callback_data=f"orders_page_{page - 1}"
+                    )
+                )
+            navigation.append(
+                InlineKeyboardButton(f"{page + 1}/{total_pages}", callback_data="noop")
+            )
+            if page + 1 < total_pages:
+                navigation.append(
+                    InlineKeyboardButton(
+                        "➡️", callback_data=f"orders_page_{page + 1}"
+                    )
+                )
+    rows = []
+    if navigation:
+        rows.append(navigation)
+    rows.append([
         ui_btn("menu", callback_data="back_menu", user_id=user_id),
         ui_btn("home", callback_data="back_start", user_id=user_id),
-    ]])
-    return text[:4000], keyboard
+    ])
+    return text, InlineKeyboardMarkup(rows)

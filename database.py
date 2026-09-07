@@ -45,7 +45,10 @@ _DEFAULT_DATA = {
 DEBOUNCE_INTERVAL = 2.0  # Giây — gom writes trong khoảng này
 
 
-class Database:
+from core.phone_storage import PhoneRentalStore
+
+
+class Database(PhoneRentalStore):
     def __init__(self, filepath: str):
         self.filepath = filepath
         self.lock = threading.Lock()
