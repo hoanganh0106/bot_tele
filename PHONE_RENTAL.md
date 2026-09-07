@@ -1,5 +1,11 @@
 # Thuê số Telegram
 
+## Cập nhật luồng OTP và đổi số
+
+- Lấy OTP chạy nền, cập nhật phản hồi API trên cùng tin nhắn mỗi 5 giây, tối đa 180 giây; dừng sớm khi có OTP hoặc API xác nhận số lỗi.
+- Đổi số khác mở xác nhận mua số mới giá 4.000đ, không tự hoàn đơn cũ. Nếu API cấp lại đúng số đang dùng thì hoàn khoản giữ tiền cho yêu cầu mới.
+- Hủy vẫn áp dụng xác minh lỗi hai lần theo điều kiện bên dưới. Các mô tả đổi miễn phí bên dưới là hành vi cũ, đã được thay thế bằng xác nhận mua mới.
+
 - Nút **📱 Thuê số** nằm ở trang chủ `/start` và menu `/menu`.
 - Khách chọn **Nhận số**, xác nhận **4.000đ**, rồi bấm **Lấy OTP**.
 - Thanh toán bằng ví. Bot giữ 4.000đ trước khi gọi API; nhận số thành công thì ghi nhận đơn đã thanh toán. Không nhận được số thì hoàn tiền. Lấy OTP không thu thêm phí.

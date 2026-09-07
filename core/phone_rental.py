@@ -3,6 +3,7 @@
 import asyncio
 import os
 import re
+import json
 
 import aiohttp
 
@@ -36,7 +37,7 @@ def validate_response(payload, status, path):
     return payload
 
 
-async def request_api(path, **params):
+async def request_api(path, on_response=None, **params):
     base = os.getenv(
         "PHONE_RENTAL_API_URL",
         "https://cultural-webshots-track-say.trycloudflare.com",
@@ -46,10 +47,13 @@ async def request_api(path, **params):
     try:
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=20)) as session:
             async with session.get(base + path, params=params, allow_redirects=False) as response:
-                payload = await response.json(content_type=None)
+                raw = await response.text()
+                if on_response:
+                    await on_response(f"HTTP {response.status}\n{raw[:1200]}")
+                payload = json.loads(raw)
                 return validate_response(payload, response.status, path)
     except (aiohttp.ClientError, asyncio.TimeoutError, ValueError) as exc:
-        raise PhoneApiError("Không kết nối được API hoặc phản hồi không hợp lệ. Vui lòng thử lại sau.") from exc
+        raise PhoneApiError(f"Chưa đọc được phản hồi API ({type(exc).__name__}).") from exc
 
 
 def parse_phone(payload):
