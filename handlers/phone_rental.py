@@ -43,14 +43,16 @@ async def show_screen(query, state, note="", *, waiting=False, otp=None):
     text = "<b>" + escape_html(db.get_setting("phone_rental_button_name") or DEFAULT_BUTTON_NAME) + "</b>"
     text += f"\n<b>{format_money(rental_price())} khi nhận OTP</b> · Chưa có OTP đổi miễn phí."
     if state:
+        text += "\nPhiên thuê có hiệu lực 10 phút."
         text += "\n\nSố điện thoại: <code>" + escape_html(state["phone"]) + "</code>"
         if state.get("prefix"):
             text += "\nMã quốc gia: <code>+" + escape_html(state["prefix"]) + "</code>"
-        rows.append([InlineKeyboardButton("📩 Lấy OTP", callback_data="phone_otp_" + state["token"])])
-        rows.append([
-            InlineKeyboardButton("🔄 Đổi số", callback_data="phone_change_" + state["token"]),
-            InlineKeyboardButton("❌ Hủy", callback_data="phone_cancel_" + state["token"]),
-        ])
+        if not otp:
+            rows.append([InlineKeyboardButton("📩 Lấy OTP", callback_data="phone_otp_" + state["token"])])
+            rows.append([
+                InlineKeyboardButton("🔄 Đổi số", callback_data="phone_change_" + state["token"]),
+                InlineKeyboardButton("❌ Hủy", callback_data="phone_cancel_" + state["token"]),
+            ])
     else:
         text += "\n\nNhấn Nhận số để bắt đầu."
     if note:
@@ -60,6 +62,7 @@ async def show_screen(query, state, note="", *, waiting=False, otp=None):
     if otp:
         text += "\n\n✅ OTP: <code>" + escape_html(otp) + "</code>"
     rows.append([InlineKeyboardButton("📱 Thuê số khác" if state else "📱 Nhận số", callback_data="phone_new")])
+    rows.append([InlineKeyboardButton("📜 Lịch sử thuê số", callback_data="phone_history_0")])
     rows.append([InlineKeyboardButton("♻️ Thuê lại số", callback_data="phone_rerent")])
     rows.append([ui_btn("deposit", callback_data="deposit_start", user_id=query.from_user.id)])
     rows.append([ui_btn("home", callback_data="back_start", user_id=query.from_user.id)])
@@ -95,8 +98,32 @@ async def _handle_phone_rental(update, context):
         return
     await query.answer()
     key = f"phone_rental_user_{query.from_user.id}"
-    state = db.get_setting(key)
+    state = db.get_active_phone_rental(query.from_user.id)
     action = query.data
+    if action.startswith("phone_history_"):
+        context.user_data.pop("awaiting_phone_rerent", None)
+        try:
+            page = max(0, int(action.removeprefix("phone_history_")))
+        except ValueError:
+            page = 0
+        history = db.get_phone_history(query.from_user.id)
+        page = min(page, max(0, (len(history) - 1) // 10))
+        lines = ["<b>Lịch sử thuê số</b>"]
+        for order in history[page * 10:(page + 1) * 10]:
+            phone = order.get("phone", {}).get("phone", "")
+            otp = (order.get("phone_delivered_message") or {}).get("otp")
+            lines.append(f"<code>{escape_html(phone)}</code> · OTP: "
+                         + (f"<code>{escape_html(otp)}</code>" if otp else "Không có mã đã lưu"))
+        if not history:
+            lines.append("Chưa có số đã nhận OTP.")
+        rows = []
+        if page:
+            rows.append([InlineKeyboardButton("⬅️ Trước", callback_data=f"phone_history_{page - 1}")])
+        if (page + 1) * 10 < len(history):
+            rows.append([InlineKeyboardButton("Tiếp ➡️", callback_data=f"phone_history_{page + 1}")])
+        rows.append([InlineKeyboardButton("⬅️ Thuê số", callback_data="phone_home")])
+        await query.edit_message_text("\n\n".join(lines), parse_mode="HTML", reply_markup=InlineKeyboardMarkup(rows))
+        return
     if action == "phone_rerent":
         context.user_data["awaiting_phone_rerent"] = True
         await query.edit_message_text(
@@ -229,7 +256,7 @@ async def poll_otp(query, state):
 
     while time.monotonic() < deadline:
         tick = time.monotonic()
-        current = db.get_setting(f"phone_rental_user_{query.from_user.id}")
+        current = db.get_active_phone_rental(query.from_user.id)
         if not current or current["token"] != state["token"]:
             return
         if current.get("delivered_message"):
@@ -267,10 +294,7 @@ async def deliver_phone_otp(query, state, otp, selected=None):
     if not db.prepare_phone_delivery(query.from_user.id, state["token"]):
         return
     await show_screen(query, state, otp=otp)
-    if selected:
-        db.record_phone_otp(query.from_user.id, state["token"], delivered=selected)
-    else:
-        db.record_phone_otp(query.from_user.id, state["token"])
+    db.record_phone_otp(query.from_user.id, state["token"], delivered=selected or {"otp": otp})
 
 
 async def rent_requested_phone(update, context, requested_phone):
@@ -280,7 +304,7 @@ async def rent_requested_phone(update, context, requested_phone):
         return False
     # Reuse the user's previously allocated number, not the random allocator.
     phone = None
-    for order in db.get_user_orders(user_id).values():
+    for order in db.get_phone_history(user_id):
         previous = order.get("phone")
         if (order.get("user_id") == user_id and order.get("product_key") == "phone_rental"
                 and isinstance(previous, dict) and previous.get("phone") == requested_phone):

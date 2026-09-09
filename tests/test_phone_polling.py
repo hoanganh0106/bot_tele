@@ -20,6 +20,7 @@ def test_poll_updates_then_records_otp(monkeypatch):
     state = {"phone": "012345678", "prefix": "855", "token": "a" * 16}
     db = Mock()
     db.get_setting.return_value = state
+    db.get_active_phone_rental.return_value = state
     db.record_phone_otp.return_value = True
     monkeypatch.setattr(h, "db", db)
     screen = AsyncMock()
@@ -39,13 +40,14 @@ def test_poll_updates_then_records_otp(monkeypatch):
     assert screen.await_count == 2
     assert screen.await_args_list[0].kwargs["waiting"] is True
     assert screen.await_args_list[1].kwargs["otp"] == "001234"
-    db.record_phone_otp.assert_called_once_with(42, state["token"])
+    db.record_phone_otp.assert_called_once_with(42, state["token"], delivered={"otp": "001234"})
 
 
 def test_change_immediately_without_cooldown(monkeypatch):
     state = {"phone": "012345678", "token": "a" * 16}
     db = Mock()
     db.get_setting.return_value = state
+    db.get_active_phone_rental.return_value = state
     db.get_order.return_value = {"phone_otp_seen": False}
     db.reserve_phone_rental.return_value = True
     db.finish_phone_rental.return_value = True
@@ -63,7 +65,7 @@ def test_change_immediately_without_cooldown(monkeypatch):
     db.reserve_phone_rental.assert_called_once()
     query.edit_message_text.assert_not_awaited()
     # Replaying the old number's callback after replacement cannot charge again.
-    db.get_setting.return_value = {"phone": "098765432", "token": "b" * 16}
+    db.get_active_phone_rental.return_value = {"phone": "098765432", "token": "b" * 16}
     asyncio.run(h.handle_phone_rental(update, context))
     db.reserve_phone_rental.assert_called_once()
 
@@ -72,6 +74,7 @@ def test_poll_stops_at_deadline(monkeypatch):
     state = {"phone": "012345678", "token": "a" * 16}
     db = Mock()
     db.get_setting.return_value = state
+    db.get_active_phone_rental.return_value = state
     monkeypatch.setattr(h, "db", db)
     screen = AsyncMock()
     monkeypatch.setattr(h, "show_screen", screen)

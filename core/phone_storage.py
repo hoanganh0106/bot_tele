@@ -5,6 +5,37 @@ import time
 
 
 class PhoneRentalStore:
+    def get_active_phone_rental(self, user_id):
+        """Expire sessions durably; completed rentals are history only."""
+        with self.lock:
+            data = self._read()
+            key = f"phone_rental_user_{user_id}"
+            state = data.get("settings", {}).get(key)
+            if not state:
+                return None
+            order = data.get("orders", {}).get("PHONE" + state["token"])
+            if (order and order.get("status") == "phone_waiting"
+                    and not order.get("phone_otp_seen")
+                    and time.time() < state.get("expires_at", 0)):
+                return dict(state)
+            if order and order.get("status") == "phone_waiting":
+                amount = order["wallet_paid"]
+                data["users"][str(user_id)]["balance"] += amount
+                order.update(status="cancelled", wallet_refunded=True,
+                             refund_credited=True, refund_amount=amount)
+            data["settings"].pop(key, None)
+            self._write(data, immediate=True)
+        self.flush()
+        return None
+
+    def get_phone_history(self, user_id):
+        with self.lock:
+            rows = [dict(order) for order in self._read().get("orders", {}).values()
+                    if order.get("user_id") == user_id
+                    and order.get("product_key") == "phone_rental"
+                    and order.get("status") == "paid" and order.get("phone_otp_seen")]
+        return sorted(rows, key=lambda row: row.get("paid_at", ""), reverse=True)
+
     def prepare_phone_delivery(self, user_id, token):
         with self.lock:
             data = self._read()
@@ -12,7 +43,9 @@ class PhoneRentalStore:
             state = data.get("settings", {}).get(f"phone_rental_user_{user_id}")
             return bool(order and order.get("user_id") == user_id and state
                         and state.get("token") == token
-                        and order.get("status") in ("phone_waiting", "paid"))
+                        and order.get("status") == "phone_waiting"
+                        and not order.get("phone_otp_seen")
+                        and time.time() < state.get("expires_at", 0))
 
     def record_phone_otp(self, user_id, token, delivered=None):
         """Settle a hold once, after Telegram acknowledges OTP display."""
@@ -150,7 +183,7 @@ class PhoneRentalStore:
             if not order or order["user_id"] != user_id or order["status"] != "phone_allocating":
                 return False
             amount = order["total"]
-            state = dict(phone, token=token)
+            state = dict(phone, token=token, expires_at=time.time() + 600)
             data.setdefault("settings", {})[f"phone_rental_user_{user_id}"] = state
             order.update(status="phone_waiting",
                          items=[phone["phone"]], phone=state, stats_counted=False,

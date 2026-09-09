@@ -77,3 +77,24 @@ def test_restart_preserves_hold_and_refunds_interrupted_allocation():
     assert db.recover_phone_rentals() == 1
     assert db.recover_phone_rentals() == 0
     assert db.data["users"]["42"]["balance"] == 4000
+
+
+def test_expired_session_refunds_once_and_has_no_history():
+    db = allocated()
+    db.data["settings"]["phone_rental_user_42"]["expires_at"] = 0
+    assert not db.prepare_phone_delivery(42, "a")
+    assert db.get_active_phone_rental(42) is None
+    assert db.get_active_phone_rental(42) is None
+    assert db.data["users"]["42"]["balance"] == 4000
+    assert db.get_phone_history(42) == []
+
+
+def test_completed_session_is_history_only_and_rerent_needs_money():
+    db = allocated()
+    assert db.record_phone_otp(42, "a", delivered={"otp": "001234"})
+    assert not db.prepare_phone_delivery(42, "a")
+    assert db.get_active_phone_rental(42) is None
+    assert db.get_phone_history(42)[0]["phone_delivered_message"]["otp"] == "001234"
+    assert db.get_phone_history(99) == []
+    assert not db.reserve_phone_rental(42, "b", 4000, "Phone")
+    assert not db.refund_phone_rental("a")

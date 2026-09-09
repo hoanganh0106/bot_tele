@@ -77,7 +77,7 @@ def main():
     # Commands
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("setphonename", cmd_setphonename))
-    app.add_handler(CallbackQueryHandler(handle_phone_rental, pattern="^phone_(?:home|new|rerent|confirm_[a-f0-9]{16}|otp_[a-f0-9]{16}|cancel_[a-f0-9]{16}|change_[a-f0-9]{16})$"))
+    app.add_handler(CallbackQueryHandler(handle_phone_rental, pattern="^phone_(?:home|new|rerent|history_[0-9]+|confirm_[a-f0-9]{16}|otp_[a-f0-9]{16}|cancel_[a-f0-9]{16}|change_[a-f0-9]{16})$"))
     app.add_handler(CommandHandler("help", cmd_help))
     app.add_handler(CommandHandler("language", cmd_language))
     app.add_handler(CommandHandler("menu", cmd_menu))
