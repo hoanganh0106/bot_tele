@@ -6,7 +6,7 @@ from decimal import Decimal, InvalidOperation
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes
 
-from core.helpers import UI_BUTTONS, format_money, format_usdt, is_admin, t
+from core.helpers import UI_BUTTONS, escape_md, format_money, format_usdt, is_admin, t
 from core.products import (
     get_all_products_merged,
     get_products_cached,
@@ -664,9 +664,8 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
         for tok in tokens:
             if not tok:
                 continue
-            try:
-                uid = int(tok)
-            except ValueError:
+            uid = db.resolve_broadcast_user(tok)
+            if uid is None:
                 invalid.append(tok)
                 continue
             if is_admin(uid):
@@ -682,7 +681,7 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if duplicated:
             lines.append("ℹ️ Đã bị chặn từ trước: " + ", ".join(f"`{x}`" for x in duplicated))
         if invalid:
-            lines.append("❌ Không hợp lệ (bỏ qua): " + ", ".join(f"`{x}`" for x in invalid))
+            lines.append("❌ Không tìm thấy hoặc không hợp lệ (hãy thử ID): " + ", ".join(escape_md(x) for x in invalid))
         if not lines:
             lines.append("❌ Không nhận được ID hợp lệ nào.")
         text_out, markup = _build_block_menu(extra="\n".join(lines))

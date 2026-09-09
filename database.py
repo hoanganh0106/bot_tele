@@ -1442,6 +1442,19 @@ class Database(PhoneRentalStore):
         with self.lock:
             return dict(self._read().get("users", {}).get(str(user_id), {}))
 
+    def resolve_broadcast_user(self, value: str):
+        """Resolve current known usernames, rejecting ambiguous matches."""
+        value = value.strip()
+        if value.isascii() and value.isdigit():
+            return int(value) if int(value) > 0 else None
+        username = value.removeprefix("@").casefold()
+        if not username or not all(c.isascii() and (c.isalnum() or c == "_") for c in username):
+            return None
+        with self.lock:
+            matches = [int(uid) for uid, user in self._read().get("users", {}).items()
+                       if (user.get("username") or "").lstrip("@").casefold() == username]
+        return matches[0] if len(matches) == 1 else None
+
     def get_user_lang(self, user_id: int) -> str:
         """Return a persisted language, defaulting legacy users to Vietnamese."""
         with self.lock:

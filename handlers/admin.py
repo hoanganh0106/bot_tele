@@ -150,7 +150,10 @@ def _build_block_menu(extra: str = ""):
     ]
     if blocklist:
         lines.append(f"\n📋 Đang chặn **{len(blocklist)}** ID:")
-        lines.append("\n".join(f"• `{uid}`" for uid in blocklist))
+        for uid in blocklist:
+            user = db.get_user(uid)
+            name = user.get("first_name") or user.get("username") or f"User {uid}"
+            lines.append(f"• [{escape_md(name)}](tg://user?id={uid}) · `{uid}`")
     else:
         lines.append("\n_Chưa chặn ID nào._")
     if extra:
@@ -159,7 +162,9 @@ def _build_block_menu(extra: str = ""):
     buttons = [[InlineKeyboardButton("➕ Thêm ID chặn", callback_data="broadcast_block_add")]]
     # Mỗi ID 1 nút gỡ chặn (tối đa 20 nút cho gọn)
     for uid in blocklist[:20]:
-        buttons.append([InlineKeyboardButton(f"❌ Bỏ chặn {uid}", callback_data=f"broadcast_unblock_{uid}")])
+        user = db.get_user(uid)
+        name = user.get("first_name") or user.get("username") or str(uid)
+        buttons.append([InlineKeyboardButton(f"❌ Bỏ chặn {name[:40]}", callback_data=f"broadcast_unblock_{uid}")])
     if blocklist:
         buttons.append([InlineKeyboardButton("🧹 Bỏ chặn tất cả", callback_data="broadcast_block_clear")])
     buttons.append([InlineKeyboardButton("⬅️ Về Broadcast", callback_data="admin_broadcast")])
@@ -400,9 +405,10 @@ async def handle_admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["awaiting_block_id"] = True
         await query.edit_message_text(
             "➕ **THÊM ID CHẶN BROADCAST**\n\n"
-            "Gửi ID người dùng bạn muốn chặn.\n"
-            "Có thể gửi **nhiều ID** cùng lúc, cách nhau bằng dấu phẩy, khoảng trắng hoặc xuống dòng.\n\n"
-            "Ví dụ: `123456789, 987654321`",
+            "Gửi ID hoặc @username người dùng bạn muốn chặn.\n"
+            "Có thể gửi **nhiều ID/username** cùng lúc, cách nhau bằng dấu phẩy, khoảng trắng hoặc xuống dòng.\n"
+            "Username cần có trong danh sách khách bot đã ghi nhận; không tìm thấy thì dùng ID.\n\n"
+            "Ví dụ: `123456789, @khachhang, username`",
             parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Quay lại", callback_data="broadcast_block_menu")]])
         )
