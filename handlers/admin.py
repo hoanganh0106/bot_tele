@@ -315,6 +315,25 @@ def _clear_admin_state(context: ContextTypes.DEFAULT_TYPE):
         context.user_data.pop(key_to_clear, None)
 
 
+def _build_admin_ui_custom():
+    enabled = db.get_setting("phone_rental_enabled", True) is not False
+    status = "✅ ĐANG BẬT" if enabled else "⏸️ ĐANG TẮT"
+    toggle = "⏸️ Tắt cho thuê số" if enabled else "✅ Bật cho thuê số"
+    buttons = [
+        [InlineKeyboardButton(f"📱 Cho thuê số: {status}", callback_data="admin_phone_toggle")],
+        [InlineKeyboardButton(toggle, callback_data="admin_phone_toggle")],
+        [InlineKeyboardButton("✏️ Tên nút thuê số", callback_data="admin_phone_name"),
+         InlineKeyboardButton("💰 Giá thuê số", callback_data="admin_phone_price")],
+        [InlineKeyboardButton("✏️ Sửa lời chào /start", callback_data="admin_edit_welcome")],
+        [InlineKeyboardButton("✏️ Sửa lời chào EN", callback_data="admin_edit_welcome_en")],
+        [InlineKeyboardButton("✏️ Sửa Menu sản phẩm VI", callback_data="admin_edit_menu_title")],
+        [InlineKeyboardButton("✏️ Sửa Menu sản phẩm EN", callback_data="admin_edit_menu_title_en")],
+        [InlineKeyboardButton("🎨 Đổi Icon nút bấm", callback_data="admin_edit_btn_list")],
+        [InlineKeyboardButton("⬅️ Quay lại", callback_data="admin_home")],
+    ]
+    return "🎨 **TÙY CHỈNH GIAO DIỆN**\n\nTrạng thái thuê số: **" + status + "**", buttons
+
+
 async def handle_admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Xử lý click trong Admin Dashboard."""
     query = update.callback_query
@@ -1243,23 +1262,15 @@ async def handle_admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
     elif data == "admin_ui_custom":
-        buttons = [
-            [InlineKeyboardButton("✏️ Tên nút thuê số", callback_data="admin_phone_name"),
-             InlineKeyboardButton("💰 Giá thuê số", callback_data="admin_phone_price")],
-            [InlineKeyboardButton("✏️ Sửa lời chào /start", callback_data="admin_edit_welcome")],
-            [InlineKeyboardButton("✏️ Sửa lời chào EN", callback_data="admin_edit_welcome_en")],
-            [InlineKeyboardButton("✏️ Sửa Menu sản phẩm VI", callback_data="admin_edit_menu_title")],
-            [InlineKeyboardButton("✏️ Sửa Menu sản phẩm EN", callback_data="admin_edit_menu_title_en")],
-            [InlineKeyboardButton("🎨 Đổi Icon nút bấm", callback_data="admin_edit_btn_list")],
-            [InlineKeyboardButton("⬅️ Quay lại", callback_data="admin_home")],
-        ]
-        await query.edit_message_text(
-            "🎨 **TÙY CHỈNH GIAO DIỆN**\n"
-            "━━━━━━━━━━━━━━━━━━\n"
-            "Chọn mục bạn muốn tùy chỉnh:",
-            parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup(buttons)
-        )
+        text, buttons = _build_admin_ui_custom()
+        await query.edit_message_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(buttons))
+
+    elif data == "admin_phone_toggle":
+        enabled = db.get_setting("phone_rental_enabled", True) is not False
+        db.set_setting("phone_rental_enabled", not enabled)
+        db.flush()
+        text, buttons = _build_admin_ui_custom()
+        await query.edit_message_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(buttons))
 
     elif data == "admin_edit_menu_title":
         context.user_data["awaiting_menu_title"] = True

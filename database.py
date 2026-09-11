@@ -37,6 +37,7 @@ _DEFAULT_DATA = {
     "processed_crypto_txids": [],
     "crypto_reservations": {},
     "incoming_payments": [],
+    "deposit_history": [],
     "users": {},
     "deposits": {},
     "user_list": []
@@ -1491,6 +1492,59 @@ class Database(PhoneRentalStore):
             new_balance = users[uid]["balance"]
             self._write(data, immediate=True)
             return new_balance
+
+    def credit_deposit(self, user_id: int, amount: int, payment: dict | None = None) -> int:
+        """Credit a matched bank deposit and persist an admin-auditable history row."""
+        amount = int(amount)
+        if amount <= 0:
+            raise ValueError("Deposit amount must be positive")
+        with self.lock:
+            data = self._read()
+            users = data.setdefault("users", {})
+            uid = str(user_id)
+            if uid not in users:
+                users[uid] = {"balance": 0, "total_deposited": 0, "total_spent": 0}
+            user = users[uid]
+            payment = payment or {}
+            transaction_id = str(payment.get("id") or "")
+            history = data.setdefault("deposit_history", [])
+            if transaction_id and any(
+                str(item.get("transaction_id") or "") == transaction_id for item in history
+            ):
+                return user.get("balance", 0)
+            user["balance"] = user.get("balance", 0) + amount
+            user["total_deposited"] = user.get("total_deposited", 0) + amount
+            history.append({
+                "user_id": user_id,
+                "amount": amount,
+                "transaction_id": transaction_id,
+                "content": str(payment.get("content") or "")[:256],
+                "reference_code": str(payment.get("referenceCode") or "")[:128],
+                "received_at": payment.get("received_at") or datetime.now().isoformat(),
+                "credited_at": datetime.now().isoformat(),
+            })
+            if len(history) > 2000:
+                data["deposit_history"] = history[-2000:]
+            self._write(data, immediate=True)
+            return user["balance"]
+
+    def get_deposit_history(self, user_id: int, limit: int = 20) -> list[dict]:
+        """Return the most recent successful wallet deposits for one customer."""
+        try:
+            limit = max(1, min(int(limit), 100))
+        except (TypeError, ValueError):
+            limit = 20
+        with self.lock:
+            rows = []
+            for item in self._read().get("deposit_history", []):
+                try:
+                    matches = int(item.get("user_id", -1)) == int(user_id)
+                except (TypeError, ValueError):
+                    matches = False
+                if matches:
+                    rows.append(dict(item))
+        rows.sort(key=lambda item: item.get("credited_at") or item.get("received_at") or "", reverse=True)
+        return rows[:limit]
 
     def deduct_balance(self, user_id: int, amount: int) -> bool:
         """Trừ tiền từ ví. Trả về True nếu thành công, False nếu không đủ tiền."""

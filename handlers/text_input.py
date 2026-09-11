@@ -710,6 +710,7 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
         total_spent = sum(o.get("total", 0) for o in user_orders.values() if o.get("status") == "paid")
         user_info = db.get_user(target_id)
         user_balance = db.get_user_balance(target_id)
+        deposit_history = db.get_deposit_history(target_id, limit=10)
         display_username = target_username or user_info.get("username") or "Không có"
         display_name = user_info.get("first_name") or "Không rõ"
         joined_at = user_info.get("joined_at", "Không rõ")
@@ -724,12 +725,24 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"👤 Username: {display_username}\n"
             f"📅 Tham gia: {joined_at}\n"
             f"💰 Số dư ví: **{format_money(user_balance)}**\n"
+            f"💳 Tổng đã nạp: **{format_money(user_info.get('total_deposited', 0))}**\n"
             f"💳 Đã chi (đơn thành công): **{format_money(total_spent)}**\n"
             f"📦 Tổng số đơn: **{len(user_orders)}**\n"
             f"🎁 Đã giới thiệu: **{user_info.get('referral_count', 0)}** người\n\n"
             f"📋 **10 ĐƠN GẦN NHẤT:**\n"
         )
         
+        if not deposit_history:
+            msg += "_Chưa có giao dịch nạp thành công nào_\n\n"
+        else:
+            msg += "📥 **LỊCH SỬ NẠP GẦN NHẤT:**\n"
+            for deposit in deposit_history:
+                received_at = (deposit.get("credited_at") or deposit.get("received_at") or "")[:16].replace("T", " ")
+                transaction_id = escape_md(str(deposit.get("transaction_id") or "-"))
+                content = escape_md(str(deposit.get("content") or "").replace("\n", " ")[:40])
+                msg += f"✅ {format_money(deposit.get('amount', 0))} · {escape_md(received_at)}\n   Ref: `{transaction_id}` · Nội dung: `{content}`\n"
+            msg += "\n"
+
         if not recent:
             msg += "_Chưa có đơn hàng nào_\n"
         else:

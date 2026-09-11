@@ -30,7 +30,6 @@ def render_home_text(user_id: int, first_name: str | None, balance: int) -> str:
 
 def build_home_keyboard(user_id: int, balance: int) -> InlineKeyboardMarkup:
     rows = [
-        [ui_btn("phone_rental", db.get_setting("phone_rental_button_name") or DEFAULT_BUTTON_NAME, callback_data="phone_home", user_id=user_id)],
         [ui_btn("menu", callback_data="open_menu", user_id=user_id)],
         [
             ui_btn("wallet", f"{t(user_id, 'btn_wallet')}: {format_money(balance)}", callback_data="wallet_home", user_id=user_id),
@@ -42,14 +41,15 @@ def build_home_keyboard(user_id: int, balance: int) -> InlineKeyboardMarkup:
         ],
         [ui_btn("language", callback_data="language_from_home", user_id=user_id)],
     ]
+    if db.get_setting("phone_rental_enabled", True):
+        rows.insert(0, [ui_btn("phone_rental", db.get_setting("phone_rental_button_name") or DEFAULT_BUTTON_NAME, callback_data="phone_home", user_id=user_id)])
     if is_admin(user_id):
         rows.append([InlineKeyboardButton("⚙️ Quản trị Admin", callback_data="admin_home")])
     return InlineKeyboardMarkup(rows)
 
 
 def build_menu_footer(user_id: int, balance: int) -> list[list[InlineKeyboardButton]]:
-    return [
-        [ui_btn("phone_rental", db.get_setting("phone_rental_button_name") or DEFAULT_BUTTON_NAME, callback_data="phone_home", user_id=user_id)],
+    rows = [
         [
             ui_btn("history", callback_data="btn_myorders", user_id=user_id),
             ui_btn("home", callback_data="back_start", user_id=user_id),
@@ -63,6 +63,9 @@ def build_menu_footer(user_id: int, balance: int) -> list[list[InlineKeyboardBut
             ui_btn("reload", callback_data="reload_menu", user_id=user_id),
         ],
     ]
+    if db.get_setting("phone_rental_enabled", True):
+        rows.insert(0, [ui_btn("phone_rental", db.get_setting("phone_rental_button_name") or DEFAULT_BUTTON_NAME, callback_data="phone_home", user_id=user_id)])
+    return rows
 
 
 def build_product_back_keyboard(user_id: int, category_id: str) -> InlineKeyboardMarkup:

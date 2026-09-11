@@ -150,6 +150,8 @@ class PhoneRentalStore:
             raise ValueError("Rental price must be positive")
         with self.lock:
             data = self._read()
+            if data.get("settings", {}).get("phone_rental_enabled", True) is False:
+                return False
             orders = data.setdefault("orders", {})
             code = "PHONE" + token
             user = data.setdefault("users", {}).setdefault(str(user_id), {"balance": 0})

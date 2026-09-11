@@ -413,7 +413,7 @@ async def _handle_payment(application, payment: dict):
             )
             return
 
-        new_balance = db.add_balance(deposit_user_id, transfer_amount, reason="deposit")
+        new_balance = db.credit_deposit(deposit_user_id, transfer_amount, payment)
         db.mark_payment_processed(transaction_id)
         db.mark_transaction_processed(transaction_id)
         logger.info(f"✅ Deposit: {transfer_amount}đ → user {deposit_user_id}, new balance: {new_balance}")

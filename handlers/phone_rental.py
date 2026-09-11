@@ -21,6 +21,10 @@ def rental_price():
         return RENTAL_PRICE
 
 
+def rental_enabled():
+    return db.get_setting("phone_rental_enabled", True) is not False
+
+
 async def cmd_setphonename(update, context):
     if not is_admin(update.effective_user.id):
         await update.message.reply_text("Chỉ admin mới được đổi tên nút.")
@@ -40,6 +44,7 @@ async def cmd_setphonename(update, context):
 
 async def show_screen(query, state, note="", *, waiting=False, otp=None):
     rows = []
+    enabled = rental_enabled()
     text = "<b>" + escape_html(db.get_setting("phone_rental_button_name") or DEFAULT_BUTTON_NAME) + "</b>"
     text += f"\n<b>{format_money(rental_price())} khi nhận OTP</b> · Chưa có OTP đổi miễn phí."
     if state:
@@ -49,21 +54,23 @@ async def show_screen(query, state, note="", *, waiting=False, otp=None):
             text += "\nMã quốc gia: <code>+" + escape_html(state["prefix"]) + "</code>"
         if not otp:
             rows.append([InlineKeyboardButton("📩 Lấy OTP", callback_data="phone_otp_" + state["token"])])
-            rows.append([
-                InlineKeyboardButton("🔄 Đổi số", callback_data="phone_change_" + state["token"]),
-                InlineKeyboardButton("❌ Hủy", callback_data="phone_cancel_" + state["token"]),
-            ])
+            action_row = [InlineKeyboardButton("❌ Hủy", callback_data="phone_cancel_" + state["token"])]
+            if enabled:
+                action_row.insert(0, InlineKeyboardButton("🔄 Đổi số", callback_data="phone_change_" + state["token"]))
+            rows.append(action_row)
     else:
-        text += "\n\nNhấn Nhận số để bắt đầu."
+        text += "\n\n" + ("Nhấn Nhận số để bắt đầu." if enabled else "Dịch vụ thuê số đang tạm tắt.")
     if note:
         text += "\n\n" + escape_html(note)
     if waiting:
         text += '\n\n<tg-emoji emoji-id="5215579104807497179">⏳</tg-emoji> đang chờ OTP'
     if otp:
         text += "\n\n✅ OTP: <code>" + escape_html(otp) + "</code>"
-    rows.append([InlineKeyboardButton("📱 Thuê số khác" if state else "📱 Nhận số", callback_data="phone_new")])
+    if enabled:
+        rows.append([InlineKeyboardButton("📱 Thuê số khác" if state else "📱 Nhận số", callback_data="phone_new")])
     rows.append([InlineKeyboardButton("📜 Lịch sử thuê số", callback_data="phone_history_0")])
-    rows.append([InlineKeyboardButton("♻️ Thuê lại số", callback_data="phone_rerent")])
+    if enabled:
+        rows.append([InlineKeyboardButton("♻️ Thuê lại số", callback_data="phone_rerent")])
     rows.append([ui_btn("deposit", callback_data="deposit_start", user_id=query.from_user.id)])
     rows.append([ui_btn("home", callback_data="back_start", user_id=query.from_user.id)])
     try:
@@ -100,6 +107,12 @@ async def _handle_phone_rental(update, context):
     key = f"phone_rental_user_{query.from_user.id}"
     state = db.get_active_phone_rental(query.from_user.id)
     action = query.data
+    if not rental_enabled() and action in ("phone_new", "phone_rerent"):
+        await show_screen(query, state, "Dịch vụ thuê số đang tạm tắt.")
+        return
+    if not rental_enabled() and action == "phone_home" and not state:
+        await show_screen(query, state)
+        return
     if action.startswith("phone_history_"):
         context.user_data.pop("awaiting_phone_rerent", None)
         try:
@@ -130,6 +143,9 @@ async def _handle_phone_rental(update, context):
             "Gửi số điện thoại muốn thuê lại.",
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Quay lại", callback_data="phone_home")]]),
         )
+        return
+    if action.startswith("phone_change_") and not rental_enabled():
+        await show_screen(query, state, "Dịch vụ thuê số đang tạm tắt.")
         return
     if action.startswith("phone_cancel_"):
         if not state or action.removeprefix("phone_cancel_") != state["token"]:
@@ -205,6 +221,9 @@ async def _handle_phone_rental(update, context):
                     await show_screen(query, state, "API chưa xác nhận số lỗi. Chưa có OTP không đồng nghĩa với số lỗi; chưa hoàn tiền.")
                 return
         if action.startswith("phone_confirm_"):
+            if not rental_enabled():
+                await show_screen(query, state, "Dịch vụ thuê số đang tạm tắt.")
+                return
             token = action.removeprefix("phone_confirm_")
             if token != context.user_data.get("phone_confirm"):
                 await show_screen(query, state, "Yêu cầu này đã được xử lý hoặc hết hiệu lực.")
@@ -299,12 +318,18 @@ async def deliver_phone_otp(query, state, otp, selected=None):
 
 async def rent_requested_phone(update, context, requested_phone):
     user_id = update.effective_user.id
+    if not rental_enabled():
+        await update.message.reply_text("Dịch vụ thuê số đang tạm tắt. Vui lòng thử lại sau.")
+        return False
     if not re.fullmatch(r"\+?[0-9]{5,15}", requested_phone):
         await update.message.reply_text("Số điện thoại không hợp lệ. Hãy nhập 5–15 chữ số.")
         return False
     # Reuse the user's previously allocated number, not the random allocator.
     phone = None
-    for order in db.get_phone_history(user_id):
+    history = db.get_phone_history(user_id)
+    if not isinstance(history, (list, tuple)):
+        history = list((db.get_user_orders(user_id) or {}).values())
+    for order in history:
         previous = order.get("phone")
         if (order.get("user_id") == user_id and order.get("product_key") == "phone_rental"
                 and isinstance(previous, dict) and previous.get("phone") == requested_phone):
