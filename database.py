@@ -659,16 +659,19 @@ class Database(PhoneRentalStore):
             )
             for code in priority_codes:
                 order = orders.get(code)
-                if order and code in clean_content:
+                transfer_code = str(order.get("transfer_content") or "").replace("-", "").upper() if order else ""
+                if order and (code in clean_content or (transfer_code and transfer_code in clean_content)):
                     return code, order
             # Ưu tiên 2: đơn bị tự hủy timeout (có thể hồi phục khi tiền vào)
             for code in self._idx_orders_by_status.get("cancelled_timeout", set()):
                 order = orders.get(code)
-                if order and code in clean_content:
+                transfer_code = str(order.get("transfer_content") or "").replace("-", "").upper() if order else ""
+                if order and (code in clean_content or (transfer_code and transfer_code in clean_content)):
                     return code, order
             # Fallback: trả về đơn bất kỳ khớp mã (để webhook xử lý logic "đã xử lý rồi")
             for code, order in orders.items():
-                if code in clean_content:
+                transfer_code = str(order.get("transfer_content") or "").replace("-", "").upper()
+                if code in clean_content or (transfer_code and transfer_code in clean_content):
                     return code, order
             return None, None
 

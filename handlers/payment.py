@@ -1,6 +1,8 @@
 """Order payment callbacks and paid-order fulfillment."""
 
 import asyncio
+import re
+import secrets
 import random
 from datetime import datetime
 from decimal import Decimal
@@ -33,6 +35,12 @@ from core.helpers import (
 )
 from core.products import async_refresh_products_cache, get_all_products_merged
 from core.runtime import CRYPTO_ENABLED, api, db, hypervin
+
+
+def _transfer_content(order: dict, amount: int) -> str:
+    """Build a readable, unique bank transfer content while keeping order matching."""
+    product = re.sub(r"[^A-Za-z0-9]+", "", str(order.get("product_name") or "HANG")).upper()[:12] or "HANG"
+    return f"{product}{int(amount)}{secrets.token_hex(3).upper()}"
 
 
 async def _notify_all_admins(context, text: str):
@@ -126,11 +134,13 @@ async def handle_pay_bank(update: Update, context: ContextTypes.DEFAULT_TYPE):
     order["payment_method"] = "bank"
 
     total = int(order.get("total", 0))
-    qr_url = generate_qr_url(total, order_code)
+    transfer_content = order.get("transfer_content") or _transfer_content(order, total)
+    db.update_order_fields(order_code, {"transfer_content": transfer_content})
+    qr_url = generate_qr_url(total, transfer_content)
 
     if user_lang(query.from_user.id) == "en":
         await query.edit_message_text(
-            t(query.from_user.id, "bank_payment", order_code=order_code,
+            t(query.from_user.id, "bank_payment", order_code=transfer_content,
               product=escape_html(order.get("product_name", "?")), total=format_money(total),
               bank=escape_html(BANK_NAME), account=escape_html(BANK_ACCOUNT_NUMBER),
               account_name=escape_html(BANK_ACCOUNT_NAME), qr_url=qr_url),
@@ -150,7 +160,7 @@ async def handle_pay_bank(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"💳 STK: <code>{escape_html(BANK_ACCOUNT_NUMBER)}</code>\n"
         f"👤 Tên: <b>{escape_html(BANK_ACCOUNT_NAME)}</b>\n"
         f"💰 Số tiền: <b>{format_money(total)}</b>\n"
-        f"📝 Nội dung: <code>{order_code}</code>"
+        f"📝 Nội dung: <code>{escape_html(transfer_content)}</code>"
         "</blockquote>\n\n"
         f"📱 Quét QR bên dưới để thanh toán nhanh:\n"
         f"<a href=\"{qr_url}\">QR Thanh toán</a>\n\n"
@@ -420,7 +430,9 @@ async def handle_pay_partial(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await process_paid_order(context, order_code, payment_source="wallet")
         return
 
-    qr_url = generate_qr_url(remain, order_code)
+    transfer_content = pending_order.get("transfer_content") or _transfer_content(pending_order, remain)
+    db.update_order_fields(order_code, {"transfer_content": transfer_content})
+    qr_url = generate_qr_url(remain, transfer_content)
 
     buttons = [
         [InlineKeyboardButton(t(user_id, "btn_paid"), callback_data=f"paid_{order_code}")],
@@ -428,7 +440,7 @@ async def handle_pay_partial(update: Update, context: ContextTypes.DEFAULT_TYPE)
     ]
 
     await query.edit_message_text(
-        t(user_id, "partial_payment", wallet_amount=format_money(wallet_amount), balance=format_money(new_balance), bank=BANK_NAME, account=BANK_ACCOUNT_NUMBER, account_name=BANK_ACCOUNT_NAME, remain=format_money(remain), order_code=order_code, qr_url=qr_url),
+        t(user_id, "partial_payment", wallet_amount=format_money(wallet_amount), balance=format_money(new_balance), bank=BANK_NAME, account=BANK_ACCOUNT_NUMBER, account_name=BANK_ACCOUNT_NAME, remain=format_money(remain), order_code=transfer_content, qr_url=qr_url),
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup(buttons),
         disable_web_page_preview=False
