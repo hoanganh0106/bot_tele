@@ -553,6 +553,18 @@ async def _process_paid_order_locked(context, order_code: str, payment_source: s
     qty = order["qty"]
     user_id = order["user_id"]
 
+    async def notify_failure(error_message: str):
+        """Always tell admins when a paid order cannot be fulfilled."""
+        await _notify_all_admins(
+            context,
+            f"🚨 **ĐƠN HÀNG LỖI**\n"
+            f"Mã: `{order_code}`\n"
+            f"👤 Khách: {format_user_link(order.get('username'), user_id)}\n"
+            f"📦 {order.get('product_name', product_key)} x{order.get('qty', 1)}\n"
+            f"💳 Nguồn: {payment_source}\n"
+            f"❌ Lỗi: {error_message}",
+        )
+
     logger.info(f"📦 Processing order {order_code}: product={product_key}, qty={qty}, user={user_id}, source={payment_source}")
 
     try:
@@ -726,11 +738,13 @@ async def _process_paid_order_locked(context, order_code: str, payment_source: s
         if not api_custom_local and (not products or product_key not in products):
             # Sản phẩm đối tác đã bị xóa/đổi key → không gọi buy
             logger.warning(f"  ❌ Product {product_key} not found in API — order {order_code}")
+            error_message = f"Sản phẩm '{product_key}' không còn trên API đối tác"
             db.complete_order_payment(order_code, {
                 "status": "failed",
-                "error": f"Sản phẩm '{product_key}' không còn trên API đối tác",
+                "error": error_message,
                 "paid_at": datetime.now().isoformat()
             })
+            await notify_failure(error_message)
 
             try:
                 await context.bot.send_message(
@@ -814,6 +828,7 @@ async def _process_paid_order_locked(context, order_code: str, payment_source: s
                 "error": error_msg,
                 "paid_at": datetime.now().isoformat()
             })
+            await notify_failure(error_msg)
 
             try:
                 await context.bot.send_message(
@@ -842,6 +857,11 @@ async def _process_paid_order_locked(context, order_code: str, payment_source: s
                 "error": f"Exception: {str(e)}",
                 "paid_at": datetime.now().isoformat()
             })
+
+        try:
+            await notify_failure(str(e))
+        except Exception:
+            logger.exception("Failed to notify admins about order %s failure", order_code)
 
         # Thông báo cho khách
         try:
