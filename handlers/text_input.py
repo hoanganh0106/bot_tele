@@ -6,7 +6,7 @@ from decimal import Decimal, InvalidOperation
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes
 
-from core.helpers import UI_BUTTONS, escape_md, format_money, format_usdt, is_admin, t
+from core.helpers import UI_BUTTONS, escape_md, format_money, format_usdt, format_user_link, is_admin, t
 from core.products import (
     get_all_products_merged,
     get_products_cached,
@@ -785,7 +785,7 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(f"❌ Không tìm thấy đơn khớp với `{escape_md(query)}`.", parse_mode="Markdown")
             return
         msg = (f"🧾 **CHI TIẾT ĐƠN HÀNG**\n\nMã: `{code}`\nTrạng thái: **{order.get('status', '?')}**\n"
-               f"Khách: `{order.get('user_id', '-')}`\nSản phẩm: {order.get('product_name', order.get('product_key', '?'))} x{order.get('qty', 1)}\n"
+               f"Khách: {format_user_link(order.get('username'), order.get('user_id', '-'))}\nSản phẩm: {order.get('product_name', order.get('product_key', '?'))} x{order.get('qty', 1)}\n"
                f"Số tiền: **{format_money(order.get('total', 0))}**\nNội dung CK: `{escape_md(order.get('transfer_content') or '-')}`\n"
                f"Thời gian: {order.get('created_at', '-')}\nLỗi: `{escape_md(order.get('error') or '-')}`")
         await update.message.reply_text(msg, parse_mode="Markdown")
