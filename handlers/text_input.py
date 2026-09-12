@@ -775,6 +775,22 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(msg, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(buttons))
         return
 
+    if context.user_data.get("awaiting_order_lookup"):
+        del context.user_data["awaiting_order_lookup"]
+        query = text.strip()
+        code, order = (query, db.get_order(query))
+        if not order:
+            code, order = db.find_order_by_content(query)
+        if not order:
+            await update.message.reply_text(f"❌ Không tìm thấy đơn khớp với `{escape_md(query)}`.", parse_mode="Markdown")
+            return
+        msg = (f"🧾 **CHI TIẾT ĐƠN HÀNG**\n\nMã: `{code}`\nTrạng thái: **{order.get('status', '?')}**\n"
+               f"Khách: `{order.get('user_id', '-')}`\nSản phẩm: {order.get('product_name', order.get('product_key', '?'))} x{order.get('qty', 1)}\n"
+               f"Số tiền: **{format_money(order.get('total', 0))}**\nNội dung CK: `{escape_md(order.get('transfer_content') or '-')}`\n"
+               f"Thời gian: {order.get('created_at', '-')}\nLỗi: `{escape_md(order.get('error') or '-')}`")
+        await update.message.reply_text(msg, parse_mode="Markdown")
+        return
+
     # 5. Mặc định xử lý nhập email cho đơn chờ email
     waiting_order = db.find_order_waiting_email(user_id)
     if not waiting_order:

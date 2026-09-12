@@ -182,6 +182,7 @@ def _build_admin_dashboard():
          InlineKeyboardButton("👥 Người dùng", callback_data="admin_users")],
         [InlineKeyboardButton("🔍 Tra cứu khách", callback_data="admin_user_lookup"),
          InlineKeyboardButton("📦 Sản phẩm", callback_data="admin_products")],
+        [InlineKeyboardButton("🧾 Tra cứu đơn", callback_data="admin_order_lookup")],
         [InlineKeyboardButton("👥 Khách gần đây", callback_data="admin_recent_users")],
         [InlineKeyboardButton("⚙️ Markup", callback_data="admin_markup"),
          InlineKeyboardButton("🎁 Giới thiệu", callback_data="admin_referral")],
@@ -1252,6 +1253,10 @@ async def handle_admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"Tên hiện tại: {current}\n\nGửi tên mới (tối đa 64 ký tự). Gửi reset để khôi phục.",
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Quay lại", callback_data="admin_ui_custom")]]),
         )
+
+    elif data == "admin_order_lookup":
+        context.user_data["awaiting_order_lookup"] = True
+        await query.edit_message_text("🧾 **TRA CỨU ĐƠN HÀNG**\n\nNhắn mã đơn hoặc nội dung chuyển khoản để xem chi tiết.", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Hủy", callback_data="admin_home")]]))
 
     elif data == "admin_phone_price":
         context.user_data["awaiting_phone_price"] = True
