@@ -38,9 +38,10 @@ from core.runtime import CRYPTO_ENABLED, api, db, hypervin
 
 
 def _transfer_content(order: dict, amount: int) -> str:
-    """Build a readable, unique bank transfer content while keeping order matching."""
-    product = re.sub(r"[^A-Za-z0-9]+", "", str(order.get("product_name") or "HANG")).upper()[:12] or "HANG"
-    return f"{product}{int(amount)}{secrets.token_hex(3).upper()}"
+    """Build a short transfer memo; the suffix identifies the order uniquely."""
+    order_code = re.sub(r"[^A-Za-z0-9]", "", str(order.get("order_code") or ""))
+    suffix = order_code[-8:].upper() if order_code else secrets.token_hex(4).upper()
+    return f"DH{suffix}"
 
 
 async def _notify_all_admins(context, text: str):
