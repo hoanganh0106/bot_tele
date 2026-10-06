@@ -14,7 +14,7 @@ from core.products import (
     invalidate_categories_cache,
 )
 from core.runtime import db
-from handlers.admin import _build_block_menu
+from handlers.admin import _build_block_menu, _build_customer_block_menu
 from handlers.payment import process_paid_order
 
 
@@ -688,6 +688,38 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(text_out, parse_mode="Markdown", reply_markup=markup)
         return
 
+    # 2c. Khóa hoàn toàn quyền sử dụng bot theo ID/username.
+    if context.user_data.get("awaiting_customer_block_id"):
+        if not is_admin(user_id):
+            context.user_data.pop("awaiting_customer_block_id", None)
+            return
+        context.user_data.pop("awaiting_customer_block_id", None)
+        tokens = re.split(r"[\s,;]+", text.strip())
+        added, duplicated, invalid = [], [], []
+        for token in tokens:
+            if not token:
+                continue
+            uid = db.resolve_user(token)
+            if uid is None or is_admin(uid):
+                invalid.append(f"{token}(admin)" if uid is not None else token)
+                continue
+            if db.add_customer_block(uid):
+                added.append(uid)
+            else:
+                duplicated.append(uid)
+        lines = []
+        if added:
+            lines.append("✅ Đã khóa quyền dùng bot: " + ", ".join(f"`{uid}`" for uid in added))
+        if duplicated:
+            lines.append("ℹ️ Đã bị khóa từ trước: " + ", ".join(f"`{uid}`" for uid in duplicated))
+        if invalid:
+            lines.append("❌ Không tìm thấy, không hợp lệ hoặc là admin: " + ", ".join(escape_md(x) for x in invalid))
+        if not lines:
+            lines.append("❌ Không nhận được ID hợp lệ nào.")
+        text_out, markup = _build_customer_block_menu(extra="\n".join(lines))
+        await update.message.reply_text(text_out, parse_mode="Markdown", reply_markup=markup)
+        return
+
     # 3. Check nếu đang chờ gửi thông báo broadcast
     if await collect_broadcast_message(update, context):
         return
@@ -729,6 +761,7 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"💳 Đã chi (đơn thành công): **{format_money(total_spent)}**\n"
             f"📦 Tổng số đơn: **{len(user_orders)}**\n"
             f"🎁 Đã giới thiệu: **{user_info.get('referral_count', 0)}** người\n\n"
+            f"🚫 Trạng thái truy cập: **{'ĐÃ BỊ KHÓA' if db.is_customer_blocked(target_id) else 'Đang hoạt động'}**\n\n"
             f"📋 **10 ĐƠN GẦN NHẤT:**\n"
         )
         
@@ -770,6 +803,14 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 InlineKeyboardButton(f"➕ Cộng ví", callback_data=f"admin_wallet_add_{target_id}"),
                 InlineKeyboardButton(f"➖ Trừ ví", callback_data=f"admin_wallet_sub_{target_id}"),
             ],
+            [InlineKeyboardButton(
+                "✅ Mở khóa khách" if db.is_customer_blocked(target_id) else "🚫 Chặn khách dùng bot",
+                callback_data=(
+                    f"admin_customer_unblock_{target_id}"
+                    if db.is_customer_blocked(target_id)
+                    else f"admin_customer_block_{target_id}"
+                ),
+            )],
             [InlineKeyboardButton("🏠 Thoát", callback_data="admin_home")]
         ]
         await update.message.reply_text(msg, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(buttons))

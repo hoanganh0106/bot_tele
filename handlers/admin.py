@@ -171,6 +171,41 @@ def _build_block_menu(extra: str = ""):
     return "\n".join(lines), InlineKeyboardMarkup(buttons)
 
 
+def _build_customer_block_menu(extra: str = ""):
+    """Xây màn hình quản lý khách bị khóa quyền sử dụng bot."""
+    blocklist = db.get_customer_blocklist()
+    lines = [
+        "🚫 **CHẶN KHÁCH SỬ DỤNG BOT**\n",
+        "Khách trong danh sách sẽ không nhận phản hồi từ `/start`, lệnh, nút bấm hay tin nhắn gửi cho bot.",
+    ]
+    if blocklist:
+        lines.append(f"\n📋 Đang khóa **{len(blocklist)}** khách:")
+        for uid in blocklist:
+            user = db.get_user(uid)
+            name = user.get("first_name") or user.get("username") or f"User {uid}"
+            lines.append(f"• [{escape_md(name)}](tg://user?id={uid}) · `{uid}`")
+    else:
+        lines.append("\n_Chưa khóa khách nào._")
+    if extra:
+        lines.append("\n" + extra)
+
+    buttons = [[InlineKeyboardButton("➕ Thêm khách bị chặn", callback_data="admin_customer_block_add")]]
+    for uid in blocklist[:20]:
+        user = db.get_user(uid)
+        name = user.get("first_name") or user.get("username") or str(uid)
+        buttons.append([
+            InlineKeyboardButton(
+                f"✅ Mở khóa {name[:40]}", callback_data=f"admin_customer_unblock_{uid}"
+            )
+        ])
+    if blocklist:
+        buttons.append([
+            InlineKeyboardButton("🧹 Mở khóa tất cả", callback_data="admin_customer_block_clear")
+        ])
+    buttons.append([InlineKeyboardButton("⬅️ Quản trị", callback_data="admin_home")])
+    return "\n".join(lines), InlineKeyboardMarkup(buttons)
+
+
 def _build_admin_dashboard():
     """Được gọi khi hiển thị admin dashboard."""
     text = (
@@ -188,6 +223,7 @@ def _build_admin_dashboard():
          InlineKeyboardButton("🎁 Giới thiệu", callback_data="admin_referral")],
         [InlineKeyboardButton("📢 Broadcast", callback_data="admin_broadcast"),
          InlineKeyboardButton("🎨 Giao diện", callback_data="admin_ui_custom")],
+        [InlineKeyboardButton("🚫 Chặn khách sử dụng bot", callback_data="admin_customer_blocks")],
         [InlineKeyboardButton("📋 Xuất đơn giá", callback_data="admin_export_prices")],
     ]
     return text, buttons
@@ -312,6 +348,7 @@ def _clear_admin_state(context: ContextTypes.DEFAULT_TYPE):
         "awaiting_phone_name", "awaiting_phone_price",
         "awaiting_phone_rerent",
         "awaiting_block_id",
+        "awaiting_customer_block_id",
     ]:
         context.user_data.pop(key_to_clear, None)
 
@@ -350,6 +387,58 @@ async def handle_admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(buttons))
         return
 
+    if data == "admin_customer_blocks":
+        _clear_admin_state(context)
+        text_out, markup = _build_customer_block_menu()
+        await query.edit_message_text(text_out, parse_mode="Markdown", reply_markup=markup)
+        return
+
+    if data == "admin_customer_block_add":
+        _clear_admin_state(context)
+        context.user_data["awaiting_customer_block_id"] = True
+        await query.edit_message_text(
+            "➕ **THÊM KHÁCH BỊ CHẶN**\n\n"
+            "Gửi ID hoặc @username của khách cần khóa. Có thể gửi nhiều khách cùng lúc, "
+            "cách nhau bằng dấu phẩy, khoảng trắng hoặc xuống dòng.\n"
+            "Username phải từng tương tác với bot; nếu không tìm thấy, hãy dùng Telegram ID.\n\n"
+            "Ví dụ: `123456789, @khachhang`",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("⬅️ Quay lại", callback_data="admin_customer_blocks")
+            ]]),
+        )
+        return
+
+    if data.startswith("admin_customer_block_") and data != "admin_customer_block_clear":
+        uid_str = data[len("admin_customer_block_"):]
+        try:
+            uid = int(uid_str)
+            added = not is_admin(uid) and db.add_customer_block(uid)
+        except ValueError:
+            added = False
+        extra = f"✅ Đã khóa khách `{uid_str}`." if added else f"ℹ️ Không thể khóa hoặc `{uid_str}` đã bị khóa."
+        text_out, markup = _build_customer_block_menu(extra=extra)
+        await query.edit_message_text(text_out, parse_mode="Markdown", reply_markup=markup)
+        return
+
+    if data.startswith("admin_customer_unblock_"):
+        uid_str = data[len("admin_customer_unblock_"):]
+        try:
+            removed = db.remove_customer_block(int(uid_str))
+        except ValueError:
+            removed = False
+        extra = f"✅ Đã mở khóa khách `{uid_str}`." if removed else f"ℹ️ `{uid_str}` không có trong danh sách."
+        text_out, markup = _build_customer_block_menu(extra=extra)
+        await query.edit_message_text(text_out, parse_mode="Markdown", reply_markup=markup)
+        return
+
+    if data == "admin_customer_block_clear":
+        count = db.clear_customer_blocklist()
+        extra = f"🧹 Đã mở khóa toàn bộ **{count}** khách." if count else "_Danh sách vốn đã trống._"
+        text_out, markup = _build_customer_block_menu(extra=extra)
+        await query.edit_message_text(text_out, parse_mode="Markdown", reply_markup=markup)
+        return
+
     if data == "broadcast_send":
         queue = context.user_data.get("broadcast_queue") or []
         context.user_data.pop("awaiting_broadcast", None)
@@ -358,7 +447,7 @@ async def handle_admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text("❌ Chưa có tin nào để gửi.")
             return
 
-        blocklist = set(db.get_broadcast_blocklist())
+        blocklist = set(db.get_broadcast_blocklist()) | set(db.get_customer_blocklist())
         users = [uid for uid in db.get_all_users() if not is_admin(uid) and uid not in blocklist]
         if not users:
             await query.edit_message_text("❌ Chưa có người dùng nào để thông báo.")

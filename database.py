@@ -1159,6 +1159,74 @@ class Database(PhoneRentalStore):
                 self._write(data, immediate=True)
             return count
 
+    # === CUSTOMER ACCESS BLOCKLIST ===
+    def get_customer_blocklist(self) -> list[int]:
+        """Danh sách user_id bị khóa quyền sử dụng bot."""
+        with self.lock:
+            raw = self._read().get("settings", {}).get("customer_blocklist", [])
+        result = []
+        for uid in raw:
+            try:
+                result.append(int(uid))
+            except (TypeError, ValueError):
+                continue
+        return result
+
+    def is_customer_blocked(self, user_id: int) -> bool:
+        """Kiểm tra nhanh một khách có bị khóa quyền sử dụng bot hay không."""
+        try:
+            uid = int(user_id)
+        except (TypeError, ValueError):
+            return False
+        with self.lock:
+            raw = self._read().get("settings", {}).get("customer_blocklist", [])
+            return any(str(item).lstrip("-").isdigit() and int(item) == uid for item in raw)
+
+    def add_customer_block(self, user_id: int) -> bool:
+        """Khóa một khách. Trả về True nếu ID vừa được thêm mới."""
+        try:
+            uid = int(user_id)
+        except (TypeError, ValueError):
+            return False
+        if uid <= 0:
+            return False
+        with self.lock:
+            data = self._read()
+            blocklist = data.setdefault("settings", {}).setdefault("customer_blocklist", [])
+            existing = {int(x) for x in blocklist if str(x).lstrip("-").isdigit()}
+            if uid in existing:
+                return False
+            blocklist.append(uid)
+            self._write(data, immediate=True)
+            return True
+
+    def remove_customer_block(self, user_id: int) -> bool:
+        """Mở khóa một khách. Trả về True nếu ID vừa được gỡ."""
+        try:
+            uid = int(user_id)
+        except (TypeError, ValueError):
+            return False
+        with self.lock:
+            data = self._read()
+            blocklist = data.setdefault("settings", {}).setdefault("customer_blocklist", [])
+            new_list = [x for x in blocklist if not (str(x).lstrip("-").isdigit() and int(x) == uid)]
+            if len(new_list) == len(blocklist):
+                return False
+            data["settings"]["customer_blocklist"] = new_list
+            self._write(data, immediate=True)
+            return True
+
+    def clear_customer_blocklist(self) -> int:
+        """Mở khóa toàn bộ khách. Trả về số lượng ID đã gỡ."""
+        with self.lock:
+            data = self._read()
+            blocklist = data.setdefault("settings", {}).setdefault("customer_blocklist", [])
+            count = len(blocklist)
+            if count:
+                data["settings"]["customer_blocklist"] = []
+                self._write(data, immediate=True)
+            return count
+
     # === TRANSACTION DEDUP ===
     def is_transaction_processed(self, transaction_id) -> bool:
         with self.lock:
@@ -1446,8 +1514,8 @@ class Database(PhoneRentalStore):
         with self.lock:
             return dict(self._read().get("users", {}).get(str(user_id), {}))
 
-    def resolve_broadcast_user(self, value: str):
-        """Resolve current known usernames, rejecting ambiguous matches."""
+    def resolve_user(self, value: str):
+        """Resolve ID/username của khách đã biết, từ chối username trùng nhau."""
         value = value.strip()
         if value.isascii() and value.isdigit():
             return int(value) if int(value) > 0 else None
@@ -1458,6 +1526,10 @@ class Database(PhoneRentalStore):
             matches = [int(uid) for uid, user in self._read().get("users", {}).items()
                        if (user.get("username") or "").lstrip("@").casefold() == username]
         return matches[0] if len(matches) == 1 else None
+
+    def resolve_broadcast_user(self, value: str):
+        """Alias tương thích ngược cho chức năng chặn broadcast."""
+        return self.resolve_user(value)
 
     def get_user_lang(self, user_id: int) -> str:
         """Return a persisted language, defaulting legacy users to Vietnamese."""

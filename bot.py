@@ -3,16 +3,19 @@
 import asyncio
 import os
 
+from telegram import Update
 from telegram.ext import (
     ApplicationBuilder,
     CallbackQueryHandler,
     CommandHandler,
     MessageHandler,
+    TypeHandler,
     filters,
 )
 
 from core.config import BOT_TOKEN, CTV_API_KEY, DATA_DIR, logger
 from core.runtime import db
+from handlers.access_control import block_blocked_customer
 from handlers.admin import (
     cmd_admin,
     cmd_getemoji,
@@ -73,6 +76,9 @@ def main():
 
     # Build bot
     app = ApplicationBuilder().token(BOT_TOKEN).post_init(post_init).build()
+
+    # Chạy trước mọi handler khác; khách bị khóa sẽ không nhận bất kỳ phản hồi nào.
+    app.add_handler(TypeHandler(Update, block_blocked_customer), group=-1)
 
     # Commands
     app.add_handler(CommandHandler("start", cmd_start))
