@@ -360,7 +360,8 @@ async def handle_qty_select(update: Update, context: ContextTypes.DEFAULT_TYPE):
     order = {
         "order_code": order_code,
         "user_id": query.from_user.id,
-        "username": query.from_user.username or query.from_user.first_name,
+        "username": query.from_user.username,
+        "first_name": query.from_user.first_name,
         "product_key": product_key,
         "product_name": info.get("name", product_key),
         "qty": qty,

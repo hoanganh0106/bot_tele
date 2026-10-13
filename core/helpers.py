@@ -1,6 +1,7 @@
 """Formatting, localization, and shared Telegram UI helpers."""
 
 import hashlib
+import re
 import time
 import unicodedata
 import uuid
@@ -197,14 +198,42 @@ def escape_md(text: str) -> str:
     return text
 
 
+_TELEGRAM_USERNAME_RE = re.compile(r"^[A-Za-z0-9_]{5,32}$")
+
+
+def _is_valid_telegram_username(value: str | None) -> bool:
+    if not value or not isinstance(value, str):
+        return False
+    clean = value.lstrip("@")
+    if not clean or clean == "?" or clean.casefold() == "none":
+        return False
+    return bool(_TELEGRAM_USERNAME_RE.fullmatch(clean))
+
+
 def format_user_link(username: str = None, user_id: int = None) -> str:
     """Tạo link clickable đến user Telegram.
     Ưu tiên @username (click được), fallback về tg://user?id (deep link).
     """
-    if username and username != '?':
-        clean = username.lstrip('@')
+    user_info = {}
+    has_valid_uid = user_id is not None and str(user_id).isdigit() and int(user_id) > 0
+    if has_valid_uid and db is not None and hasattr(db, "get_user"):
+        try:
+            user_info = db.get_user(int(user_id)) or {}
+        except Exception:
+            user_info = {}
+
+    candidate = username
+    if "username" in user_info:
+        db_username = user_info.get("username")
+        if db_username:
+            candidate = db_username
+        elif candidate and candidate == user_info.get("first_name"):
+            candidate = None
+
+    if _is_valid_telegram_username(candidate):
+        clean = candidate.lstrip("@")
         return f"[@{escape_md(clean)}](https://t.me/{clean})"
-    if user_id:
+    if user_id and user_id != "-":
         return f"[User {user_id}](tg://user?id={user_id})"
     return escape_md("Không rõ")
 

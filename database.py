@@ -714,7 +714,7 @@ class Database(PhoneRentalStore):
             if target_id is None:
                 for code, order in orders.items():
                     uid = order.get("user_id")
-                    uname = order.get("username", "")
+                    uname = order.get("username") or ""
                     
                     if str(uid) == query_lower:
                         target_id = uid
