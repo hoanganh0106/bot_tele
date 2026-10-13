@@ -34,7 +34,7 @@ API_STALE_TTL = 1800         # 30 phút — luôn trả cache cũ, KHÔNG BAO GI
 _cache_refreshing = False    # Flag tránh refresh đồng thời
 
 
-_api_executor = ThreadPoolExecutor(max_workers=3, thread_name_prefix="api")
+_api_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="api")
 
 
 _cache_lock = Lock()  # Thread-safe guard cho _cache_refreshing
@@ -99,8 +99,9 @@ def _fetch_api2():
     if hypervin is None or _is_circuit_open("HYPERVIN"):
         return {}, None
     try:
+        bal_future = _api_executor.submit(hypervin.get_balance)
         products = hypervin.get_products()
-        balance = hypervin.get_balance()
+        balance = bal_future.result(timeout=10)
         _record_api_result("HYPERVIN", products is not None)
         if balance is not None:
             _hv_balance = {"value": balance, "ts": time.time()}
@@ -113,6 +114,11 @@ def _fetch_api2():
 
 def get_hypervin_balance() -> int | None:
     return _hv_balance["value"]
+
+
+def has_products_cache() -> bool:
+    """Kiểm tra xem cache sản phẩm đã có dữ liệu hay chưa."""
+    return bool(_api_cache.get("data"))
 
 
 def invalidate_cache():
@@ -153,11 +159,12 @@ def _do_refresh_products() -> tuple[dict, int]:
     for k, v in custom_products.items():
         products[k] = dict(v)
 
-    # Override stock từ custom inventory/manual
+    # Override stock từ custom inventory/manual (batch lookup 1 lần giữ lock)
     custom_stocks = db.get_custom_stocks()
+    custom_account_counts = db.get_custom_account_counts()
     for k, v in products.items():
-        if db.has_custom_accounts_enabled(k):
-            products[k]["stock"] = len(db.get_custom_accounts(k))
+        if k in custom_account_counts:
+            products[k]["stock"] = custom_account_counts[k]
         elif k in custom_stocks:
             products[k]["stock"] = custom_stocks[k]
 
@@ -291,12 +298,12 @@ def invalidate_categories_cache():
     _categories_cache = {"data": None, "expiry": 0}
 
 
-def classify_product(key: str, info: dict, merged_cats: dict = None) -> tuple:
+def classify_product(key: str, info: dict, merged_cats: dict = None, custom_cats: dict = None) -> tuple:
     if merged_cats is None:
         merged_cats = get_all_categories_merged()
 
     # 1. Ưu tiên cao nhất: admin đã chỉ định danh mục thủ công
-    custom_cat = db.get_custom_category(key)
+    custom_cat = custom_cats.get(key) if custom_cats is not None else db.get_custom_category(key)
     if custom_cat and custom_cat in merged_cats:
         name, icon = merged_cats[custom_cat]
         return name, icon, custom_cat

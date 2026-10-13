@@ -85,14 +85,16 @@ def build_admin_product_back_keyboard(product_key: str) -> InlineKeyboardMarkup:
 def build_category_grid(products, callback_prefix, is_admin=False, user_id=None):
     categories = {}
     merged_cats = get_all_categories_merged()  # Fetch 1 lần, dùng cho tất cả products
+    hidden_set = db.get_hidden_products_set() if not is_admin else set()
+    custom_cats = db.get_all_custom_categories()
     for key, info in products.items():
         stock = info.get("stock", 0)
         
         if not is_admin:
-            if db.is_product_hidden(key) or stock == 0:
+            if key in hidden_set or stock == 0:
                 continue
             
-        cat_name, icon, cat_id = classify_product(key, info, merged_cats)
+        cat_name, icon, cat_id = classify_product(key, info, merged_cats, custom_cats)
         if cat_id not in categories:
             categories[cat_id] = {"name": cat_name, "icon": icon, "count": 0}
         

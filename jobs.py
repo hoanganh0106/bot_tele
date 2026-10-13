@@ -148,14 +148,23 @@ async def _retry_failed_orders(application):
 
 
 async def _payment_processor(application):
-    """Poll DB mỗi 5 giây, xử lý giao dịch mới từ SePay.
+    """Xử lý giao dịch mới từ SePay ngay khi có tín hiệu wakeup (fallback poll mỗi 3s).
     
     CRITICAL: Không bao giờ chết — tự restart nếu crash.
     """
-    logger.info("💳 Payment processor started — polling every 3s")
+    logger.info("💳 Payment processor started — instant wakeup + 3s fallback poll")
+    loop = asyncio.get_running_loop()
+    wake_event = asyncio.Event()
+    if hasattr(db, "set_payment_wakeup"):
+        db.set_payment_wakeup(lambda: loop.call_soon_threadsafe(wake_event.set))
+
     while True:
         try:
-            await asyncio.sleep(3)
+            try:
+                await asyncio.wait_for(wake_event.wait(), timeout=3.0)
+            except asyncio.TimeoutError:
+                pass
+            wake_event.clear()
             payments = db.get_unprocessed_payments()
             if payments:
                 logger.info(f"💳 Found {len(payments)} unprocessed payment(s)")

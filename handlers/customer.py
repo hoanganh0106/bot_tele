@@ -35,7 +35,12 @@ from core.helpers import (
     ui_btn,
     user_lang,
 )
-from core.products import classify_product, get_all_categories_merged, get_products_cached
+from core.products import (
+    classify_product,
+    get_all_categories_merged,
+    get_products_cached,
+    has_products_cache,
+)
 from core.runtime import CRYPTO_ENABLED, db, get_bot_username
 from core.screens import (
     build_home_keyboard,
@@ -177,6 +182,14 @@ async def cmd_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Hiển thị menu sản phẩm."""
     db.add_user(update.effective_user.id)
     user_id = update.effective_user.id
+    if has_products_cache():
+        try:
+            text, keyboard = await build_menu_screen(user_id, refresh=False)
+            await update.message.reply_text(text, parse_mode="HTML", reply_markup=keyboard)
+            return
+        except Exception as e:
+            logger.error(f"cmd_menu fast path error: {e}")
+
     msg = await update.message.reply_text(t(user_id, "loading_products"))
 
     try:
@@ -515,14 +528,17 @@ async def handle_category_click(update: Update, context: ContextTypes.DEFAULT_TY
         return
         
     cat_products = []
+    merged_cats = get_all_categories_merged()
+    hidden_set = db.get_hidden_products_set()
+    custom_cats = db.get_all_custom_categories()
     for key, info in products.items():
         stock = info.get("stock", 0)
         
         # KHÔNG hiển thị sản phẩm bị ẩn cho khách, HOẶC đã hết tồn kho
-        if db.is_product_hidden(key) or stock == 0:
+        if key in hidden_set or stock == 0:
             continue
             
-        _, _, c_id = classify_product(key, info)
+        _, _, c_id = classify_product(key, info, merged_cats, custom_cats)
         if c_id == cat_id:
             cat_products.append((key, info))
 

@@ -627,11 +627,11 @@ async def _process_paid_order_locked(context, order_code: str, payment_source: s
                         f"⚠️ Không đủ tài khoản trong kho để tự động giao!\n"
                         f"⚡ Hãy ib khách và trả tài khoản tay nhé!"
                     )
-                    await _notify_all_admins(context, admin_text)
-                    
-                    try:
-                        await context.bot.send_message(user_id, t(user_id, "delivery_delayed", order_code=order_code))
-                    except Exception: pass
+                    await asyncio.gather(
+                        _notify_all_admins(context, admin_text),
+                        context.bot.send_message(user_id, t(user_id, "delivery_delayed", order_code=order_code)),
+                        return_exceptions=True,
+                    )
                     
                     logger.info(f"  ✅ Order {order_code} → paid (auto delivery out of stock)")
                     return True
@@ -652,22 +652,21 @@ async def _process_paid_order_locked(context, order_code: str, payment_source: s
                 _desc = product_display_desc(product_key, {}, user_lang(user_id))
                 desc_block = f"\n📝 _{_desc}_\n" if _desc else ""
                 
-                # Gửi cho khách
-                try:
-                    await context.bot.send_message(
+                # Gửi đồng thời cho khách và Admin
+                await asyncio.gather(
+                    context.bot.send_message(
                         chat_id=user_id,
                         text=t(user_id, "delivery_complete", order_code=order_code, items=items_str, description=desc_block),
                         parse_mode="Markdown"
-                    )
-                except Exception: pass
-                
-                # Báo Admin
-                await _notify_all_admins(context, 
-                    f"🔔 **[HÀNG TỰ BÁN] AUTO GIAO HÀNG THÀNH CÔNG**\n"
-                    f"Mã: `{order_code}`\n"
-                    f"👤 Khách: {format_user_link(order.get('username'), user_id)} | Mua x{qty}\n"
-                    f"🔑 Đã tự động xuất {qty} tài khoản từ kho để giao cho khách:\n"
-                    f"{items_str}"
+                    ),
+                    _notify_all_admins(context, 
+                        f"🔔 **[HÀNG TỰ BÁN] AUTO GIAO HÀNG THÀNH CÔNG**\n"
+                        f"Mã: `{order_code}`\n"
+                        f"👤 Khách: {format_user_link(order.get('username'), user_id)} | Mua x{qty}\n"
+                        f"🔑 Đã tự động xuất {qty} tài khoản từ kho để giao cho khách:\n"
+                        f"{items_str}"
+                    ),
+                    return_exceptions=True,
                 )
                 logger.info(f"  ✅ Order {order_code} → paid (auto delivered {qty} accounts)")
                 return True
@@ -689,7 +688,7 @@ async def _process_paid_order_locked(context, order_code: str, payment_source: s
                 if current_stock > 0:
                     db.set_custom_stock(product_key, max(0, current_stock - qty))
         
-                # Thông báo Admin
+                # Thông báo Admin & Khách song song
                 admin_text = (
                     f"🔔 **[HÀNG TỰ BÁN] CẦN Admin DUYỆT THỦ CÔNG**\n"
                     f"━━━━━━━━━━━━━━━━━━\n"
@@ -702,17 +701,15 @@ async def _process_paid_order_locked(context, order_code: str, payment_source: s
                     f"```\n{emails_text}\n```\n"
                     f"⚡ Hãy chủ động nhắn tin giao tài khoản cho khách nhé!"
                 )
-                await _notify_all_admins(context, admin_text)
-
-            # Thông báo KHÁCH
-            try:
-                await context.bot.send_message(
-                    chat_id=user_id,
-                    text=t(user_id, "manual_processing", order_code=order_code),
-                    parse_mode="Markdown"
+                await asyncio.gather(
+                    _notify_all_admins(context, admin_text),
+                    context.bot.send_message(
+                        chat_id=user_id,
+                        text=t(user_id, "manual_processing", order_code=order_code),
+                        parse_mode="Markdown"
+                    ),
+                    return_exceptions=True,
                 )
-            except Exception:
-                pass
             logger.info(f"  ✅ Order {order_code} → paid (custom_local manual)")
             return True
 
@@ -745,16 +742,15 @@ async def _process_paid_order_locked(context, order_code: str, payment_source: s
                 "error": error_message,
                 "paid_at": datetime.now().isoformat()
             })
-            await notify_failure(error_message)
-
-            try:
-                await context.bot.send_message(
+            await asyncio.gather(
+                notify_failure(error_message),
+                context.bot.send_message(
                     chat_id=user_id,
                     text=_paid_order_customer_error_text(order_code, user_id),
                     parse_mode="Markdown"
-                )
-            except Exception:
-                pass
+                ),
+                return_exceptions=True,
+            )
 
             return False
 
@@ -796,16 +792,7 @@ async def _process_paid_order_locked(context, order_code: str, payment_source: s
             _desc2 = product_display_desc(product_key, {}, user_lang(user_id))
             desc_block2 = f"\n📝 _{_desc2}_\n" if _desc2 else ""
 
-            try:
-                await context.bot.send_message(
-                    chat_id=user_id,
-                    text=t(user_id, "api_delivery_complete", order_code=order_code, product=order.get('product_name', product_key), qty=qty, items=items_text, description=desc_block2),
-                    parse_mode="Markdown"
-                )
-            except Exception as e:
-                logger.error(f"Failed to send items to user: {e}")
-
-            # Thông báo admin
+            # Thông báo khách & admin song song
             profit = order["total"] - result.get("total_charged", 0)
             admin_text = (
                 f"🔔 **ĐƠN HÀNG MỚI THÀNH CÔNG**\n"
@@ -817,7 +804,17 @@ async def _process_paid_order_locked(context, order_code: str, payment_source: s
                 f"📈 Lãi: **{format_money(profit)}**\n"
                 f"💳 Nguồn: {payment_source}"
             )
-            await _notify_all_admins(context, admin_text)
+            send_res = await asyncio.gather(
+                context.bot.send_message(
+                    chat_id=user_id,
+                    text=t(user_id, "api_delivery_complete", order_code=order_code, product=order.get('product_name', product_key), qty=qty, items=items_text, description=desc_block2),
+                    parse_mode="Markdown"
+                ),
+                _notify_all_admins(context, admin_text),
+                return_exceptions=True,
+            )
+            if isinstance(send_res[0], Exception):
+                logger.error(f"Failed to send items to user: {send_res[0]}")
 
             logger.info(f"  ✅ Order {order_code} → COMPLETED! Items delivered.")
             return True
@@ -829,16 +826,15 @@ async def _process_paid_order_locked(context, order_code: str, payment_source: s
                 "error": error_msg,
                 "paid_at": datetime.now().isoformat()
             })
-            await notify_failure(error_msg)
-
-            try:
-                await context.bot.send_message(
+            await asyncio.gather(
+                notify_failure(error_msg),
+                context.bot.send_message(
                     chat_id=user_id,
                     text=_paid_order_customer_error_text(order_code, user_id),
                     parse_mode="Markdown"
-                )
-            except Exception:
-                pass
+                ),
+                return_exceptions=True,
+            )
 
             return False
 
@@ -859,19 +855,14 @@ async def _process_paid_order_locked(context, order_code: str, payment_source: s
                 "paid_at": datetime.now().isoformat()
             })
 
-        try:
-            await notify_failure(str(e))
-        except Exception:
-            logger.exception("Failed to notify admins about order %s failure", order_code)
-
-        # Thông báo cho khách
-        try:
-            await context.bot.send_message(
+        await asyncio.gather(
+            notify_failure(str(e)),
+            context.bot.send_message(
                 chat_id=user_id,
                 text=_paid_order_customer_error_text(order_code, user_id),
                 parse_mode="Markdown"
-            )
-        except Exception:
-            pass
+            ),
+            return_exceptions=True,
+        )
 
         return False

@@ -74,8 +74,14 @@ def main():
 
     db.recover_phone_rentals()
 
-    # Build bot
-    app = ApplicationBuilder().token(BOT_TOKEN).post_init(post_init).build()
+    # Build bot (concurrent_updates=True để 1 đơn đang chờ API đối tác không chặn khách khác)
+    app = (
+        ApplicationBuilder()
+        .token(BOT_TOKEN)
+        .concurrent_updates(True)
+        .post_init(post_init)
+        .build()
+    )
 
     # Chạy trước mọi handler khác; khách bị khóa sẽ không nhận bất kỳ phản hồi nào.
     app.add_handler(TypeHandler(Update, block_blocked_customer), group=-1)

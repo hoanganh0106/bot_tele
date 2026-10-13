@@ -11,7 +11,6 @@ Không có cross-thread async scheduling.
 import os
 import logging
 from datetime import datetime
-from flask import Flask, request, jsonify
 from dotenv import load_dotenv
 
 load_dotenv("config.env")
@@ -25,6 +24,8 @@ shared_db = None
 
 
 def create_flask_app():
+    from flask import Flask, request, jsonify
+
     app = Flask(__name__)
 
     @app.route("/sepay/webhook", methods=["POST"])

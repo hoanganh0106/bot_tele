@@ -63,6 +63,8 @@ class Database(PhoneRentalStore):
         self._idx_orders_by_status = {}
         self._txn_set = set()
         self._txid_set = set()
+        self._hidden_set = set()
+        self._payment_wakeup = None
         self._flush_event = threading.Event()
         self._io_lock = threading.Lock()  # serialize ghi file giữa writer thread và flush()
         self._writer_thread = threading.Thread(
@@ -115,6 +117,7 @@ class Database(PhoneRentalStore):
         self._idx_orders_by_status = by_status
         self._txn_set = set(data.get("processed_transactions", []))
         self._txid_set = set(data.get("processed_crypto_txids", []))
+        self._hidden_set = set(data.get("custom_hiddens", []))
         self._idx_built_at = self._idx_version
 
     def _serialize(self) -> str:
@@ -736,7 +739,14 @@ class Database(PhoneRentalStore):
     # === HIDDEN PRODUCTS ===
     def is_product_hidden(self, key: str) -> bool:
         with self.lock:
-            return key in self._read().get("custom_hiddens", [])
+            self._ensure_indexes()
+            return key in self._hidden_set
+
+    def get_hidden_products_set(self) -> set:
+        """Lấy tập hợp tất cả mã sản phẩm đang ẩn (O(1) lookup cho vòng lặp lớn)."""
+        with self.lock:
+            self._ensure_indexes()
+            return set(self._hidden_set)
 
     def toggle_hidden_product(self, key: str) -> bool:
         """Returns True if now hidden, False if now visible."""
@@ -848,6 +858,11 @@ class Database(PhoneRentalStore):
     def get_custom_category(self, product_key: str) -> str | None:
         with self.lock:
             return self._read().get("custom_categories", {}).get(product_key)
+
+    def get_all_custom_categories(self) -> dict:
+        """Lấy toàn bộ map custom_categories trong 1 lần giữ lock."""
+        with self.lock:
+            return dict(self._read().get("custom_categories", {}))
 
     def set_custom_category(self, product_key: str, cat_id: str):
         with self.lock:
@@ -1019,6 +1034,12 @@ class Database(PhoneRentalStore):
     def has_custom_accounts_enabled(self, product_key: str) -> bool:
         with self.lock:
             return product_key in self._read().get("custom_accounts_inventory", {})
+
+    def get_custom_account_counts(self) -> dict[str, int]:
+        """Lấy số lượng tài khoản tồn kho của tất cả sản phẩm đã bật kho tự động trong 1 lần giữ lock."""
+        with self.lock:
+            inv = self._read().get("custom_accounts_inventory", {})
+            return {k: len(v) for k, v in inv.items()}
 
     def add_custom_accounts(self, product_key: str, accounts: list[str]) -> int:
         """Thêm tài khoản vào kho và trả về số lượng hiện tại."""
@@ -1272,6 +1293,10 @@ class Database(PhoneRentalStore):
             return True
 
     # === INCOMING PAYMENTS (webhook store-then-poll) ===
+    def set_payment_wakeup(self, callback):
+        """Đăng ký callback đánh thức payment processor ngay khi có giao dịch mới."""
+        self._payment_wakeup = callback
+
     def store_incoming_payment(self, payment: dict) -> bool:
         """Lưu giao dịch từ webhook. Returns False nếu trùng."""
         with self.lock:
@@ -1284,7 +1309,13 @@ class Database(PhoneRentalStore):
                         return False
             payments.append(payment)
             self._write(data, immediate=True)
-            return True
+        wakeup = getattr(self, "_payment_wakeup", None)
+        if callable(wakeup):
+            try:
+                wakeup()
+            except Exception as e:
+                logger.debug(f"Payment wakeup callback error: {e}")
+        return True
 
     def get_unprocessed_payments(self) -> list:
         """Lấy tất cả giao dịch chưa xử lý."""
