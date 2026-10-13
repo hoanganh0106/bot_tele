@@ -1,6 +1,7 @@
 """Product caches, category mapping, and upstream product loading."""
 
 import asyncio
+import re
 import time
 from concurrent.futures import ThreadPoolExecutor
 from threading import Lock, Thread
@@ -298,15 +299,60 @@ def invalidate_categories_cache():
     _categories_cache = {"data": None, "expiry": 0}
 
 
+def _extract_category_keywords(cat_id: str, cat_name: str) -> list[str]:
+    """Tách từ khóa nhận diện từ tên danh mục (và mã danh mục nếu nằm trong tên)."""
+    kws = []
+    for part in re.split(r"[+/|,]+", (cat_name or "").lower()):
+        part = part.strip()
+        if part and part not in kws:
+            kws.append(part)
+    cid = (cat_id or "").lower().strip()
+    if len(cid) >= 3 and cid in (cat_name or "").lower().replace(" ", "") and cid not in kws:
+        kws.append(cid)
+    return kws
+
+
 def classify_product(key: str, info: dict, merged_cats: dict = None, custom_cats: dict = None) -> tuple:
     if merged_cats is None:
         merged_cats = get_all_categories_merged()
 
+    other_info = merged_cats.get("khac", ("Khác", "📦"))
+    other_name = other_info[0] if isinstance(other_info, (list, tuple)) else "Khác"
+    other_icon = other_info[1] if isinstance(other_info, (list, tuple)) and len(other_info) > 1 else "📦"
+
     # 1. Ưu tiên cao nhất: admin đã chỉ định danh mục thủ công
     custom_cat = custom_cats.get(key) if custom_cats is not None else db.get_custom_category(key)
+    if custom_cat == "khac":
+        return other_name, other_icon, "khac"
     if custom_cat and custom_cat in merged_cats:
         name, icon = merged_cats[custom_cat]
         return name, icon, custom_cat
 
-    # 2. Không tự động phân loại — sản phẩm mới sẽ vào "Khác" để admin tự chọn danh mục
-    return "Khác", "📦", "khac"
+    # 2. Tự động lọc theo tên sản phẩm trùng với danh mục hiện có:
+    #    - Trùng đúng 1 danh mục -> tự gom vào danh mục đó
+    #    - Không trùng (0) hoặc trùng từ 2 danh mục trở lên -> để ở "Khác"
+    custom_name = db.get_custom_name(key) if hasattr(db, "get_custom_name") else None
+    raw_name = custom_name or ((info or {}).get("name") if isinstance(info, dict) else "") or ""
+    pname = raw_name.lower()
+    if pname:
+        matched_cats = []
+        for cid, cval in merged_cats.items():
+            if cid == "khac":
+                continue
+            cname = cval[0] if isinstance(cval, (list, tuple)) else str(cval)
+            cicon = cval[1] if isinstance(cval, (list, tuple)) and len(cval) > 1 else "📦"
+            for kw in _extract_category_keywords(cid, cname):
+                if len(kw) <= 2:
+                    hit = bool(re.search(rf"\b{re.escape(kw)}\b", pname))
+                else:
+                    hit = kw in pname
+                if hit:
+                    matched_cats.append((cname, cicon, cid))
+                    break
+            if len(matched_cats) > 1:
+                return other_name, other_icon, "khac"
+
+        if len(matched_cats) == 1:
+            return matched_cats[0]
+
+    return other_name, other_icon, "khac"

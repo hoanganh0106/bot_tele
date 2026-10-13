@@ -1049,8 +1049,10 @@ async def handle_admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return await query.edit_message_text("❌ Lỗi tải dữ liệu.")
             
         cat_products = []
+        merged_cats = get_all_categories_merged()
+        custom_cats = db.get_all_custom_categories()
         for key, info in products.items():
-            _, _, c_id = classify_product(key, info)
+            _, _, c_id = classify_product(key, info, merged_cats, custom_cats)
             if c_id == cat_id:
                 cat_products.append((key, info))
                 
@@ -1215,8 +1217,14 @@ async def handle_admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
         sk = to_short_key(key)
         buttons = []
         row = []
-        for cid, (cname, cicon) in get_all_categories_merged().items():
+        all_cats = get_all_categories_merged()
+        for cid, (cname, cicon) in all_cats.items():
             row.append(InlineKeyboardButton(f"{cicon} {cname}", callback_data=f"admin_set_cat_{sk}_{cid}"))
+            if len(row) == 2:
+                buttons.append(row)
+                row = []
+        if "khac" not in all_cats:
+            row.append(InlineKeyboardButton("📦 Khác", callback_data=f"admin_set_cat_{sk}_khac"))
             if len(row) == 2:
                 buttons.append(row)
                 row = []
@@ -1241,9 +1249,13 @@ async def handle_admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if cid == "reset":
             db.set_custom_category(key, None)
             msg = "✅ Đã xóa chỉ định danh mục tay, kích hoạt tự động."
+        elif cid == "khac":
+            db.set_custom_category(key, "khac")
+            msg = "✅ Đã chuyển sản phẩm sang danh mục 📦 Khác."
         else:
             db.set_custom_category(key, cid)
-            msg = f"✅ Đã chuyển sản phẩm sang danh mục {get_all_categories_merged()[cid][1]} {get_all_categories_merged()[cid][0]}."
+            cat_info = get_all_categories_merged().get(cid, ("Khác", "📦"))
+            msg = f"✅ Đã chuyển sản phẩm sang danh mục {cat_info[1]} {cat_info[0]}."
             
         await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("⬅️ Quay lại", callback_data=f"admin_price_{sk}"),
