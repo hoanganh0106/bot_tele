@@ -305,6 +305,94 @@ pub async fn handle_admin_callback(
         return Ok(());
     }
 
+    if let Some(sk) = data.strip_prefix("admin_do_cat_") {
+        let product_key = GLOBAL_SHORT_KEYS.from_short_key(sk);
+        let categories_def = catalog.get_categories().await?;
+
+        let mut buttons = Vec::new();
+        let mut row = Vec::new();
+
+        for (cid, cat) in &categories_def {
+            let label = format!("{} {}", cat.icon, cat.name);
+            row.push(InlineKeyboardButton::callback(label, format!("admin_set_cat_{}_{}", sk, cid)));
+            if row.len() == 2 {
+                buttons.push(row);
+                row = Vec::new();
+            }
+        }
+        if !categories_def.contains_key("khac") {
+            row.push(InlineKeyboardButton::callback("📦 Khác", format!("admin_set_cat_{}_khac", sk)));
+            if row.len() == 2 {
+                buttons.push(row);
+                row = Vec::new();
+            }
+        }
+        if !row.is_empty() {
+            buttons.push(row);
+        }
+
+        buttons.push(vec![
+            InlineKeyboardButton::callback("➕ Tạo danh mục mới", "admin_add_cat"),
+            InlineKeyboardButton::callback("♻️ Reset (Máy tự chọn)", format!("admin_set_cat_{}_reset", sk)),
+        ]);
+        buttons.push(vec![
+            InlineKeyboardButton::callback("⬅️ Quay lại", format!("admin_price_{}", sk)),
+            InlineKeyboardButton::callback("🏠 Thoát", "admin_home"),
+        ]);
+
+        let text = format!("🔀 <b>Chọn danh mục mới cho sản phẩm:</b>\n<code>{}</code>", product_key);
+        if let Some(msg) = q.message {
+            let _ = bot.edit_message_text(msg.chat().id, msg.id(), text)
+                .parse_mode(ParseMode::Html)
+                .reply_markup(InlineKeyboardMarkup::new(buttons))
+                .await;
+        }
+        let _ = bot.answer_callback_query(q.id).await;
+        return Ok(());
+    }
+
+    if let Some(payload) = data.strip_prefix("admin_set_cat_") {
+        // Format: admin_set_cat_{sk}_{cid}
+        if let Some((sk, cid)) = payload.rsplit_once('_') {
+            let product_key = GLOBAL_SHORT_KEYS.from_short_key(sk);
+            let categories_def = catalog.get_categories().await?;
+
+            let msg = if cid == "reset" {
+                db.write_data(|d| {
+                    d.custom_categories.remove(&product_key);
+                }, true);
+                "✅ Đã xóa chỉ định danh mục tay, kích hoạt tự động phân loại.".to_string()
+            } else if cid == "khac" {
+                db.write_data(|d| {
+                    d.custom_categories.insert(product_key.clone(), "khac".to_string());
+                }, true);
+                "✅ Đã chuyển sản phẩm sang danh mục 📦 <b>Khác</b>.".to_string()
+            } else {
+                db.write_data(|d| {
+                    d.custom_categories.insert(product_key.clone(), cid.to_string());
+                }, true);
+                let (cat_name, cat_icon) = categories_def.get(cid)
+                    .map(|c| (c.name.clone(), c.icon.clone()))
+                    .unwrap_or_else(|| (cid.to_string(), "📦".to_string()));
+                format!("✅ Đã chuyển sản phẩm sang danh mục {} <b>{}</b>.", cat_icon, cat_name)
+            };
+
+            let kb = InlineKeyboardMarkup::new(vec![vec![
+                InlineKeyboardButton::callback("⬅️ Quay lại", format!("admin_price_{}", sk)),
+                InlineKeyboardButton::callback("🏠 Thoát", "admin_home"),
+            ]]);
+
+            if let Some(msg_obj) = q.message {
+                let _ = bot.edit_message_text(msg_obj.chat().id, msg_obj.id(), msg)
+                    .parse_mode(ParseMode::Html)
+                    .reply_markup(kb)
+                    .await;
+            }
+            let _ = bot.answer_callback_query(q.id).await;
+            return Ok(());
+        }
+    }
+
     if data == "admin_add_prod" {
         state_mgr.set(user_id, DialogState::AdminAwaitingNewProduct);
         let guide = "➕ <b>THÊM SẢN PHẨM TỰ BÁN</b>\n\nNhập theo định dạng:\n<code>Mã_id | Tên sản phẩm | Giá bán VND</code>\n\nVí dụ:\n<code>ytb_1m | Youtube Premium 1 Tháng | 35000</code>";
@@ -948,11 +1036,25 @@ pub async fn build_admin_product_detail(
 
     let sk = GLOBAL_SHORT_KEYS.to_short_key(product_key);
 
+    let custom_cats = db.read_data(|d| d.custom_categories.clone());
+    let categories_def = catalog.get_categories().await?;
+    let (_, _, current_cat_id) = classify_product(product_key, &product.name, &categories_def, custom_cats.get(product_key).map(|s| s.as_str()));
+    let (current_cat_name, current_cat_icon) = categories_def.get(&current_cat_id)
+        .map(|c| (c.name.clone(), c.icon.clone()))
+        .unwrap_or_else(|| ("Khác".to_string(), "📦".to_string()));
+    let is_manual_cat = custom_cats.contains_key(product_key);
+    let cat_display = if is_manual_cat {
+        format!("{} {} (Chỉ định tay)", current_cat_icon, current_cat_name)
+    } else {
+        format!("{} {} (Tự động)", current_cat_icon, current_cat_name)
+    };
+
     let text = format!(
         "⚙️ <b>CẤU HÌNH SẢN PHẨM</b>\n\
         ━━━━━━━━━━━━━━━━━━\n\
         📌 <b>Key:</b> <code>{}</code>\n\
         📦 <b>Tên:</b> {}\n\
+        🗂 <b>Danh mục:</b> {}\n\
         🏷 <b>Nguồn:</b> {}\n\
         💰 <b>Giá gốc:</b> {}\n\
         💵 <b>Giá bán hiện tại:</b> <b>{}</b> (Delta: {})\n\
@@ -962,6 +1064,7 @@ pub async fn build_admin_product_detail(
         🙈 <b>Trạng thái:</b> {}",
         product_key,
         escape_html(&product.name),
+        cat_display,
         if product.is_custom_local { "Tự bán" } else { "Đối tác API" },
         format_money(product.base_price),
         format_money(sell_price),
@@ -978,15 +1081,18 @@ pub async fn build_admin_product_detail(
             InlineKeyboardButton::callback("💎 Sửa giá USDT", format!("admin_do_price_usdt_{}", sk)),
         ],
         vec![
+            InlineKeyboardButton::callback("🔀 Chuyển danh mục", format!("admin_do_cat_{}", sk)),
+            InlineKeyboardButton::callback(if is_hidden { "👁 Hiện sản phẩm" } else { "🙈 Ẩn sản phẩm" }, format!("admin_toggle_hide_{}", sk)),
+        ],
+        vec![
             InlineKeyboardButton::callback("📥 Nạp kho Auto", format!("admin_stock_add_items_{}", sk)),
             InlineKeyboardButton::callback("📦 Đặt kho thủ công", format!("admin_stock_manual_{}", sk)),
         ],
         vec![
             InlineKeyboardButton::callback("🔄 Khôi phục kho gốc", format!("admin_stock_reset_{}", sk)),
-            InlineKeyboardButton::callback(if is_hidden { "👁 Hiện sản phẩm" } else { "🙈 Ẩn sản phẩm" }, format!("admin_toggle_hide_{}", sk)),
+            InlineKeyboardButton::callback("✏️ Sửa tên VI", format!("admin_do_name_{}", sk)),
         ],
         vec![
-            InlineKeyboardButton::callback("✏️ Sửa tên VI", format!("admin_do_name_{}", sk)),
             InlineKeyboardButton::callback("📝 Sửa mô tả VI", format!("admin_do_desc_{}", sk)),
         ],
     ];
@@ -998,7 +1104,7 @@ pub async fn build_admin_product_detail(
     }
 
     buttons.push(vec![
-        InlineKeyboardButton::callback("⬅️ Quay lại", "admin_products"),
+        InlineKeyboardButton::callback("⬅️ Quay lại", format!("admin_viewcat_{}:0", current_cat_id)),
         InlineKeyboardButton::callback("🏠 Dashboard", "admin_home"),
     ]);
 
