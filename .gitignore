@@ -12,3 +12,10 @@ bottele2.pem
 # Bản sao DB production + dry-run migration (chứa dữ liệu khách) — chỉ để local
 backup_pre_fix_*/
 migration_dryrun_*/
+
+# Rust build artifacts
+target/
+**/*.rs.bk
+
+# Agent teamwork metadata
+.agents/teamwork/

@@ -1,16 +1,18 @@
 [Unit]
-Description=CTV Telegram Bot
+Description=CTV Telegram Bot (Rust)
 After=network.target
 
 [Service]
 Type=simple
 User=ubuntu
 WorkingDirectory=/home/ubuntu/ctv-bot
-ExecStart=/home/ubuntu/ctv-bot/venv/bin/python bot.py
+ExecStart=/home/ubuntu/ctv-bot/bot_tele
 Restart=always
-RestartSec=10
-Environment=PYTHONUNBUFFERED=1
+RestartSec=5
 Environment=DATA_DIR=/home/ubuntu/ctv-bot-data
+Environment=RUST_LOG=info
+Environment=RUST_BACKTRACE=1
+LimitNOFILE=65536
 
 [Install]
 WantedBy=multi-user.target
