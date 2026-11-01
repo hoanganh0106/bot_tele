@@ -6,6 +6,7 @@ use teloxide::types::{InlineKeyboardButton, InlineKeyboardMarkup, ParseMode};
 
 use crate::config::Config;
 use crate::db::DbStore;
+use crate::diagnostics::measure;
 use crate::error::AppError;
 use crate::i18n::{self, keys};
 use crate::services::products::classify_product;
@@ -23,8 +24,11 @@ use super::state::{DialogState, StateManager};
 // ----------------------------------------------------------------------------
 
 pub async fn handle_noop(bot: Bot, q: CallbackQuery) -> Result<(), AppError> {
-    let _ = bot.answer_callback_query(q.id).await;
+    measure("handle_noop", async move {
+    let _ = measure("telegram.answer_callback_query", async { bot.answer_callback_query(q.id).await }).await;
     Ok(())
+    })
+    .await
 }
 
 pub async fn handle_back_start(
@@ -33,6 +37,7 @@ pub async fn handle_back_start(
     db: Arc<DbStore>,
     config: Arc<Config>,
 ) -> Result<(), AppError> {
+    measure("handle_back_start", async move {
     let user_id = q.from.id.0 as i64;
     let balance = db.get_user_balance(user_id);
     let admin_flag = is_admin(&config, user_id);
@@ -41,14 +46,18 @@ pub async fn handle_back_start(
     let kb = screens::build_home_keyboard(&db, user_id, balance, admin_flag);
 
     if let Some(msg) = q.message {
-        let _ = bot.edit_message_text(msg.chat().id, msg.id(), text)
-            .parse_mode(ParseMode::Html)
-            .reply_markup(kb)
-            .await;
+        let _ = measure("telegram.edit_message_text", async {
+            bot.edit_message_text(msg.chat().id, msg.id(), text)
+                .parse_mode(ParseMode::Html)
+                .reply_markup(kb)
+                .await
+        }).await;
     }
 
-    let _ = bot.answer_callback_query(q.id).await;
+    let _ = measure("telegram.answer_callback_query", async { bot.answer_callback_query(q.id).await }).await;
     Ok(())
+    })
+    .await
 }
 
 pub async fn handle_back_menu(
@@ -58,6 +67,7 @@ pub async fn handle_back_menu(
     config: Arc<Config>,
     catalog: Arc<dyn CatalogService>,
 ) -> Result<(), AppError> {
+    measure("handle_back_menu", async move {
     let user_id = q.from.id.0 as i64;
     let balance = db.get_user_balance(user_id);
     let admin_flag = is_admin(&config, user_id);
@@ -72,14 +82,18 @@ pub async fn handle_back_menu(
     ).await?;
 
     if let Some(msg) = q.message {
-        let _ = bot.edit_message_text(msg.chat().id, msg.id(), text)
-            .parse_mode(ParseMode::Html)
-            .reply_markup(kb)
-            .await;
+        let _ = measure("telegram.edit_message_text", async {
+            bot.edit_message_text(msg.chat().id, msg.id(), text)
+                .parse_mode(ParseMode::Html)
+                .reply_markup(kb)
+                .await
+        }).await;
     }
 
-    let _ = bot.answer_callback_query(q.id).await;
+    let _ = measure("telegram.answer_callback_query", async { bot.answer_callback_query(q.id).await }).await;
     Ok(())
+    })
+    .await
 }
 
 pub async fn handle_menu_callback(
@@ -89,6 +103,7 @@ pub async fn handle_menu_callback(
     config: Arc<Config>,
     catalog: Arc<dyn CatalogService>,
 ) -> Result<(), AppError> {
+    measure("handle_menu_callback", async move {
     let user_id = q.from.id.0 as i64;
     let balance = db.get_user_balance(user_id);
     let admin_flag = is_admin(&config, user_id);
@@ -104,14 +119,18 @@ pub async fn handle_menu_callback(
     ).await?;
 
     if let Some(msg) = q.message {
-        let _ = bot.edit_message_text(msg.chat().id, msg.id(), text)
-            .parse_mode(ParseMode::Html)
-            .reply_markup(kb)
-            .await;
+        let _ = measure("telegram.edit_message_text", async {
+            bot.edit_message_text(msg.chat().id, msg.id(), text)
+                .parse_mode(ParseMode::Html)
+                .reply_markup(kb)
+                .await
+        }).await;
     }
 
-    let _ = bot.answer_callback_query(q.id).await;
+    let _ = measure("telegram.answer_callback_query", async { bot.answer_callback_query(q.id).await }).await;
     Ok(())
+    })
+    .await
 }
 
 // ----------------------------------------------------------------------------
@@ -125,6 +144,7 @@ pub async fn handle_category_click(
     config: Arc<Config>,
     catalog: Arc<dyn CatalogService>,
 ) -> Result<(), AppError> {
+    measure("handle_category_click", async move {
     let user_id = q.from.id.0 as i64;
     let data = q.data.as_deref().unwrap_or("");
     let raw = data.strip_prefix("viewcat_").unwrap_or("");
@@ -146,14 +166,18 @@ pub async fn handle_category_click(
     ).await?;
 
     if let Some(msg) = q.message {
-        let _ = bot.edit_message_text(msg.chat().id, msg.id(), text)
-            .parse_mode(ParseMode::Html)
-            .reply_markup(kb)
-            .await;
+        let _ = measure("telegram.edit_message_text", async {
+            bot.edit_message_text(msg.chat().id, msg.id(), text)
+                .parse_mode(ParseMode::Html)
+                .reply_markup(kb)
+                .await
+        }).await;
     }
 
-    let _ = bot.answer_callback_query(q.id).await;
+    let _ = measure("telegram.answer_callback_query", async { bot.answer_callback_query(q.id).await }).await;
     Ok(())
+    })
+    .await
 }
 
 pub async fn handle_product_select(
@@ -162,6 +186,7 @@ pub async fn handle_product_select(
     db: Arc<DbStore>,
     catalog: Arc<dyn CatalogService>,
 ) -> Result<(), AppError> {
+    measure("handle_product_select", async move {
     let user_id = q.from.id.0 as i64;
     let data = q.data.as_deref().unwrap_or("");
     let token = data.strip_prefix("prod_").unwrap_or("");
@@ -170,20 +195,24 @@ pub async fn handle_product_select(
     let lang = i18n::get_user_lang(user_id, |uid| db.get_user(uid).map(|u| u.lang));
 
     if db.read_data(|d| d.custom_hiddens.contains(&product_key)) {
-        bot.answer_callback_query(q.id)
-            .text("Sản phẩm hiện đang tạm ẩn.")
-            .show_alert(true)
-            .await?;
+        measure("telegram.answer_callback_query", async {
+            bot.answer_callback_query(q.id)
+                .text("Sản phẩm hiện đang tạm ẩn.")
+                .show_alert(true)
+                .await
+        }).await?;
         return Ok(());
     }
 
     let product = match catalog.get_product(&product_key).await? {
         Some(p) => p,
         None => {
-            bot.answer_callback_query(q.id)
-                .text("Không tìm thấy thông tin sản phẩm.")
-                .show_alert(true)
-                .await?;
+            measure("telegram.answer_callback_query", async {
+                bot.answer_callback_query(q.id)
+                    .text("Không tìm thấy thông tin sản phẩm.")
+                    .show_alert(true)
+                    .await
+            }).await?;
             return Ok(());
         }
     };
@@ -207,12 +236,14 @@ pub async fn handle_product_select(
             InlineKeyboardButton::callback("🏠 Trang chủ", "back_start"),
         ]]);
         if let Some(msg) = q.message {
-            let _ = bot.edit_message_text(msg.chat().id, msg.id(), text)
-                .parse_mode(ParseMode::Html)
-                .reply_markup(kb)
-                .await;
+            let _ = measure("telegram.edit_message_text", async {
+                bot.edit_message_text(msg.chat().id, msg.id(), text)
+                    .parse_mode(ParseMode::Html)
+                    .reply_markup(kb)
+                    .await
+            }).await;
         }
-        let _ = bot.answer_callback_query(q.id).await;
+        let _ = measure("telegram.answer_callback_query", async { bot.answer_callback_query(q.id).await }).await;
         return Ok(());
     }
 
@@ -246,11 +277,22 @@ pub async fn handle_product_select(
         desc_block = format!("\n<blockquote>{}</blockquote>\n", escape_html(&desc));
     }
 
-    let has_auto_accounts = db.read_data(|d| {
-        d.custom_accounts_inventory.get(&product_key).map(|v| !v.is_empty()).unwrap_or(false)
+    let (has_auto_accounts, delivery_mode) = db.read_data(|d| {
+        let has_auto = d.custom_accounts_inventory.get(&product_key).map(|v| !v.is_empty()).unwrap_or(false);
+        let mode = d.custom_delivery_modes.get(&product_key).cloned().unwrap_or_else(|| {
+            if product_key == "slot_gpt_team" { "email".to_string() } else { "direct_contact".to_string() }
+        });
+        (has_auto, mode)
     });
+
     if has_auto_accounts {
-        desc_block.push_str("\n⚡ <i>Nhận tài khoản tự động ngay sau thanh toán</i>\n");
+        desc_block.push_str("\n⚡ <i>Giao tài khoản tự động ngay sau khi thanh toán</i>\n");
+    } else if product.is_custom_local {
+        if delivery_mode == "email" {
+            desc_block.push_str("\n📧 <i>Yêu cầu cung cấp Email sau khi thanh toán để kích hoạt</i>\n");
+        } else {
+            desc_block.push_str("\n📞 <i>Liên hệ Admin kèm mã đơn sau khi thanh toán để nhận hàng</i>\n");
+        }
     }
 
     let max_qty = if effective_stock > 0 {
@@ -295,14 +337,18 @@ pub async fn handle_product_select(
     );
 
     if let Some(msg) = q.message {
-        let _ = bot.edit_message_text(msg.chat().id, msg.id(), text)
-            .parse_mode(ParseMode::Html)
-            .reply_markup(InlineKeyboardMarkup::new(qty_buttons))
-            .await;
+        let _ = measure("telegram.edit_message_text", async {
+            bot.edit_message_text(msg.chat().id, msg.id(), text)
+                .parse_mode(ParseMode::Html)
+                .reply_markup(InlineKeyboardMarkup::new(qty_buttons))
+                .await
+        }).await;
     }
 
-    let _ = bot.answer_callback_query(q.id).await;
+    let _ = measure("telegram.answer_callback_query", async { bot.answer_callback_query(q.id).await }).await;
     Ok(())
+    })
+    .await
 }
 
 pub async fn handle_qty_select(
@@ -313,6 +359,7 @@ pub async fn handle_qty_select(
     catalog: Arc<dyn CatalogService>,
     ctx: Arc<BotContext>,
 ) -> Result<(), AppError> {
+    measure("handle_qty_select", async move {
     let user_id = q.from.id.0 as i64;
     let data = q.data.as_deref().unwrap_or("");
     let raw = data.strip_prefix("qty_").unwrap_or("");
@@ -327,10 +374,12 @@ pub async fn handle_qty_select(
     };
 
     if qty < 1 || qty > 10 {
-        bot.answer_callback_query(q.id)
-            .text("Số lượng không hợp lệ (chỉ cho phép từ 1 đến 10).")
-            .show_alert(true)
-            .await?;
+        measure("telegram.answer_callback_query", async {
+            bot.answer_callback_query(q.id)
+                .text("Số lượng không hợp lệ (chỉ cho phép từ 1 đến 10).")
+                .show_alert(true)
+                .await
+        }).await?;
         return Ok(());
     }
     let qty = qty.clamp(1, 10);
@@ -338,14 +387,14 @@ pub async fn handle_qty_select(
     let product_key = GLOBAL_SHORT_KEYS.from_short_key(short_key);
 
     if db.read_data(|d| d.custom_hiddens.contains(&product_key)) {
-        bot.answer_callback_query(q.id).text("Sản phẩm hiện đang tạm ẩn.").show_alert(true).await?;
+        measure("telegram.answer_callback_query", async { bot.answer_callback_query(q.id).text("Sản phẩm hiện đang tạm ẩn.").show_alert(true).await }).await?;
         return Ok(());
     }
 
     let product = match catalog.get_product(&product_key).await? {
         Some(p) => p,
         None => {
-            bot.answer_callback_query(q.id).text("Không tìm thấy sản phẩm.").show_alert(true).await?;
+            measure("telegram.answer_callback_query", async { bot.answer_callback_query(q.id).text("Không tìm thấy sản phẩm.").show_alert(true).await }).await?;
             return Ok(());
         }
     };
@@ -364,11 +413,24 @@ pub async fn handle_qty_select(
     let total = sell_price * qty;
     let order_code = generate_order_code();
 
-    let is_auto_delivered = db.read_data(|d| {
-        product.is_custom_local && d.custom_accounts_inventory.get(&product_key).map(|v| !v.is_empty()).unwrap_or(false)
+    let (is_auto_delivered, needs_email) = db.read_data(|d| {
+        let has_accounts = d.custom_accounts_inventory.get(&product_key).map(|v| !v.is_empty()).unwrap_or(false);
+        if product.is_custom_local && has_accounts {
+            (true, false)
+        } else if product.is_custom_local {
+            let mode = d.custom_delivery_modes.get(&product_key).map(|s| s.as_str());
+            let needs_mail = match mode {
+                Some("email") => true,
+                Some("direct_contact") => false,
+                _ => false, // Default for custom local is direct contact
+            };
+            (false, needs_mail)
+        } else {
+            // Partner products
+            let needs_mail = product_key == "slot_gpt_team";
+            (false, needs_mail)
+        }
     });
-
-    let needs_email = product_key == "slot_gpt_team" || (product.is_custom_local && !is_auto_delivered);
 
     let order = crate::db::OrderRecord {
         order_code: order_code.clone(),
@@ -452,10 +514,12 @@ pub async fn handle_qty_select(
     );
 
     if let Some(msg) = q.message {
-        let _ = bot.edit_message_text(msg.chat().id, msg.id(), text)
-            .parse_mode(ParseMode::Html)
-            .reply_markup(InlineKeyboardMarkup::new(buttons))
-            .await;
+        let _ = measure("telegram.edit_message_text", async {
+            bot.edit_message_text(msg.chat().id, msg.id(), text)
+                .parse_mode(ParseMode::Html)
+                .reply_markup(InlineKeyboardMarkup::new(buttons))
+                .await
+        }).await;
     }
 
     // Auto cancel after 5 minutes
@@ -465,8 +529,10 @@ pub async fn handle_qty_select(
         auto_cancel_order(ctx_clone, &order_code_str, user_id, 300).await;
     });
 
-    let _ = bot.answer_callback_query(q.id).await;
+    let _ = measure("telegram.answer_callback_query", async { bot.answer_callback_query(q.id).await }).await;
     Ok(())
+    })
+    .await
 }
 
 // ----------------------------------------------------------------------------
@@ -478,6 +544,7 @@ pub async fn handle_orders_callback(
     q: CallbackQuery,
     db: Arc<DbStore>,
 ) -> Result<(), AppError> {
+    measure("handle_orders_callback", async move {
     let user_id = q.from.id.0 as i64;
     let data = q.data.as_deref().unwrap_or("");
 
@@ -490,14 +557,18 @@ pub async fn handle_orders_callback(
     let (text, kb) = screens::build_orders_screen(&db, user_id, page, 8);
 
     if let Some(msg) = q.message {
-        let _ = bot.edit_message_text(msg.chat().id, msg.id(), text)
-            .parse_mode(ParseMode::Markdown)
-            .reply_markup(kb)
-            .await;
+        let _ = measure("telegram.edit_message_text", async {
+            bot.edit_message_text(msg.chat().id, msg.id(), text)
+                .parse_mode(ParseMode::Markdown)
+                .reply_markup(kb)
+                .await
+        }).await;
     }
 
-    let _ = bot.answer_callback_query(q.id).await;
+    let _ = measure("telegram.answer_callback_query", async { bot.answer_callback_query(q.id).await }).await;
     Ok(())
+    })
+    .await
 }
 
 pub async fn handle_wallet_home(
@@ -505,19 +576,24 @@ pub async fn handle_wallet_home(
     q: CallbackQuery,
     db: Arc<DbStore>,
 ) -> Result<(), AppError> {
+    measure("handle_wallet_home", async move {
     let user_id = q.from.id.0 as i64;
     let balance = db.get_user_balance(user_id);
     let (text, kb) = screens::build_wallet_screen(&db, user_id, balance);
 
     if let Some(msg) = q.message {
-        let _ = bot.edit_message_text(msg.chat().id, msg.id(), text)
-            .parse_mode(ParseMode::Html)
-            .reply_markup(kb)
-            .await;
+        let _ = measure("telegram.edit_message_text", async {
+            bot.edit_message_text(msg.chat().id, msg.id(), text)
+                .parse_mode(ParseMode::Html)
+                .reply_markup(kb)
+                .await
+        }).await;
     }
 
-    let _ = bot.answer_callback_query(q.id).await;
+    let _ = measure("telegram.answer_callback_query", async { bot.answer_callback_query(q.id).await }).await;
     Ok(())
+    })
+    .await
 }
 
 pub async fn handle_deposit_start(
@@ -526,18 +602,23 @@ pub async fn handle_deposit_start(
     db: Arc<DbStore>,
     config: Arc<Config>,
 ) -> Result<(), AppError> {
+    measure("handle_deposit_start", async move {
     let user_id = q.from.id.0 as i64;
     let (text, kb) = screens::build_deposit_screen(&db, &config, user_id);
 
     if let Some(msg) = q.message {
-        let _ = bot.edit_message_text(msg.chat().id, msg.id(), text)
-            .parse_mode(ParseMode::Html)
-            .reply_markup(kb)
-            .await;
+        let _ = measure("telegram.edit_message_text", async {
+            bot.edit_message_text(msg.chat().id, msg.id(), text)
+                .parse_mode(ParseMode::Html)
+                .reply_markup(kb)
+                .await
+        }).await;
     }
 
-    let _ = bot.answer_callback_query(q.id).await;
+    let _ = measure("telegram.answer_callback_query", async { bot.answer_callback_query(q.id).await }).await;
     Ok(())
+    })
+    .await
 }
 
 pub async fn handle_referral_home(
@@ -545,21 +626,26 @@ pub async fn handle_referral_home(
     q: CallbackQuery,
     db: Arc<DbStore>,
 ) -> Result<(), AppError> {
+    measure("handle_referral_home", async move {
     let user_id = q.from.id.0 as i64;
-    let me = bot.get_me().await.ok();
+    let me = measure("telegram.get_me", async { bot.get_me().await }).await.ok();
     let bot_username = me.as_ref().and_then(|m| m.username.as_deref()).unwrap_or("bot");
 
     let (text, kb) = screens::build_referral_screen(&db, user_id, bot_username);
 
     if let Some(msg) = q.message {
-        let _ = bot.edit_message_text(msg.chat().id, msg.id(), text)
-            .parse_mode(ParseMode::Html)
-            .reply_markup(kb)
-            .await;
+        let _ = measure("telegram.edit_message_text", async {
+            bot.edit_message_text(msg.chat().id, msg.id(), text)
+                .parse_mode(ParseMode::Html)
+                .reply_markup(kb)
+                .await
+        }).await;
     }
 
-    let _ = bot.answer_callback_query(q.id).await;
+    let _ = measure("telegram.answer_callback_query", async { bot.answer_callback_query(q.id).await }).await;
     Ok(())
+    })
+    .await
 }
 
 pub async fn handle_set_language(
@@ -569,6 +655,7 @@ pub async fn handle_set_language(
     config: Arc<Config>,
     _state_mgr: Arc<StateManager>,
 ) -> Result<(), AppError> {
+    measure("handle_set_language", async move {
     let user_id = q.from.id.0 as i64;
     let data = q.data.as_deref().unwrap_or("");
     let lang = data.strip_prefix("setlang_").unwrap_or("vi");
@@ -582,7 +669,7 @@ pub async fn handle_set_language(
         }, true);
     });
 
-    let _ = bot.answer_callback_query(q.id).text(if lang == "vi" { "Đã đổi sang Tiếng Việt!" } else { "Language switched to English!" }).await;
+    let _ = measure("telegram.answer_callback_query", async { bot.answer_callback_query(q.id).text(if lang == "vi" { "Đã đổi sang Tiếng Việt!" } else { "Language switched to English!" }).await }).await;
 
     let balance = db.get_user_balance(user_id);
     let admin_flag = is_admin(&config, user_id);
@@ -591,13 +678,17 @@ pub async fn handle_set_language(
     let kb = screens::build_home_keyboard(&db, user_id, balance, admin_flag);
 
     if let Some(msg) = q.message {
-        let _ = bot.edit_message_text(msg.chat().id, msg.id(), text)
-            .parse_mode(ParseMode::Html)
-            .reply_markup(kb)
-            .await;
+        let _ = measure("telegram.edit_message_text", async {
+            bot.edit_message_text(msg.chat().id, msg.id(), text)
+                .parse_mode(ParseMode::Html)
+                .reply_markup(kb)
+                .await
+        }).await;
     }
 
     Ok(())
+    })
+    .await
 }
 
 pub async fn handle_language_query(
@@ -606,19 +697,24 @@ pub async fn handle_language_query(
     db: Arc<DbStore>,
     _state_mgr: Arc<StateManager>,
 ) -> Result<(), AppError> {
+    measure("handle_language_query", async move {
     let user_id = q.from.id.0 as i64;
     let lang = i18n::get_user_lang(user_id, |uid| db.get_user(uid).map(|u| u.lang));
     let prompt = i18n::get_text(lang.as_str(), keys::LANGUAGE_PROMPT, &[]);
 
     if let Some(msg) = q.message {
-        let _ = bot.edit_message_text(msg.chat().id, msg.id(), prompt)
-            .parse_mode(ParseMode::Markdown)
-            .reply_markup(screens::build_language_keyboard())
-            .await;
+        let _ = measure("telegram.edit_message_text", async {
+            bot.edit_message_text(msg.chat().id, msg.id(), prompt)
+                .parse_mode(ParseMode::Markdown)
+                .reply_markup(screens::build_language_keyboard())
+                .await
+        }).await;
     }
 
-    let _ = bot.answer_callback_query(q.id).await;
+    let _ = measure("telegram.answer_callback_query", async { bot.answer_callback_query(q.id).await }).await;
     Ok(())
+    })
+    .await
 }
 
 // ----------------------------------------------------------------------------

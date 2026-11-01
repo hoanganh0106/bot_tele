@@ -33,6 +33,8 @@ pub struct DatabaseData {
     #[serde(default)]
     pub custom_accounts_inventory: HashMap<String, Vec<String>>,
     #[serde(default)]
+    pub custom_delivery_modes: HashMap<String, String>,
+    #[serde(default)]
     pub custom_hiddens: Vec<String>,
     #[serde(default)]
     pub settings: SettingsData,
@@ -78,6 +80,7 @@ impl Default for DatabaseData {
             custom_products: HashMap::new(),
             custom_stocks: HashMap::new(),
             custom_accounts_inventory: HashMap::new(),
+            custom_delivery_modes: HashMap::new(),
             custom_hiddens: Vec::new(),
             settings: SettingsData::default(),
             processed_transactions: Vec::new(),

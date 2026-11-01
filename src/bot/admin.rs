@@ -250,6 +250,7 @@ pub async fn handle_admin_callback(
             d.custom_products.remove(&product_key);
             d.custom_stocks.remove(&product_key);
             d.custom_accounts_inventory.remove(&product_key);
+            d.custom_delivery_modes.remove(&product_key);
         }, true);
         let _ = bot.answer_callback_query(q.id).text("Đã xóa sản phẩm tự bán!").await;
         let (text, kb) = build_admin_category_grid(catalog.as_ref(), &db).await?;
@@ -275,6 +276,52 @@ pub async fn handle_admin_callback(
         return Ok(());
     }
 
+    if let Some(sk) = data.strip_prefix("admin_stock_direct_") {
+        let product_key = GLOBAL_SHORT_KEYS.from_short_key(sk);
+        state_mgr.set(user_id, DialogState::AdminAwaitingStockDirect { product_key: product_key.clone() });
+        let text = format!("💬 <b>Nhập số lượng tồn kho (Liên hệ trực tiếp):</b>\n<code>{}</code>\n\nVí dụ: <code>50</code>\n\n💡 <i>Sau khi khách thanh toán thành công, hệ thống sẽ gửi thông báo yêu cầu khách liên hệ Admin kèm mã đơn để nhận hàng.</i>", product_key);
+        let kb = InlineKeyboardMarkup::new(vec![vec![
+            InlineKeyboardButton::callback("⬅️ Quay lại", format!("admin_price_{}", sk)),
+            InlineKeyboardButton::callback("🏠 Trang chủ", "admin_home"),
+        ]]);
+        bot.send_message(q.from.id, text).parse_mode(ParseMode::Html).reply_markup(kb).await?;
+        let _ = bot.answer_callback_query(q.id).await;
+        return Ok(());
+    }
+
+    if let Some(sk) = data.strip_prefix("admin_stock_email_") {
+        let product_key = GLOBAL_SHORT_KEYS.from_short_key(sk);
+        state_mgr.set(user_id, DialogState::AdminAwaitingStockEmail { product_key: product_key.clone() });
+        let text = format!("📧 <b>Nhập số lượng tồn kho (Kích hoạt qua Mail):</b>\n<code>{}</code>\n\nVí dụ: <code>50</code>\n\n💡 <i>Sau khi khách thanh toán thành công, hệ thống sẽ yêu cầu khách cung cấp Email để Admin kích hoạt.</i>", product_key);
+        let kb = InlineKeyboardMarkup::new(vec![vec![
+            InlineKeyboardButton::callback("⬅️ Quay lại", format!("admin_price_{}", sk)),
+            InlineKeyboardButton::callback("🏠 Trang chủ", "admin_home"),
+        ]]);
+        bot.send_message(q.from.id, text).parse_mode(ParseMode::Html).reply_markup(kb).await?;
+        let _ = bot.answer_callback_query(q.id).await;
+        return Ok(());
+    }
+
+    if let Some(sk) = data.strip_prefix("admin_toggle_delivery_") {
+        let product_key = GLOBAL_SHORT_KEYS.from_short_key(sk);
+        let new_mode = db.write_data(|d| {
+            let curr = d.custom_delivery_modes.get(&product_key).map(|s| s.as_str()).unwrap_or("direct_contact");
+            let next = if curr == "email" { "direct_contact" } else { "email" };
+            d.custom_delivery_modes.insert(product_key.clone(), next.to_string());
+            next.to_string()
+        }, true);
+        let mode_desc = if new_mode == "email" { "📧 Nhận Mail kích hoạt" } else { "💬 Liên hệ Admin nhận hàng" };
+        let _ = bot.answer_callback_query(q.id).text(format!("Đã đổi chế độ: {}", mode_desc)).await;
+        let (text, kb) = build_admin_product_detail(catalog.as_ref(), &db, &product_key).await?;
+        if let Some(msg) = q.message {
+            let _ = bot.edit_message_text(msg.chat().id, msg.id(), text)
+                .parse_mode(ParseMode::Html)
+                .reply_markup(kb)
+                .await;
+        }
+        return Ok(());
+    }
+
     if let Some(sk) = data.strip_prefix("admin_stock_manual_") {
         let product_key = GLOBAL_SHORT_KEYS.from_short_key(sk);
         state_mgr.set(user_id, DialogState::AdminAwaitingStockManual { product_key: product_key.clone() });
@@ -293,6 +340,7 @@ pub async fn handle_admin_callback(
         db.write_data(|d| {
             d.custom_stocks.remove(&product_key);
             d.custom_accounts_inventory.remove(&product_key);
+            d.custom_delivery_modes.remove(&product_key);
         }, true);
         let _ = bot.answer_callback_query(q.id).text("Đã khôi phục kho về mặc định!").await;
         let (text, kb) = build_admin_product_detail(catalog.as_ref(), &db, &product_key).await?;
@@ -1154,6 +1202,22 @@ pub async fn build_admin_product_detail(
         format!("{} {} (Tự động)", current_cat_icon, current_cat_name)
     };
 
+    let (delivery_mode, has_auto_accounts) = db.read_data(|d| {
+        let has_auto = d.custom_accounts_inventory.get(product_key).map(|v| !v.is_empty()).unwrap_or(false);
+        let mode = d.custom_delivery_modes.get(product_key).cloned().unwrap_or_else(|| {
+            if product_key == "slot_gpt_team" { "email".to_string() } else { "direct_contact".to_string() }
+        });
+        (mode, has_auto)
+    });
+
+    let delivery_display = if has_auto_accounts {
+        "⚡ Kho Auto-Delivery (Giao tự động)".to_string()
+    } else if delivery_mode == "email" {
+        "📧 Kho nhận Mail (Khách gửi mail kích hoạt)".to_string()
+    } else {
+        "💬 Kho LH trực tiếp (Khách liên hệ Admin)".to_string()
+    };
+
     let text = format!(
         "⚙️ <b>CẤU HÌNH SẢN PHẨM</b>\n\
         ━━━━━━━━━━━━━━━━━━\n\
@@ -1161,6 +1225,7 @@ pub async fn build_admin_product_detail(
         📦 <b>Tên:</b> {}\n\
         🗂 <b>Danh mục:</b> {}\n\
         🏷 <b>Nguồn:</b> {}\n\
+        🚚 <b>Hình thức giao:</b> {}\n\
         💰 <b>Giá gốc:</b> {}\n\
         💵 <b>Giá bán hiện tại:</b> <b>{}</b> (Delta: {})\n\
         💎 <b>Giá USDT:</b> {}\n\
@@ -1171,6 +1236,7 @@ pub async fn build_admin_product_detail(
         escape_html(&product.name),
         cat_display,
         if product.is_custom_local { "Tự bán" } else { "Đối tác API" },
+        delivery_display,
         format_money(product.base_price),
         format_money(sell_price),
         delta.map(|d| format_money(d)).unwrap_or_else(|| "Markup mặc định".to_string()),
@@ -1191,7 +1257,14 @@ pub async fn build_admin_product_detail(
         ],
         vec![
             InlineKeyboardButton::callback("📥 Nạp kho Auto", format!("admin_stock_add_items_{}", sk)),
-            InlineKeyboardButton::callback("📦 Đặt kho thủ công", format!("admin_stock_manual_{}", sk)),
+            InlineKeyboardButton::callback("💬 Kho LH trực tiếp", format!("admin_stock_direct_{}", sk)),
+        ],
+        vec![
+            InlineKeyboardButton::callback("📧 Kho nhận Mail", format!("admin_stock_email_{}", sk)),
+            InlineKeyboardButton::callback(
+                if delivery_mode == "email" { "🔄 Đổi sang 💬 LH Trực Tiếp" } else { "🔄 Đổi sang 📧 Gửi Mail" },
+                format!("admin_toggle_delivery_{}", sk)
+            ),
         ],
         vec![
             InlineKeyboardButton::callback("🔄 Khôi phục kho gốc", format!("admin_stock_reset_{}", sk)),
@@ -1442,11 +1515,58 @@ pub async fn handle_admin_text_input(
                 // Also update custom_stocks count
                 let total = entry.len() as i64;
                 d.custom_stocks.insert(product_key.clone(), total);
+                d.custom_delivery_modes.insert(product_key.clone(), "auto".to_string());
             }, true);
             bot.send_message(msg.chat.id, format!("✅ Đã nạp thành công <b>+{}</b> tài khoản vào kho Auto của <code>{}</code>!", added_count, product_key))
                 .parse_mode(ParseMode::Html)
                 .reply_markup(kb)
                 .await?;
+        }
+
+        DialogState::AdminAwaitingStockDirect { product_key } => {
+            let sk = GLOBAL_SHORT_KEYS.to_short_key(&product_key);
+            let kb = InlineKeyboardMarkup::new(vec![vec![
+                InlineKeyboardButton::callback("⬅️ Quay lại SP", format!("admin_price_{}", sk)),
+                InlineKeyboardButton::callback("🏠 Trang chủ", "admin_home"),
+            ]]);
+            if let Ok(count) = input.parse::<i64>() {
+                db.write_data(|d| {
+                    d.custom_stocks.insert(product_key.clone(), count);
+                    d.custom_delivery_modes.insert(product_key.clone(), "direct_contact".to_string());
+                    d.custom_accounts_inventory.remove(&product_key);
+                }, true);
+                bot.send_message(msg.chat.id, format!("✅ Đã cập nhật kho <b>Liên hệ trực tiếp</b>: <b>{}</b> cái cho <code>{}</code>.\n\n💡 <i>Khách thanh toán xong sẽ được thông báo liên hệ Admin kèm mã đơn để nhận hàng.</i>", count, product_key))
+                    .parse_mode(ParseMode::Html)
+                    .reply_markup(kb)
+                    .await?;
+            } else {
+                bot.send_message(msg.chat.id, "❌ Vui lòng nhập số nguyên hợp lệ.")
+                    .reply_markup(kb)
+                    .await?;
+            }
+        }
+
+        DialogState::AdminAwaitingStockEmail { product_key } => {
+            let sk = GLOBAL_SHORT_KEYS.to_short_key(&product_key);
+            let kb = InlineKeyboardMarkup::new(vec![vec![
+                InlineKeyboardButton::callback("⬅️ Quay lại SP", format!("admin_price_{}", sk)),
+                InlineKeyboardButton::callback("🏠 Trang chủ", "admin_home"),
+            ]]);
+            if let Ok(count) = input.parse::<i64>() {
+                db.write_data(|d| {
+                    d.custom_stocks.insert(product_key.clone(), count);
+                    d.custom_delivery_modes.insert(product_key.clone(), "email".to_string());
+                    d.custom_accounts_inventory.remove(&product_key);
+                }, true);
+                bot.send_message(msg.chat.id, format!("✅ Đã cập nhật kho <b>Kích hoạt qua Mail</b>: <b>{}</b> cái cho <code>{}</code>.\n\n💡 <i>Khách thanh toán xong sẽ được yêu cầu nhập Email để kích hoạt.</i>", count, product_key))
+                    .parse_mode(ParseMode::Html)
+                    .reply_markup(kb)
+                    .await?;
+            } else {
+                bot.send_message(msg.chat.id, "❌ Vui lòng nhập số nguyên hợp lệ.")
+                    .reply_markup(kb)
+                    .await?;
+            }
         }
 
         DialogState::AdminAwaitingStockManual { product_key } => {
@@ -1538,6 +1658,7 @@ pub async fn handle_admin_text_input(
                             is_custom_local: true,
                             extra: Default::default(),
                         });
+                        d.custom_delivery_modes.insert(key.clone(), "direct_contact".to_string());
                     }, true);
                     bot.send_message(msg.chat.id, format!("✅ Đã thêm sản phẩm tự bán: <b>{}</b> (<code>{}</code>) — {}", name, key, format_money(price)))
                         .parse_mode(ParseMode::Html)

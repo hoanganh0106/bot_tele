@@ -34,6 +34,10 @@ pub enum DialogState {
     AdminAwaitingStockItems { product_key: String },
     /// Admin setting manual integer stock count.
     AdminAwaitingStockManual { product_key: String },
+    /// Admin setting stock count for direct contact delivery mode.
+    AdminAwaitingStockDirect { product_key: String },
+    /// Admin setting stock count for email activation delivery mode.
+    AdminAwaitingStockEmail { product_key: String },
     /// Admin creating custom local product: format "id | name | price".
     AdminAwaitingNewProduct,
 

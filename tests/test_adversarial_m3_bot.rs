@@ -653,3 +653,88 @@ fn test_adv_m3_complete_absence_of_phone_rental() {
         assert!(!label.contains("Thuê số"), "UI_BUTTONS label must not contain 'Thuê số'");
     }
 }
+
+#[test]
+fn test_adv_m3_custom_delivery_mode_selection_and_transitions() {
+    let (_dir, db) = create_test_db();
+    let product_key = "custom_vpn_premium";
+
+    // 1. Verify DialogState variants
+    let direct_state = DialogState::AdminAwaitingStockDirect { product_key: product_key.to_string() };
+    let email_state = DialogState::AdminAwaitingStockEmail { product_key: product_key.to_string() };
+    assert!(format!("{:?}", direct_state).contains("AdminAwaitingStockDirect"));
+    assert!(format!("{:?}", email_state).contains("AdminAwaitingStockEmail"));
+
+    // 2. Set custom product & delivery mode to direct_contact
+    db.write_data(|d| {
+        d.custom_products.insert(product_key.to_string(), bot_tele::db::CustomProduct {
+            name: "VPN Premium VIP".to_string(),
+            price: 50000,
+            stock: 0,
+            is_custom_local: true,
+            extra: Default::default(),
+        });
+        d.custom_stocks.insert(product_key.to_string(), 25);
+        d.custom_delivery_modes.insert(product_key.to_string(), "direct_contact".to_string());
+    }, true);
+
+    // Verify DB contains delivery mode direct_contact
+    let mode = db.read_data(|d| d.custom_delivery_modes.get(product_key).cloned());
+    assert_eq!(mode, Some("direct_contact".to_string()));
+
+    // Verify delivery mode resolution logic: direct_contact -> needs_email = false
+    let (is_auto, needs_email) = db.read_data(|d| {
+        let has_accounts = d.custom_accounts_inventory.get(product_key).map(|v| !v.is_empty()).unwrap_or(false);
+        if has_accounts {
+            (true, false)
+        } else {
+            let m = d.custom_delivery_modes.get(product_key).map(|s| s.as_str());
+            let needs_mail = match m {
+                Some("email") => true,
+                Some("direct_contact") => false,
+                _ => false,
+            };
+            (false, needs_mail)
+        }
+    });
+    assert!(!is_auto, "Should not be auto-delivered");
+    assert!(!needs_email, "Direct contact mode must not demand customer email");
+
+    // 3. Toggle to email mode
+    db.write_data(|d| {
+        d.custom_delivery_modes.insert(product_key.to_string(), "email".to_string());
+    }, true);
+
+    let (is_auto_email, needs_email_email) = db.read_data(|d| {
+        let has_accounts = d.custom_accounts_inventory.get(product_key).map(|v| !v.is_empty()).unwrap_or(false);
+        if has_accounts {
+            (true, false)
+        } else {
+            let m = d.custom_delivery_modes.get(product_key).map(|s| s.as_str());
+            let needs_mail = match m {
+                Some("email") => true,
+                Some("direct_contact") => false,
+                _ => false,
+            };
+            (false, needs_mail)
+        }
+    });
+    assert!(!is_auto_email);
+    assert!(needs_email_email, "Email mode must require customer email");
+
+    // 4. When auto-accounts are populated, auto takes priority
+    db.write_data(|d| {
+        d.custom_accounts_inventory.insert(product_key.to_string(), vec!["acc1|pass".to_string(), "acc2|pass".to_string()]);
+    }, true);
+
+    let (is_auto_with_acc, needs_email_with_acc) = db.read_data(|d| {
+        let has_accounts = d.custom_accounts_inventory.get(product_key).map(|v| !v.is_empty()).unwrap_or(false);
+        if has_accounts {
+            (true, false)
+        } else {
+            (false, false)
+        }
+    });
+    assert!(is_auto_with_acc, "Must be auto delivered when accounts exist in inventory");
+    assert!(!needs_email_with_acc, "Must not demand email when accounts are auto delivered");
+}

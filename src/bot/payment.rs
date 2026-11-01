@@ -825,41 +825,92 @@ async fn process_paid_order_locked(
                 ..Default::default()
             })?;
 
-            let cust_msg = format!(
-                "✅ <b>Thanh toán thành công đơn hàng <code>#{}</code>!</b>\n\n\
-                📦 Sản phẩm: <b>{}</b> x{}\n\
-                ⚡ Đây là sản phẩm hỗ trợ thủ công. Admin đã nhận thông báo và sẽ chủ động nhắn tin giao tài khoản cho bạn nhé!",
-                order_code,
-                order.product_name,
-                order.qty,
-            );
-            let _ = ctx.bot.send_message(ChatId(order.user_id), cust_msg).parse_mode(ParseMode::Html).await;
+            if !order.emails.is_empty() {
+                // Email activation fulfillment mode
+                let cust_msg = format!(
+                    "✅ <b>Thanh toán thành công đơn hàng <code>#{}</code>!</b>\n\n\
+                    📦 Sản phẩm: <b>{}</b> x{}\n\
+                    📧 Email đã nhận: <code>{}</code>\n\
+                    ⚡ Admin đã nhận thông báo và đang tiến hành kích hoạt/xử lý cho bạn trong thời gian sớm nhất nhé!",
+                    order_code,
+                    order.product_name,
+                    order.qty,
+                    order.emails.join(", "),
+                );
+                let _ = ctx.bot.send_message(ChatId(order.user_id), cust_msg).parse_mode(ParseMode::Html).await;
 
-            let user_link = format_user_link(order.username.as_deref(), order.user_id);
-            let emails_str = if order.emails.is_empty() {
-                "Không có".to_string()
+                let user_link = format_user_link(order.username.as_deref(), order.user_id);
+                let admin_alert = format!(
+                    "🔔 <b>[ĐƠN HÀNG MỚI] CẦN KÍCH HOẠT QUA EMAIL</b>\n\
+                    ━━━━━━━━━━━━━━━━━━\n\
+                    📋 Mã: <code>#{}</code>\n\
+                    👤 Khách: {}\n\
+                    📦 {} x{}\n\
+                    💰 Thu: <b>{}</b>\n\
+                    💳 Nguồn: {}\n\
+                    📧 Email khách gửi: <code>{}</code>\n\n\
+                    ⚡ <i>Hãy kích hoạt và gửi kết quả cho khách nhé!</i>",
+                    order_code,
+                    user_link,
+                    order.product_name,
+                    order.qty,
+                    format_money(order.total),
+                    payment_source,
+                    order.emails.join(", "),
+                );
+                notify_all_admins(ctx, &admin_alert).await;
             } else {
-                order.emails.join(", ")
-            };
-            let admin_alert = format!(
-                "🔔 <b>[HÀNG TỰ BÁN] CẦN ADMIN DUYỆT THỦ CÔNG</b>\n\
-                ━━━━━━━━━━━━━━━━━━\n\
-                📋 Mã: <code>#{}</code>\n\
-                👤 Khách: {}\n\
-                📦 {} x{}\n\
-                💰 Thu: <b>{}</b>\n\
-                💳 Nguồn: {}\n\
-                📧 Email khách gửi: <code>{}</code>\n\n\
-                ⚡ <i>Hãy chủ động nhắn tin giao tài khoản cho khách nhé!</i>",
-                order_code,
-                user_link,
-                order.product_name,
-                order.qty,
-                format_money(order.total),
-                payment_source,
-                emails_str,
-            );
-            notify_all_admins(ctx, &admin_alert).await;
+                // Direct contact mode: customer contacts admin with order code
+                let cust_msg = format!(
+                    "🎉 <b>THANH TOÁN THÀNH CÔNG ĐƠN HÀNG <code>#{}</code>!</b>\n\
+                    ━━━━━━━━━━━━━━━━━━\n\
+                    📦 Sản phẩm: <b>{}</b> x{}\n\
+                    💰 Tổng thanh toán: <b>{}</b>\n\n\
+                    📞 <b>HÌNH THỨC NHẬN HÀNG: LIÊN HỆ ADMIN</b>\n\
+                    👉 Vui lòng <b>liên hệ Admin</b> kèm mã đơn hàng <code>#{}</code> để nhận hàng/kích hoạt ngay nhé!\n\n\
+                    💬 <i>Nhấn nút bên dưới để nhắn tin trực tiếp cho Admin:</i>",
+                    order_code,
+                    order.product_name,
+                    order.qty,
+                    format_money(order.total),
+                    order_code,
+                );
+
+                let contact_url: reqwest::Url = "https://t.me/hoanganh1162".parse().unwrap();
+                let kb = InlineKeyboardMarkup::new(vec![
+                    vec![
+                        InlineKeyboardButton::url("📞 Liên hệ Admin nhận hàng", contact_url),
+                    ],
+                    vec![
+                        InlineKeyboardButton::callback("🏠 Trang chủ", "back_start"),
+                    ],
+                ]);
+
+                let _ = ctx.bot.send_message(ChatId(order.user_id), cust_msg)
+                    .parse_mode(ParseMode::Html)
+                    .reply_markup(kb)
+                    .await;
+
+                let user_link = format_user_link(order.username.as_deref(), order.user_id);
+                let admin_alert = format!(
+                    "🔔 <b>[ĐƠN HÀNG MỚI] LIÊN HỆ TRỰC TIẾP NHẬN HÀNG</b>\n\
+                    ━━━━━━━━━━━━━━━━━━\n\
+                    📋 Mã đơn: <code>#{}</code>\n\
+                    👤 Khách: {} (ID: <code>{}</code>)\n\
+                    📦 Sản phẩm: <b>{}</b> x{}\n\
+                    💰 Thu: <b>{}</b>\n\
+                    💳 Nguồn: {}\n\n\
+                    👉 <i>Khách sẽ chủ động liên hệ bạn kèm mã đơn để nhận hàng!</i>",
+                    order_code,
+                    user_link,
+                    order.user_id,
+                    order.product_name,
+                    order.qty,
+                    format_money(order.total),
+                    payment_source,
+                );
+                notify_all_admins(ctx, &admin_alert).await;
+            }
 
             return Ok(true);
         }
