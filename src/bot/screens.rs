@@ -180,10 +180,11 @@ pub async fn build_menu_screen(
             cat_name
         };
 
+        let non_breaking_name = display_name.replace(' ', "\u{00A0}");
         let btn_text = if custom_eid.is_some() {
-            display_name.to_string()
+            non_breaking_name
         } else {
-            format!("{} {}", icon, display_name)
+            format!("{} {}", icon, non_breaking_name)
         };
 
         row.push(InlineKeyboardButton::callback(btn_text, format!("viewcat_{}", cat_id)));
@@ -217,11 +218,16 @@ pub async fn build_menu_screen(
         db.read_data(|d| d.settings.menu_title_en.clone())
     };
 
-    let text = if let Some(custom) = custom_menu {
+    let base_text = if let Some(custom) = custom_menu {
         custom.replace("{balance}", &format_money(balance))
     } else {
         i18n::get_text(lang.as_str(), keys::MENU_TITLE, &[("balance", &format_money(balance))])
     };
+
+    // Expand message bubble width on Telegram Desktop to full width (~480px)
+    // using fullwidth invisible Hangul Filler characters (\u{3164}), preventing
+    // 3-column button text and icons from wrapping onto multiple lines.
+    let text = format!("{}\n{}", base_text.trim_end(), "\u{3164}".repeat(32));
 
     Ok((text, InlineKeyboardMarkup::new(buttons)))
     })
