@@ -106,7 +106,7 @@ pub struct OrderRecord {
     #[serde(default)]
     pub first_name: Option<String>,
     pub product_key: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_string_or_null")]
     pub product_name: String,
     pub qty: i64,
     #[serde(default)]
@@ -324,6 +324,7 @@ pub struct DepositRecord {
     pub expected_amount: i64,
     #[serde(default = "default_deposit_status")]
     pub status: String,
+    #[serde(default, deserialize_with = "deserialize_string_or_null")]
     pub created_at: String,
     #[serde(flatten)]
     pub extra: HashMap<String, serde_json::Value>,
@@ -350,13 +351,15 @@ impl Default for DepositRecord {
 pub struct DepositHistoryRecord {
     pub user_id: i64,
     pub amount: i64,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_string_or_null")]
     pub transaction_id: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_string_or_null")]
     pub content: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_string_or_null")]
     pub reference_code: String,
+    #[serde(default, deserialize_with = "deserialize_string_or_null")]
     pub received_at: String,
+    #[serde(default, deserialize_with = "deserialize_string_or_null")]
     pub credited_at: String,
     #[serde(flatten)]
     pub extra: HashMap<String, serde_json::Value>,
@@ -384,18 +387,19 @@ pub struct IncomingPaymentRecord {
     pub id: String,
     #[serde(default, rename = "transferAmount")]
     pub transfer_amount: i64,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_string_or_null")]
     pub content: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_string_or_null")]
     pub raw_content: String,
-    #[serde(default, rename = "transactionContent")]
+    #[serde(default, rename = "transactionContent", deserialize_with = "deserialize_string_or_null")]
     pub transaction_content: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_string_or_null")]
     pub description: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_string_or_null")]
     pub code: String,
-    #[serde(default, rename = "referenceCode")]
+    #[serde(default, rename = "referenceCode", deserialize_with = "deserialize_string_or_null")]
     pub reference_code: String,
+    #[serde(default, deserialize_with = "deserialize_string_or_null")]
     pub received_at: String,
     #[serde(default)]
     pub processed: bool,
@@ -428,10 +432,20 @@ where
 {
     let val = serde_json::Value::deserialize(deserializer)?;
     match val {
+        serde_json::Value::Null => Ok(String::new()),
         serde_json::Value::Number(n) => Ok(n.to_string()),
         serde_json::Value::String(s) => Ok(s),
         _ => Ok(val.to_string()),
     }
+}
+
+/// Helper deserializer that maps null to empty string / default for strings.
+pub fn deserialize_string_or_null<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let opt = Option::<String>::deserialize(deserializer)?;
+    Ok(opt.unwrap_or_default())
 }
 
 /// Local manually created product in `custom_products` map.
