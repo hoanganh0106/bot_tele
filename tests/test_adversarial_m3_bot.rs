@@ -863,3 +863,58 @@ async fn test_adv_m3_hidden_products_three_cols_price_sort_and_out_of_stock_tag(
         assert!(!btn.text.contains('('), "Button text must not have (count): {}", btn.text);
     }
 }
+
+#[test]
+fn test_adv_m3_new_customer_notification_format_and_buttons() {
+    let (_dir, db) = create_test_db();
+
+    // Create a mock teloxide::types::User
+    let user = teloxide::types::User {
+        id: teloxide::types::UserId(99887766),
+        is_bot: false,
+        first_name: "Nguyen".to_string(),
+        last_name: Some("Van A".to_string()),
+        username: Some("nguyenvana".to_string()),
+        language_code: Some("vi".to_string()),
+        is_premium: false,
+        added_to_attachment_menu: false,
+    };
+
+    let (text, kb) = bot_tele::bot::commands::build_new_customer_notification(
+        &db,
+        &user,
+        None,
+        10000,
+    );
+
+    assert!(text.contains("KHÁCH HÀNG MỚI BẤM START"));
+    assert!(text.contains("99887766"));
+    assert!(text.contains("Nguyen Van A"));
+    assert!(text.contains("@nguyenvana"));
+    assert!(text.contains("tg://user?id=99887766"));
+    assert!(text.contains("10.000đ"));
+
+    // Check action buttons: "💬 Nhắn tin" and "➕ Cộng tiền ví"
+    let row0 = &kb.inline_keyboard[0];
+    assert!(row0.iter().any(|b| b.text == "💬 Nhắn tin"));
+    assert!(row0.iter().any(|b| b.text == "➕ Cộng tiền ví"));
+
+    // Verify registration: 1st time is_new = true, 2nd time is_new = false
+    let (is_new_1, _, _) = bot_tele::bot::commands::register_user(
+        &db,
+        99887766,
+        Some("nguyenvana"),
+        Some("Nguyen"),
+        None,
+    );
+    assert!(is_new_1, "First time user must be marked as is_new = true");
+
+    let (is_new_2, _, _) = bot_tele::bot::commands::register_user(
+        &db,
+        99887766,
+        Some("nguyenvana"),
+        Some("Nguyen"),
+        None,
+    );
+    assert!(!is_new_2, "Second time user must be marked as is_new = false");
+}

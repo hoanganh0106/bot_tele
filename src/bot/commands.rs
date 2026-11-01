@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 use teloxide::prelude::*;
-use teloxide::types::ParseMode;
+use teloxide::types::{InlineKeyboardButton, InlineKeyboardMarkup, ParseMode};
 use teloxide::utils::command::BotCommands;
 
 use crate::config::Config;
@@ -11,7 +11,7 @@ use crate::error::AppError;
 use crate::i18n::{self, keys};
 use crate::services::CatalogService;
 use super::access_control::is_admin;
-use super::helpers::format_money;
+use super::helpers::{escape_html, format_money};
 use super::screens;
 use super::state::StateManager;
 
@@ -36,6 +36,103 @@ pub enum Command {
     SetRate(String),
     #[command(description = "Bắn thử thông báo hàng mới mẫu (Admin)")]
     TestRestock,
+    #[command(description = "Bắn thử thông báo khách mới mẫu (Admin)")]
+    TestNewUser,
+}
+
+/// Constructs formatted admin notification message when a new customer registers via /start.
+pub fn build_new_customer_notification(
+    db: &DbStore,
+    user: &teloxide::types::User,
+    referred_by: Option<i64>,
+    welcome_bonus: i64,
+) -> (String, InlineKeyboardMarkup) {
+    let user_id = user.id.0 as i64;
+    let full_name = match &user.last_name {
+        Some(last) => format!("{} {}", user.first_name, last),
+        None => user.first_name.clone(),
+    };
+    let username_display = match &user.username {
+        Some(u) => format!("@{}", u),
+        None => "<i>(Không có)</i>".to_string(),
+    };
+
+    let user_profile_link = format!("<a href=\"tg://user?id={}\">{}</a>", user_id, escape_html(&full_name));
+
+    let referrer_display = match referred_by {
+        Some(ref_id) => {
+            let ref_user = db.get_user(ref_id);
+            let ref_name = ref_user.as_ref().and_then(|u| u.first_name.clone()).unwrap_or_else(|| format!("User {}", ref_id));
+            match ref_user.as_ref().and_then(|u| u.username.clone()) {
+                Some(u) => format!("@{} (<code>{}</code>)", u, ref_id),
+                None => format!("<a href=\"tg://user?id={}\">{}</a> (<code>{}</code>)", ref_id, escape_html(&ref_name), ref_id),
+            }
+        }
+        None => "<i>Trực tiếp (Không qua giới thiệu)</i>".to_string(),
+    };
+
+    let bonus_display = if welcome_bonus > 0 {
+        format!(" (Quà chào mừng: +{})", format_money(welcome_bonus))
+    } else {
+        String::new()
+    };
+
+    let now_str = chrono::Local::now().format("%H:%M:%S %d/%m/%Y").to_string();
+
+    let text = format!(
+        "👤 <b>[KHÁCH HÀNG MỚI BẤM START]</b>\n\
+        ━━━━━━━━━━━━━━━━━━\n\
+        🆔 <b>User ID:</b> <code>{}</code>\n\
+        👤 <b>Họ tên:</b> {}\n\
+        🔗 <b>Username:</b> {}\n\
+        📱 <b>Trang cá nhân:</b> {}\n\
+        🎁 <b>Người giới thiệu:</b> {}\n\
+        💰 <b>Số dư ví:</b> <b>0đ</b>{}\n\
+        ⏰ <b>Thời gian:</b> <code>{}</code>\n\n\
+        ⚡ <i>Khách hàng vừa bấm /start và tham gia bot của bạn!</i>",
+        user_id,
+        escape_html(&full_name),
+        username_display,
+        user_profile_link,
+        referrer_display,
+        bonus_display,
+        now_str
+    );
+
+    let mut action_row = Vec::new();
+    if let Some(ref u) = user.username {
+        if let Ok(url) = format!("https://t.me/{}", u).parse() {
+            action_row.push(InlineKeyboardButton::url("💬 Nhắn tin", url));
+        }
+    }
+    action_row.push(InlineKeyboardButton::callback("➕ Cộng tiền ví", format!("admin_wallet_add_{}", user_id)));
+
+    let kb = InlineKeyboardMarkup::new(vec![
+        action_row,
+        vec![
+            InlineKeyboardButton::callback("🏠 Trang chủ Admin", "admin_home"),
+        ],
+    ]);
+
+    (text, kb)
+}
+
+/// Dispatches new customer alert message to all configured admins.
+pub async fn notify_admins_new_customer(
+    bot: &Bot,
+    config: &Config,
+    db: &DbStore,
+    user: &teloxide::types::User,
+    referred_by: Option<i64>,
+    welcome_bonus: i64,
+) {
+    let (text, kb) = build_new_customer_notification(db, user, referred_by, welcome_bonus);
+    for &admin_id in &config.admin_ids {
+        let _ = bot.send_message(ChatId(admin_id), text.clone())
+            .parse_mode(ParseMode::Html)
+            .reply_markup(kb.clone())
+            .await;
+    }
 }
 
 /// Parse referral user ID from /start arguments (supports `ref_123456` or `123456`).
@@ -105,8 +202,10 @@ pub async fn handle_command(
                     .await;
             }
 
-            // Genuinely new user -> Language selection prompt
+            // Genuinely new user -> Notify admins & Language selection prompt
             if is_new {
+                notify_admins_new_customer(&bot, &config, &db, user, referred_by, new_user_reward).await;
+
                 let mut prompt = i18n::get_text("vi", keys::LANGUAGE_PROMPT, &[]);
                 if new_user_reward > 0 {
                     prompt.push_str(&format!(
@@ -261,6 +360,13 @@ pub async fn handle_command(
                     let _ = bot.send_message(msg.chat.id, format!("❌ Lỗi test restock: {}", e)).await;
                 }
             }
+        }
+        Command::TestNewUser => {
+            if !is_admin(&config, user_id) {
+                return Ok(());
+            }
+            notify_admins_new_customer(&bot, &config, &db, user, None, 10000).await;
+            let _ = bot.send_message(msg.chat.id, "✅ Đã gửi thông báo mẫu khách hàng mới tới chat của bạn!").await;
         }
     }
 
