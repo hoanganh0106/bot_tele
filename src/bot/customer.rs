@@ -204,37 +204,78 @@ pub async fn handle_product_select(
         return Ok(());
     }
 
-    let product = match catalog.get_product(&product_key).await? {
-        Some(p) => p,
-        None => {
-            measure("telegram.answer_callback_query", async {
-                bot.answer_callback_query(q.id)
-                    .text("Không tìm thấy thông tin sản phẩm.")
-                    .show_alert(true)
-                    .await
-            }).await?;
-            return Ok(());
-        }
-    };
-
+    let product_opt = catalog.get_product(&product_key).await?;
     let custom_stocks = db.read_data(|d| d.custom_stocks.clone());
-    let effective_stock = if let Some(&s) = custom_stocks.get(&product_key) {
-        s
-    } else {
-        product.stock
+
+    let (product, is_out_of_stock, effective_stock) = match product_opt {
+        Some(p) => {
+            let stock = if let Some(&s) = custom_stocks.get(&product_key) {
+                s
+            } else {
+                p.stock
+            };
+            let is_oos = stock <= 0;
+            (Some(p), is_oos, stock)
+        }
+        None => (None, true, 0),
     };
 
-    let categories_def = catalog.get_categories().await?;
-    let custom_cats = db.read_data(|d| d.custom_categories.clone());
-    let admin_override = custom_cats.get(&product_key).map(|s| s.as_str());
-    let (_, _, cid) = classify_product(&product_key, &product.name, &categories_def, admin_override);
+    if is_out_of_stock {
+        let meta = GLOBAL_SHORT_KEYS.get_meta(&product_key);
+        let prod_name = if let Some(ref p) = product {
+            p.name.clone()
+        } else if let Some(ref m) = meta {
+            m.name.clone()
+        } else {
+            db.read_data(|d| {
+                d.custom_names.get(&product_key).cloned()
+                    .or_else(|| d.custom_products.get(&product_key).map(|p| p.name.clone()))
+                    .or_else(|| {
+                        d.orders.values()
+                            .find(|o| o.product_key == product_key)
+                            .map(|o| o.product_name.clone())
+                    })
+            })
+            .unwrap_or_else(|| "Sản phẩm này".to_string())
+        };
 
-    if effective_stock == 0 {
-        let text = format!("❌ <b>{}</b> hiện đang hết hàng.", escape_html(&product.name));
+        let cid = if let Some(ref p) = product {
+            let categories_def = catalog.get_categories().await.unwrap_or_default();
+            let custom_cats = db.read_data(|d| d.custom_categories.clone());
+            let admin_override = custom_cats.get(&product_key).map(|s| s.as_str());
+            let (_, _, cat_id) = classify_product(&product_key, &p.name, &categories_def, admin_override);
+            cat_id
+        } else if let Some(ref m) = meta {
+            m.category.clone()
+        } else {
+            "khac".to_string()
+        };
+
+        let alert_text = if lang.as_str() == "en" {
+            format!("❌ '{}' is currently out of stock. Please check back later!", prod_name)
+        } else {
+            format!("❌ Sản phẩm '{}' hiện đã hết hàng, vui lòng quay lại sau!", prod_name)
+        };
+
+        let text = if lang.as_str() == "en" {
+            format!(
+                "❌ <b>{}</b> is currently out of stock.\n\n\
+                Please check back later or explore other products in our shop!",
+                escape_html(&prod_name)
+            )
+        } else {
+            format!(
+                "❌ <b>{}</b> hiện đang hết hàng.\n\n\
+                Quý khách vui lòng quay lại sau hoặc tham khảo các sản phẩm khác nhé!",
+                escape_html(&prod_name)
+            )
+        };
+
         let kb = InlineKeyboardMarkup::new(vec![vec![
             InlineKeyboardButton::callback("⬅️ Quay lại", format!("viewcat_{}", cid)),
             InlineKeyboardButton::callback("🏠 Trang chủ", "back_start"),
         ]]);
+
         if let Some(msg) = q.message {
             let _ = measure("telegram.edit_message_text", async {
                 bot.edit_message_text(msg.chat().id, msg.id(), text)
@@ -243,9 +284,23 @@ pub async fn handle_product_select(
                     .await
             }).await;
         }
-        let _ = measure("telegram.answer_callback_query", async { bot.answer_callback_query(q.id).await }).await;
+
+        measure("telegram.answer_callback_query", async {
+            bot.answer_callback_query(q.id)
+                .text(alert_text)
+                .show_alert(true)
+                .await
+        }).await?;
+
         return Ok(());
     }
+
+    let product = product.unwrap();
+
+    let categories_def = catalog.get_categories().await?;
+    let custom_cats = db.read_data(|d| d.custom_categories.clone());
+    let admin_override = custom_cats.get(&product_key).map(|s| s.as_str());
+    let (_, _, cid) = classify_product(&product_key, &product.name, &categories_def, admin_override);
 
     let price_deltas = db.read_data(|d| d.price_deltas.clone());
     let default_markup = db.read_data(|d| d.settings.default_markup_fixed);
@@ -361,6 +416,7 @@ pub async fn handle_qty_select(
 ) -> Result<(), AppError> {
     measure("handle_qty_select", async move {
     let user_id = q.from.id.0 as i64;
+    let lang = i18n::get_user_lang(user_id, |uid| db.get_user(uid).map(|u| u.lang));
     let data = q.data.as_deref().unwrap_or("");
     let raw = data.strip_prefix("qty_").unwrap_or("");
 
@@ -391,13 +447,72 @@ pub async fn handle_qty_select(
         return Ok(());
     }
 
-    let product = match catalog.get_product(&product_key).await? {
-        Some(p) => p,
-        None => {
-            measure("telegram.answer_callback_query", async { bot.answer_callback_query(q.id).text("Không tìm thấy sản phẩm.").show_alert(true).await }).await?;
-            return Ok(());
+    let product_opt = catalog.get_product(&product_key).await?;
+    let custom_stocks = db.read_data(|d| d.custom_stocks.clone());
+
+    let (product, is_out_of_stock, effective_stock) = match product_opt {
+        Some(p) => {
+            let stock = if let Some(&s) = custom_stocks.get(&product_key) {
+                s
+            } else {
+                p.stock
+            };
+            let is_oos = stock <= 0;
+            (Some(p), is_oos, stock)
         }
+        None => (None, true, 0),
     };
+
+    if is_out_of_stock {
+        let meta = GLOBAL_SHORT_KEYS.get_meta(&product_key);
+        let prod_name = if let Some(ref p) = product {
+            p.name.clone()
+        } else if let Some(ref m) = meta {
+            m.name.clone()
+        } else {
+            db.read_data(|d| {
+                d.custom_names.get(&product_key).cloned()
+                    .or_else(|| d.custom_products.get(&product_key).map(|p| p.name.clone()))
+                    .or_else(|| {
+                        d.orders.values()
+                            .find(|o| o.product_key == product_key)
+                            .map(|o| o.product_name.clone())
+                    })
+            })
+            .unwrap_or_else(|| "Sản phẩm này".to_string())
+        };
+
+        let alert_text = if lang.as_str() == "en" {
+            format!("❌ '{}' is currently out of stock. Please check back later!", prod_name)
+        } else {
+            format!("❌ Sản phẩm '{}' hiện đã hết hàng, vui lòng quay lại sau!", prod_name)
+        };
+
+        measure("telegram.answer_callback_query", async {
+            bot.answer_callback_query(q.id)
+                .text(alert_text)
+                .show_alert(true)
+                .await
+        }).await?;
+        return Ok(());
+    }
+
+    let product = product.unwrap();
+
+    if effective_stock < qty {
+        let alert_text = if lang.as_str() == "en" {
+            format!("❌ Only {} items left in stock for '{}'.", effective_stock, product.name)
+        } else {
+            format!("❌ Sản phẩm '{}' chỉ còn {} trong kho, không đủ số lượng yêu cầu.", product.name, effective_stock)
+        };
+        measure("telegram.answer_callback_query", async {
+            bot.answer_callback_query(q.id)
+                .text(alert_text)
+                .show_alert(true)
+                .await
+        }).await?;
+        return Ok(());
+    }
 
     let price_deltas = db.read_data(|d| d.price_deltas.clone());
     let default_markup = db.read_data(|d| d.settings.default_markup_fixed);

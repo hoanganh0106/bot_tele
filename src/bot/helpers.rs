@@ -190,9 +190,17 @@ pub fn strip_leading_emoji(text: &str) -> &str {
 
 // --- Callback Data Short-Key Encoder/Decoder (<64 bytes) ---
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProductMeta {
+    pub name: String,
+    pub category: String,
+    pub icon: String,
+}
+
 pub struct ShortKeyRegistry {
     short_to_long: DashMap<String, String>,
     long_to_short: DashMap<String, String>,
+    product_meta: DashMap<String, ProductMeta>,
 }
 
 impl Default for ShortKeyRegistry {
@@ -206,7 +214,23 @@ impl ShortKeyRegistry {
         Self {
             short_to_long: DashMap::new(),
             long_to_short: DashMap::new(),
+            product_meta: DashMap::new(),
         }
+    }
+
+    pub fn register_meta(&self, key: &str, name: &str, category: &str, icon: &str) {
+        self.product_meta.insert(
+            key.to_string(),
+            ProductMeta {
+                name: name.to_string(),
+                category: category.to_string(),
+                icon: icon.to_string(),
+            },
+        );
+    }
+
+    pub fn get_meta(&self, key: &str) -> Option<ProductMeta> {
+        self.product_meta.get(key).map(|r| r.clone())
     }
 
     /// If UTF-8 byte length <= 28, key is unchanged.
@@ -247,6 +271,7 @@ impl ShortKeyRegistry {
     pub fn clear(&self) {
         self.short_to_long.clear();
         self.long_to_short.clear();
+        self.product_meta.clear();
     }
 }
 

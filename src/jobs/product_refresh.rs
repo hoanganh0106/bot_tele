@@ -69,6 +69,8 @@ pub fn build_restock_notification(
         format_money(sell_price)
     );
 
+    GLOBAL_SHORT_KEYS.register_meta(&product.key, &product.name, &product.category, &product.category_icon);
+    GLOBAL_SHORT_KEYS.register_meta(&product.key, &product.name, &product.category, &product.category_icon);
     let sk = GLOBAL_SHORT_KEYS.to_short_key(&product.key);
     let kb = InlineKeyboardMarkup::new(vec![vec![
         InlineKeyboardButton::callback("🛒 Mua ngay", format!("prod_{}", sk)),
@@ -105,6 +107,7 @@ pub fn build_new_api_product_admin_notification(
         .map(|d| format!("<blockquote>{}</blockquote>", escape_html(&d)))
         .unwrap_or_else(|| "<i>Chưa có mô tả</i>".to_string());
 
+    GLOBAL_SHORT_KEYS.register_meta(&product.key, &product.name, &product.category, &product.category_icon);
     let sk = GLOBAL_SHORT_KEYS.to_short_key(&product.key);
 
     let text = format!(
@@ -350,6 +353,9 @@ pub async fn refresh_products_and_check_balance(
 
     // 2. Check Newly Added API Products
     let new_api_products = if let Ok(products) = ctx.catalog.get_catalog().await {
+        for (key, p) in &products {
+            GLOBAL_SHORT_KEYS.register_meta(key, &p.name, &p.category, &p.category_icon);
+        }
         let is_init = STOCK_TRACKER_INITIALIZED.load(Ordering::SeqCst);
         let mut new_prods = Vec::new();
 

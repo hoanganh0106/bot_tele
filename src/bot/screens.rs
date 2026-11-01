@@ -354,6 +354,7 @@ pub async fn build_category_products_screen(
             ""
         };
 
+        GLOBAL_SHORT_KEYS.register_meta(key, &product.name, &product.category, &product.category_icon);
         let short_key = GLOBAL_SHORT_KEYS.to_short_key(key);
         let btn_label = format!("{}{}| {} | {}", api_tag, dname, price_display, status);
         buttons.push(vec![

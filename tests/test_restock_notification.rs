@@ -157,3 +157,37 @@ fn test_new_api_product_admin_notification_and_buttons() {
     assert_eq!(row1[1].text, "📢 Bắn thông báo cho khách");
     assert_eq!(get_cb(&row1[1]), Some(format!("admin_broadcast_new_{}", sk).as_str()));
 }
+
+#[test]
+fn test_out_of_stock_metadata_and_notification() {
+    let dir = tempdir().unwrap();
+    let db = DbStore::init(dir.path().join("db.json")).unwrap();
+
+    let prod = ProductItem {
+        key: "gemini_pro_flash_out".to_string(),
+        name: "Gemini Pro Flash 12M".to_string(),
+        name_en: None,
+        description: None,
+        description_en: None,
+        base_price: 50000,
+        price: 60000,
+        price_usdt: None,
+        stock: 3,
+        api_source: ApiSource::Ctv,
+        category: "gemini".to_string(),
+        category_name: "Gemini".to_string(),
+        category_icon: "🤖".to_string(),
+        is_custom_local: false,
+        is_auto_delivered: false,
+        is_hidden: false,
+    };
+
+    let (_text, _kb) = build_restock_notification(&db, &prod, 3);
+
+    // Verify metadata was captured so that out-of-stock clicks recognize product name
+    let meta = GLOBAL_SHORT_KEYS.get_meta("gemini_pro_flash_out");
+    assert!(meta.is_some());
+    let m = meta.unwrap();
+    assert_eq!(m.name, "Gemini Pro Flash 12M");
+    assert_eq!(m.category, "gemini");
+}
