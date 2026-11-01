@@ -4,6 +4,7 @@ use teloxide::types::{InlineKeyboardButton, InlineKeyboardMarkup};
 
 use crate::config::Config;
 use crate::db::DbStore;
+use crate::diagnostics::measure;
 use crate::error::AppError;
 use crate::i18n::{self, keys};
 use crate::services::products::classify_product;
@@ -118,6 +119,7 @@ pub async fn build_menu_screen(
     is_admin: bool,
     refresh: bool,
 ) -> Result<(String, InlineKeyboardMarkup), AppError> {
+    measure("menu.build", async {
     if refresh {
         let _ = catalog.refresh_catalog().await;
     }
@@ -157,18 +159,13 @@ pub async fn build_menu_screen(
         entry.2 += stock.max(0);
     }
 
-    // Specific display ordering
-    let order = ["gpt", "grok", "capcut", "gemini", "meitu", "netflix", "discord", "vpn", "spotify", "khac"];
-    let mut sorted_cats = Vec::new();
-
-    for &o in &order {
-        if let Some(val) = category_counts.remove(o) {
-            sorted_cats.push((o.to_string(), val));
-        }
-    }
-    for (k, val) in category_counts {
-        sorted_cats.push((k, val));
-    }
+    // Alphabetical display ordering A-B-C with "khac" at the end
+    let mut sorted_cats: Vec<(String, (String, String, i64))> = category_counts.into_iter().collect();
+    sorted_cats.sort_by(|(id_a, (name_a, _, _)), (id_b, (name_b, _, _))| {
+        let is_khac_a = id_a == "khac";
+        let is_khac_b = id_b == "khac";
+        (is_khac_a, name_a.to_lowercase()).cmp(&(is_khac_b, name_b.to_lowercase()))
+    });
 
     let mut buttons = Vec::new();
     let mut row = Vec::new();
@@ -225,6 +222,8 @@ pub async fn build_menu_screen(
     };
 
     Ok((text, InlineKeyboardMarkup::new(buttons)))
+    })
+    .await
 }
 
 /// Build the category product list screen with pagination.

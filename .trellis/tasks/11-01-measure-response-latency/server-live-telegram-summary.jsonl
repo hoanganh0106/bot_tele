@@ -1,0 +1,12 @@
+{"method": "answerCallbackQuery", "kind": "interactive", "samples": 4, "median_ms": 425.955, "min_ms": 407.948, "max_ms": 445.291}
+{"method": "editMessageText", "kind": "interactive", "samples": 4, "median_ms": 440.484, "min_ms": 415.563, "max_ms": 455.336}
+{"method": "getMe", "kind": "interactive", "samples": 4, "median_ms": 236.266, "min_ms": 226.251, "max_ms": 484.702}
+{"method": "getUpdates", "kind": "long_poll", "samples": 14, "median_ms": 10210.845, "min_ms": 1807.821, "max_ms": 10271.199}
+{"method": "other", "kind": "interactive", "samples": 1, "median_ms": 485.392, "min_ms": 485.392, "max_ms": 485.392}
+{"method": "sendMessage", "kind": "interactive", "samples": 2, "median_ms": 502.986, "min_ms": 400.084, "max_ms": 605.887}
+{"proxy_prepare_median_ms": 0.0126, "proxy_prepare_max_ms": 0.137}
+ActiveState=active
+SubState=running
+NRestarts=0
+MemoryCurrent=7811072
+

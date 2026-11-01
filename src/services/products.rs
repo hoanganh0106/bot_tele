@@ -16,10 +16,11 @@ use regex::Regex;
 use rust_decimal::prelude::*;
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
-use tracing::warn;
+use tracing::{debug, warn, Instrument};
 
 use crate::config::Config;
 use crate::db::DbStore;
+use crate::diagnostics::measure;
 use super::ctv::CtvClient;
 use super::hypervin::HypervinClient;
 use super::{CatalogService, ServiceError};
@@ -348,11 +349,12 @@ impl CatalogAggregator {
 
     /// Internal synchronous or background catalog fetch and merge.
     async fn fetch_and_merge(&self) -> Result<CachedCatalog, ServiceError> {
+        measure("catalog.fetch_merge", async {
         let now = Instant::now();
 
         // 1. Fetch CTV products & balance
         let (ctv_products, ctv_balance) = if let Some(ref ctv_client) = self.ctv {
-            match ctv_client.get_stock().await {
+            match measure("supplier.ctv.get_stock", ctv_client.get_stock()).await {
                 Ok((prods, bal)) => (prods, bal),
                 Err(e) => {
                     warn!("Failed to fetch CTV products: {}", e);
@@ -366,14 +368,14 @@ impl CatalogAggregator {
         // 2. Fetch Hypervin products & balance
         let (hv_products, hv_balance) = if let Some(ref hv_client) = self.hypervin {
             if hv_client.is_enabled() {
-                let prods = match hv_client.get_products().await {
+                let prods = match measure("supplier.hypervin.get_products", hv_client.get_products()).await {
                     Ok(p) => p,
                     Err(e) => {
                         warn!("Failed to fetch Hypervin products: {}", e);
                         HashMap::new()
                     }
                 };
-                let bal = match hv_client.get_balance().await {
+                let bal = match measure("supplier.hypervin.get_balance", hv_client.get_balance()).await {
                     Ok(b) => Some(b),
                     Err(e) => {
                         warn!("Failed to fetch Hypervin balance: {}", e);
@@ -593,22 +595,27 @@ impl CatalogAggregator {
         *self.cache.write() = Some(catalog.clone());
 
         Ok(catalog)
+        })
+        .await
     }
 }
 
 #[async_trait]
 impl CatalogService for CatalogAggregator {
     async fn get_catalog(&self) -> Result<HashMap<String, ProductItem>, ServiceError> {
+        measure("catalog.get", async {
         let now = Instant::now();
 
         // 1. Check existing cache
         let cached = self.cache.read().clone();
         if let Some(entry) = cached {
             if entry.is_fresh(now) {
+                debug!(target: "bot_latency", cache = "fresh", "catalog cache decision");
                 return Ok(entry.products);
             }
 
             if entry.is_stale_serviceable(now) {
+                debug!(target: "bot_latency", cache = "stale", "catalog cache decision");
                 // If stale, attempt non-blocking background refresh
                 if !self.refreshing.swap(true, Ordering::SeqCst) {
                     let this = Arc::new(Self {
@@ -620,18 +627,24 @@ impl CatalogService for CatalogAggregator {
                         refreshing: self.refreshing.clone(),
                     });
 
-                    tokio::spawn(async move {
-                        let _ = this.fetch_and_merge().await;
-                        this.refreshing.store(false, Ordering::SeqCst);
-                    });
+                    tokio::spawn(
+                        async move {
+                            let _ = measure("catalog.background_refresh", this.fetch_and_merge()).await;
+                            this.refreshing.store(false, Ordering::SeqCst);
+                        }
+                        .in_current_span(),
+                    );
                 }
                 return Ok(entry.products);
             }
         }
 
         // Cache missing or expired > 1800s -> synchronous fetch
+        debug!(target: "bot_latency", cache = "miss_or_expired", "catalog cache decision");
         let catalog = self.fetch_and_merge().await?;
         Ok(catalog.products)
+        })
+        .await
     }
 
     async fn get_product(&self, key: &str) -> Result<Option<ProductItem>, ServiceError> {
@@ -640,8 +653,11 @@ impl CatalogService for CatalogAggregator {
     }
 
     async fn refresh_catalog(&self) -> Result<(), ServiceError> {
+        measure("catalog.forced_refresh", async {
         self.fetch_and_merge().await?;
         Ok(())
+        })
+        .await
     }
 
     async fn get_categories(&self) -> Result<HashMap<String, CategoryInfo>, ServiceError> {

@@ -19,3 +19,14 @@ If you're using Codex or another agent-capable tool, additional project-scoped h
 Managed by Trellis. Edits outside this block are preserved; edits inside may be overwritten by a future `trellis update`.
 
 <!-- TRELLIS:END -->
+
+## Bulk product pricing
+
+For requests to export supplier costs or change many product prices, use
+`tools/bulk_prices.py` and follow `docs/bulk-prices.md`. Export fresh prices,
+prepare an explicit JSON changes list, create a before/after plan, and preview
+before execution. Supplier cost is distinct from the local product base price.
+The tool preserves the existing dynamic `price_deltas` mechanism and independent
+USDT overrides. Never edit the production JSON database while the bot is running
+or restore an old whole database merely to undo prices. Only apply commercial
+changes authorized by the user; do not invent prices for validation.

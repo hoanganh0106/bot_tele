@@ -1,0 +1,9 @@
+{"journal_exit": 0, "total_lines": 249, "stderr_present": false}
+{"operation": "catalog.fetch_merge", "samples": 4, "median_ms": 280.671, "min_ms": 242.804, "max_ms": 395.516, "errors": 0}
+{"operation": "catalog.forced_refresh", "samples": 4, "median_ms": 280.779, "min_ms": 242.915, "max_ms": 395.618, "errors": 0}
+{"operation": "supplier.ctv.get_stock", "samples": 4, "median_ms": 108.045, "min_ms": 85.778, "max_ms": 115.946, "errors": 0}
+{"operation": "supplier.hypervin.get_balance", "samples": 4, "median_ms": 54.874, "min_ms": 48.337, "max_ms": 59.964, "errors": 0}
+{"operation": "supplier.hypervin.get_products", "samples": 4, "median_ms": 112.157, "min_ms": 93.369, "max_ms": 230.364, "errors": 0}
+{"operation": "telegram.proxy", "samples": 27, "median_ms": 485.523, "min_ms": 226.321, "max_ms": 10253.734, "errors": 0}
+{"operation": "telegram.upstream", "samples": 27, "median_ms": 485.392, "min_ms": 226.251, "max_ms": 10253.674, "errors": 0}
+{"long_poll_label_seen": true, "latency_lines": 184, "error_lines": 0}

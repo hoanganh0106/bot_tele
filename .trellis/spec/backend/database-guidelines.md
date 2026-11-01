@@ -153,6 +153,12 @@ After changing `database.py`:
 
 ## Common Mistakes
 
+- For Rust product-price maintenance, use the controlled CLI described in
+  [Bulk Pricing](./bulk-prices.md). A standalone file edit while the service
+  runs can be overwritten by its authoritative in-memory state. Bulk price
+  apply must stop and verify the service, reread the final flushed JSON,
+  preserve unknown fields and unrelated money state, then restart.
+
 - Mutating the cached dictionary without calling `_write()`, which skips
   persistence and index invalidation.
 - Replacing an immediate money write with a debounced settings write.

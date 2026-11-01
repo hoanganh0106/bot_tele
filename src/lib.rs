@@ -5,6 +5,7 @@
 pub mod bot;
 pub mod config;
 pub mod db;
+pub mod diagnostics;
 pub mod error;
 pub mod i18n;
 pub mod jobs;

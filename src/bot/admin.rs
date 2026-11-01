@@ -209,8 +209,39 @@ pub async fn handle_admin_callback(
 
     if let Some(sk) = data.strip_prefix("admin_do_price_") {
         let product_key = GLOBAL_SHORT_KEYS.from_short_key(sk);
+        let product = catalog.get_product(&product_key).await?;
+        let (base_price, curr_sell_price, delta) = match product {
+            Some(p) => {
+                let d = db.read_data(|db| db.price_deltas.get(&product_key).copied());
+                let def_markup = db.read_data(|db| db.settings.default_markup_fixed);
+                let sell = if let Some(delta_val) = d {
+                    p.base_price + delta_val
+                } else if p.is_custom_local {
+                    p.base_price
+                } else {
+                    p.base_price + def_markup
+                };
+                (p.base_price, sell, d)
+            },
+            None => (0, 0, None),
+        };
+
         state_mgr.set(user_id, DialogState::AdminAwaitingPriceDelta { product_key: product_key.clone() });
-        let text = format!("💰 <b>Nhập giá bán mới (VND) cho sản phẩm:</b>\n<code>{}</code>\n\nHệ thống sẽ tự động tính độ lệch (delta = Giá mới - Giá gốc).\nGửi <code>reset</code> để dùng markup mặc định.", product_key);
+        let text = format!(
+            "💰 <b>ĐẶT GIÁ BÁN CHO SẢN PHẨM (VND)</b>\n\
+            ━━━━━━━━━━━━━━━━━━\n\
+            📌 <b>Sản phẩm:</b> <code>{}</code>\n\
+            🏷 <b>Giá gốc:</b> <b>{}</b>\n\
+            💵 <b>Giá bán hiện tại:</b> <b>{}</b> (Delta: {})\n\n\
+            👉 <b>Hãy nhập giá bán mới</b> (Ví dụ: <code>{}</code>):\n\
+            ⚡ <i>Hệ thống sẽ tự động tính delta = Giá bán - Giá gốc và lưu lại.</i>\n\n\
+            💡 Gửi <code>reset</code> để quay về giá mặc định.",
+            product_key,
+            format_money(base_price),
+            format_money(curr_sell_price),
+            delta.map(|d| format_money(d)).unwrap_or_else(|| "Markup mặc định".to_string()),
+            format_money(if curr_sell_price > 0 { curr_sell_price } else { 50000 })
+        );
         let kb = InlineKeyboardMarkup::new(vec![vec![
             InlineKeyboardButton::callback("⬅️ Quay lại", format!("admin_price_{}", sk)),
             InlineKeyboardButton::callback("🏠 Trang chủ", "admin_home"),
@@ -383,10 +414,17 @@ pub async fn handle_admin_callback(
         let product_key = GLOBAL_SHORT_KEYS.from_short_key(sk);
         let categories_def = catalog.get_categories().await?;
 
+        let mut cat_list: Vec<_> = categories_def.iter().collect();
+        cat_list.sort_by(|(id_a, a), (id_b, b)| {
+            let is_khac_a = *id_a == "khac";
+            let is_khac_b = *id_b == "khac";
+            (is_khac_a, a.name.to_lowercase()).cmp(&(is_khac_b, b.name.to_lowercase()))
+        });
+
         let mut buttons = Vec::new();
         let mut row = Vec::new();
 
-        for (cid, cat) in &categories_def {
+        for (cid, cat) in cat_list {
             let label = format!("{} {}", cat.icon, cat.name);
             row.push(InlineKeyboardButton::callback(label, format!("admin_set_cat_{}_{}", sk, cid)));
             if row.len() == 2 {
@@ -453,7 +491,13 @@ pub async fn handle_admin_callback(
                 db.write_data(|d| {
                     d.custom_categories.insert(product_key.clone(), "khac".to_string());
                 }, true);
-                ("✅ Đã chuyển sản phẩm sang danh mục 📦 <b>Khác</b>.".to_string(), "khac".to_string())
+                let cat_emoji_id = db.read_data(|d| d.category_emoji_ids.get("khac").cloned());
+                let icon_display = if let Some(ref eid) = cat_emoji_id {
+                    format!("<tg-emoji emoji-id=\"{}\">📦</tg-emoji>", eid)
+                } else {
+                    "📦".to_string()
+                };
+                (format!("✅ Đã chuyển sản phẩm sang danh mục {} <b>Khác</b>.", icon_display), "khac".to_string())
             } else {
                 db.write_data(|d| {
                     d.custom_categories.insert(product_key.clone(), cid.to_string());
@@ -461,7 +505,13 @@ pub async fn handle_admin_callback(
                 let (cat_name, cat_icon) = categories_def.get(cid)
                     .map(|c| (c.name.clone(), c.icon.clone()))
                     .unwrap_or_else(|| (cid.to_string(), "📦".to_string()));
-                (format!("✅ Đã chuyển sản phẩm sang danh mục {} <b>{}</b>.", cat_icon, cat_name), cid.to_string())
+                let cat_emoji_id = db.read_data(|d| d.category_emoji_ids.get(cid).cloned());
+                let icon_display = if let Some(ref eid) = cat_emoji_id {
+                    format!("<tg-emoji emoji-id=\"{}\">{}</tg-emoji>", eid, cat_icon)
+                } else {
+                    cat_icon
+                };
+                (format!("✅ Đã chuyển sản phẩm sang danh mục {} <b>{}</b>.", icon_display, cat_name), cid.to_string())
             };
 
             let mut nav_rows = Vec::new();
@@ -527,9 +577,16 @@ pub async fn handle_admin_callback(
         let categories_def = catalog.get_categories().await?;
         let emoji_ids = db.read_data(|d| d.category_emoji_ids.clone());
 
+        let mut cat_list: Vec<_> = categories_def.iter().collect();
+        cat_list.sort_by(|(id_a, a), (id_b, b)| {
+            let is_khac_a = *id_a == "khac";
+            let is_khac_b = *id_b == "khac";
+            (is_khac_a, a.name.to_lowercase()).cmp(&(is_khac_b, b.name.to_lowercase()))
+        });
+
         let mut buttons = Vec::new();
         let mut row = Vec::new();
-        for (cid, cat) in &categories_def {
+        for (cid, cat) in cat_list {
             let has_emoji = if emoji_ids.contains_key(cid) { "✅" } else { "❌" };
             let label = format!("{} {} {}", cat.icon, cat.name, has_emoji);
             row.push(InlineKeyboardButton::callback(label, format!("admin_set_emoji_{}", cid)));
@@ -565,10 +622,16 @@ pub async fn handle_admin_callback(
         let current_eid = db.read_data(|d| d.category_emoji_ids.get(cid).cloned());
         state_mgr.set(user_id, DialogState::AdminAwaitingCategoryEmoji { category_id: cid.to_string() });
 
-        let status = if let Some(eid) = current_eid {
-            format!("📌 <b>Emoji ID hiện tại:</b> <code>{}</code>", eid)
+        let (status, icon_preview) = if let Some(ref eid) = current_eid {
+            (
+                format!("📌 <b>Emoji ID hiện tại:</b> <code>{}</code>", eid),
+                format!("<tg-emoji emoji-id=\"{}\">{}</tg-emoji>", eid, cat_icon),
+            )
         } else {
-            "⚠️ <i>Chưa có custom emoji (đang dùng icon mặc định)</i>".to_string()
+            (
+                "⚠️ <i>Chưa có custom emoji (đang dùng icon mặc định)</i>".to_string(),
+                cat_icon.clone(),
+            )
         };
 
         let text = format!(
@@ -576,7 +639,7 @@ pub async fn handle_admin_callback(
             👉 <b>Gửi trực tiếp custom emoji</b> vào đây — bot sẽ tự nhận diện!\n\n\
             Hoặc nhập emoji ID thủ công (dãy số dài).\n\
             Nhắn <code>reset</code> để xóa và dùng lại emoji mặc định.",
-            cat_icon, cat_name, status
+            icon_preview, cat_name, status
         );
 
         let kb = InlineKeyboardMarkup::new(vec![vec![
@@ -1066,10 +1129,17 @@ pub async fn build_admin_category_grid(
         *cat_counts.entry(cid).or_insert(0) += 1;
     }
 
+    let mut cat_list: Vec<_> = categories_def.iter().collect();
+    cat_list.sort_by(|(id_a, a), (id_b, b)| {
+        let is_khac_a = *id_a == "khac";
+        let is_khac_b = *id_b == "khac";
+        (is_khac_a, a.name.to_lowercase()).cmp(&(is_khac_b, b.name.to_lowercase()))
+    });
+
     let mut buttons = Vec::new();
     let mut row = Vec::new();
 
-    for (cid, cat) in &categories_def {
+    for (cid, cat) in cat_list {
         let count = cat_counts.get(cid).unwrap_or(&0);
         let label = format!("{} {} ({})", cat.icon, cat.name, count);
         row.push(InlineKeyboardButton::callback(label, format!("admin_viewcat_{}:0", cid)));
@@ -1195,11 +1265,17 @@ pub async fn build_admin_product_detail(
     let (current_cat_name, current_cat_icon) = categories_def.get(&current_cat_id)
         .map(|c| (c.name.clone(), c.icon.clone()))
         .unwrap_or_else(|| ("Khác".to_string(), "📦".to_string()));
+    let cat_emoji_id = db.read_data(|d| d.category_emoji_ids.get(&current_cat_id).cloned());
+    let icon_display = if let Some(ref eid) = cat_emoji_id {
+        format!("<tg-emoji emoji-id=\"{}\">{}</tg-emoji>", eid, current_cat_icon)
+    } else {
+        current_cat_icon.clone()
+    };
     let is_manual_cat = custom_cats.contains_key(product_key);
     let cat_display = if is_manual_cat {
-        format!("{} {} (Chỉ định tay)", current_cat_icon, current_cat_name)
+        format!("{} {} (Chỉ định tay)", icon_display, current_cat_name)
     } else {
-        format!("{} {} (Tự động)", current_cat_icon, current_cat_name)
+        format!("{} {} (Tự động)", icon_display, current_cat_name)
     };
 
     let (delivery_mode, has_auto_accounts) = db.read_data(|d| {
@@ -1339,14 +1415,27 @@ pub async fn export_price_sheet(
         grouped.entry(cid).or_default().push((p.name.clone(), sell_price));
     }
 
-    let order = ["gpt", "grok", "capcut", "gemini", "meitu", "netflix", "discord", "vpn", "spotify", "khac"];
+    let mut cat_keys: Vec<_> = grouped.keys().cloned().collect();
+    cat_keys.sort_by(|a, b| {
+        let name_a = categories_def.get(a).map(|c| c.name.to_lowercase()).unwrap_or_else(|| a.to_lowercase());
+        let name_b = categories_def.get(b).map(|c| c.name.to_lowercase()).unwrap_or_else(|| b.to_lowercase());
+        let is_khac_a = a == "khac";
+        let is_khac_b = b == "khac";
+        (is_khac_a, name_a).cmp(&(is_khac_b, name_b))
+    });
     let mut out = "📢 <b>THÔNG BÁO CÁC MẶT HÀNG MÌNH ĐANG CÓ</b>\n━━━━━━━━━━━━━━━━━━\n\n".to_string();
 
-    for &cid in &order {
+    for cid in &cat_keys {
         if let Some(items) = grouped.get(cid) {
             let cat_name = categories_def.get(cid).map(|c| c.name.as_str()).unwrap_or("Khác");
             let icon = categories_def.get(cid).map(|c| c.icon.as_str()).unwrap_or("📦");
-            out.push_str(&format!("{} <b>{}</b>\n", icon, cat_name));
+            let cat_emoji_id = db.read_data(|d| d.category_emoji_ids.get(cid).cloned());
+            let icon_display = if let Some(ref eid) = cat_emoji_id {
+                format!("<tg-emoji emoji-id=\"{}\">{}</tg-emoji>", eid, icon)
+            } else {
+                icon.to_string()
+            };
+            out.push_str(&format!("{} <b>{}</b>\n", icon_display, cat_name));
             for (pname, price) in items {
                 out.push_str(&format!("  • {} — {}\n", escape_html(pname), format_money(*price)));
             }
@@ -1434,6 +1523,7 @@ pub async fn handle_admin_text_input(
     db: Arc<DbStore>,
     config: Arc<Config>,
     _state_mgr: Arc<StateManager>,
+    catalog: Arc<dyn CatalogService>,
     state: DialogState,
     input: &str,
 ) -> Result<(), AppError> {
@@ -1456,21 +1546,42 @@ pub async fn handle_admin_text_input(
             ]]);
             if input.eq_ignore_ascii_case("reset") {
                 db.write_data(|d| d.price_deltas.remove(&product_key), true);
-                bot.send_message(msg.chat.id, format!("✅ Đã khôi phục markup mặc định cho <code>{}</code>.", product_key))
+                bot.send_message(msg.chat.id, format!("✅ Đã xóa delta tùy chỉnh, khôi phục giá mặc định cho <code>{}</code>.", product_key))
                     .parse_mode(ParseMode::Html)
                     .reply_markup(kb)
                     .await?;
             } else if let Ok(new_price) = input.replace('.', "").replace(',', "").parse::<i64>() {
-                // delta = new_price - base_price
-                let base = db.read_data(|d| d.custom_products.get(&product_key).map(|p| p.price)).unwrap_or(0);
-                let delta = new_price - base;
+                if new_price < 0 {
+                    bot.send_message(msg.chat.id, "❌ Giá bán không thể là số âm.").reply_markup(kb).await?;
+                    return Ok(());
+                }
+                // Get real base price from catalog (covers partner products & custom local products)
+                let base_price = match catalog.get_product(&product_key).await {
+                    Ok(Some(p)) => p.base_price,
+                    _ => db.read_data(|d| d.custom_products.get(&product_key).map(|p| p.price)).unwrap_or(0),
+                };
+                let delta = new_price - base_price;
                 db.write_data(|d| d.price_deltas.insert(product_key.clone(), delta), true);
-                bot.send_message(msg.chat.id, format!("✅ Đã đặt giá mới {} (Delta: {}) cho <code>{}</code>.", format_money(new_price), format_money(delta), product_key))
+                let delta_sign = if delta >= 0 { "+" } else { "" };
+                bot.send_message(msg.chat.id, format!(
+                    "✅ <b>ĐÃ ĐẶT GIÁ BÁN THÀNH CÔNG!</b>\n\
+                    ━━━━━━━━━━━━━━━━━━\n\
+                    📌 <b>Sản phẩm:</b> <code>{}</code>\n\
+                    🏷 <b>Giá gốc:</b> {}\n\
+                    💵 <b>Giá bán mới:</b> <b>{}</b>\n\
+                    📊 <b>Delta tự động tính:</b> <b>{}{}</b>",
+                    product_key,
+                    format_money(base_price),
+                    format_money(new_price),
+                    delta_sign,
+                    format_money(delta)
+                ))
                     .parse_mode(ParseMode::Html)
                     .reply_markup(kb)
                     .await?;
             } else {
-                bot.send_message(msg.chat.id, "❌ Giá tiền không hợp lệ. Vui lòng nhập số nguyên hoặc 'reset'.")
+                bot.send_message(msg.chat.id, "❌ Giá tiền không hợp lệ. Vui lòng nhập số tiền mong muốn (vd: <code>50000</code>) hoặc 'reset'.")
+                    .parse_mode(ParseMode::Html)
                     .reply_markup(kb)
                     .await?;
             }

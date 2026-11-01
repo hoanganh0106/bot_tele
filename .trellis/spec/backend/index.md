@@ -18,7 +18,8 @@ This directory contains guidelines for backend development. Fill in each file wi
 | [Database Guidelines](./database-guidelines.md) | JSON store, durability, and lazy indexes | Filled |
 | [Error Handling](./error-handling.md) | Error types, handling strategies | To fill |
 | [Quality Guidelines](./quality-guidelines.md) | Code standards, forbidden patterns | To fill |
-| [Logging Guidelines](./logging-guidelines.md) | Structured logging, log levels | To fill |
+| [Logging Guidelines](./logging-guidelines.md) | Structured logging, log levels | Filled |
+| [Bulk Pricing](./bulk-prices.md) | Agent CLI, supplier quotes, safe batch price overrides | Filled |
 
 ---
 

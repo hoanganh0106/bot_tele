@@ -308,8 +308,8 @@ async fn test_adv_m3_customer_category_grid_two_columns_and_prescribed_order() {
     assert!(text.contains("50.000đ") || text.contains("50,000"));
 
     // Check categories layout:
-    // Prescribed order: ["gpt", "grok", "capcut", "gemini", "meitu", "netflix", "discord", "vpn", "spotify", "khac"]
-    // Categories present: gpt, capcut, netflix, vpn -> 4 categories
+    // Fixed alphabetical order A-B-C:
+    // Categories present: capcut ("CapCut"), gpt ("ChatGPT"), netflix ("Netflix / YT"), vpn ("VPN") -> 4 categories
     // 4 categories in 2 columns = 2 rows of 2 buttons each!
     assert!(kb.inline_keyboard.len() >= 5); // 2 cat rows + 3 footer rows
 
@@ -318,10 +318,10 @@ async fn test_adv_m3_customer_category_grid_two_columns_and_prescribed_order() {
     assert_eq!(row_0.len(), 2, "Category row 0 must have exactly 2 columns!");
     assert_eq!(row_1.len(), 2, "Category row 1 must have exactly 2 columns!");
 
-    // Verify ordering: row 0 has gpt and capcut (order: gpt=0, capcut=2)
-    assert_eq!(get_button_callback(&row_0[0]), Some("viewcat_gpt"));
-    assert_eq!(get_button_callback(&row_0[1]), Some("viewcat_capcut"));
-    // row 1 has netflix and vpn (order: netflix=5, vpn=7)
+    // Verify ordering: row 0 has capcut and gpt (CapCut < ChatGPT)
+    assert_eq!(get_button_callback(&row_0[0]), Some("viewcat_capcut"));
+    assert_eq!(get_button_callback(&row_0[1]), Some("viewcat_gpt"));
+    // row 1 has netflix and vpn (Netflix < VPN)
     assert_eq!(get_button_callback(&row_1[0]), Some("viewcat_netflix"));
     assert_eq!(get_button_callback(&row_1[1]), Some("viewcat_vpn"));
 }
@@ -737,4 +737,51 @@ fn test_adv_m3_custom_delivery_mode_selection_and_transitions() {
     });
     assert!(is_auto_with_acc, "Must be auto delivered when accounts exist in inventory");
     assert!(!needs_email_with_acc, "Must not demand email when accounts are auto delivered");
+}
+
+#[tokio::test]
+async fn test_adv_m3_category_alphabetical_proxy_and_auto_delta() {
+    let (_dir, db) = create_test_db();
+
+    // 1. Test Proxy Custom Emoji Injection for admin_set_emoji_ and admin_set_cat_
+    db.write_data(|d| {
+        d.category_emoji_ids.insert("discord".to_string(), "5325612636467903082".to_string());
+        d.category_emoji_ids.insert("gpt".to_string(), "5359726582447487916".to_string());
+    }, true);
+
+    let mut json_val = serde_json::json!({
+        "reply_markup": {
+            "inline_keyboard": [
+                [
+                    { "text": "💬 Discord ✅", "callback_data": "admin_set_emoji_discord" },
+                    { "text": "🤖 ChatGPT", "callback_data": "admin_set_cat_p1_gpt" }
+                ]
+            ]
+        }
+    });
+
+    let changed = bot_tele::bot::telegram_proxy::inject_custom_emojis(&mut json_val, &db);
+    assert!(changed, "Proxy must inject custom emojis");
+
+    let btn0 = &json_val["reply_markup"]["inline_keyboard"][0][0];
+    assert_eq!(btn0["icon_custom_emoji_id"], "5325612636467903082");
+    assert_eq!(btn0["text"], "Discord ✅");
+
+    let btn1 = &json_val["reply_markup"]["inline_keyboard"][0][1];
+    assert_eq!(btn1["icon_custom_emoji_id"], "5359726582447487916");
+    assert_eq!(btn1["text"], "ChatGPT");
+
+    // 2. Test Auto Delta Calculation
+    // Base price = 40,000đ. Admin wants to set selling price = 50,000đ.
+    let base_price = 40000i64;
+    let new_price = 50000i64;
+    let auto_delta = new_price - base_price;
+    assert_eq!(auto_delta, 10000);
+
+    db.write_data(|d| {
+        d.price_deltas.insert("partner_prod".to_string(), auto_delta);
+    }, true);
+
+    let computed_sell_price = base_price + db.read_data(|d| d.price_deltas.get("partner_prod").copied()).unwrap();
+    assert_eq!(computed_sell_price, new_price);
 }

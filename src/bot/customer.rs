@@ -781,7 +781,7 @@ pub async fn handle_text_input(
 
         // Delegate admin dialogue states to admin state dispatcher
         admin_state => {
-            super::admin::handle_admin_text_input(bot, msg, db, config, state_mgr, admin_state, &input_text).await
+            super::admin::handle_admin_text_input(bot, msg, db, config, state_mgr, ctx.catalog.clone(), admin_state, &input_text).await
         }
     }
 }
