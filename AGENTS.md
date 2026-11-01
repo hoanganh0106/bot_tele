@@ -30,3 +30,13 @@ The tool preserves the existing dynamic `price_deltas` mechanism and independent
 USDT overrides. Never edit the production JSON database while the bot is running
 or restore an old whole database merely to undo prices. Only apply commercial
 changes authorized by the user; do not invent prices for validation.
+
+## Bulk product descriptions
+
+For batch product descriptions, use `tools/push_descriptions.py --changes FILE`
+(preview), adding `--execute` for authorized content. Follow
+`docs/bulk-descriptions.md`. Export identities first with
+`tools/bulk_descriptions.py`; match exact product keys, optionally expected_name,
+never fuzzy names. Omitted language stays unchanged; null clears its override.
+The tool backs up and briefly restarts the bot while preserving unrelated data.
+Never edit production JSON while running or restore a whole DB to undo text.
