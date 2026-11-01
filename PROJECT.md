@@ -96,7 +96,7 @@ The project is a complete rewrite of the Telegram Bot (~8,900 lines of Python) i
 | M2 | External Services & Webhook Server | Binance client (HMAC-SHA256), Hypervin client (Circuit Breaker), CTV client, SePay Axum Webhook, Catalog Aggregator | M1 | DONE |
 | M3 | Bot Engine, Handlers & State Machine | Teloxide bot dispatcher, Group -1 access control, Commands, Screens, Dialog State Machine, Customer UI, Admin Panel | M1, M2 | DONE |
 | M4 | Background Jobs, Recovery & Main Application | Tokio background runners (Cleanup, Product refresh, Payment processor, Binance poller, Retry), Crash recovery, Axum server webhook, `src/main.rs` | M1, M2, M3 | DONE |
-| M5 | Full E2E Test Suite Validation, Git Sync & Server Deployment | Complete test suite validation (all 18 test suites / 272 tests), Git commit & push, SSH deployment to server, systemd service restart & live verification | M1, M2, M3, M4 | IN_PROGRESS |
+| M5 | Full E2E Test Suite Validation, Git Sync & Server Deployment | Complete test suite validation (all 18 test suites / 272 tests), Git commit & push, SSH deployment to server, systemd service restart & live verification | M1, M2, M3, M4 | DONE |
 
 ---
 
