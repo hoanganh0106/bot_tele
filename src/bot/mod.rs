@@ -8,6 +8,7 @@ pub mod helpers;
 pub mod payment;
 pub mod screens;
 pub mod state;
+pub mod telegram_proxy;
 
 use std::sync::Arc;
 use teloxide::dispatching::UpdateHandler;

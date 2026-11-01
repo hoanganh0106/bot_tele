@@ -321,6 +321,254 @@ pub async fn handle_admin_callback(
         return Ok(());
     }
 
+    if data == "admin_set_emoji_list" {
+        let categories_def = catalog.get_categories().await?;
+        let emoji_ids = db.read_data(|d| d.category_emoji_ids.clone());
+
+        let mut buttons = Vec::new();
+        let mut row = Vec::new();
+        for (cid, cat) in &categories_def {
+            let has_emoji = if emoji_ids.contains_key(cid) { "✅" } else { "❌" };
+            let label = format!("{} {} {}", cat.icon, cat.name, has_emoji);
+            row.push(InlineKeyboardButton::callback(label, format!("admin_set_emoji_{}", cid)));
+            if row.len() == 2 {
+                buttons.push(row);
+                row = Vec::new();
+            }
+        }
+        if !row.is_empty() {
+            buttons.push(row);
+        }
+        buttons.push(vec![
+            InlineKeyboardButton::callback("⬅️ Quay lại", "admin_products"),
+        ]);
+
+        let text = "🎨 <b>ĐỔI ICON DANH MỤC (Custom Emoji)</b>\n━━━━━━━━━━━━━━━━━━\n✅ = Đã có custom emoji\n❌ = Chưa có (đang dùng emoji mặc định)\n\nChọn danh mục bạn muốn đổi icon:".to_string();
+        if let Some(msg) = q.message {
+            let _ = bot.edit_message_text(msg.chat().id, msg.id(), text)
+                .parse_mode(ParseMode::Html)
+                .reply_markup(InlineKeyboardMarkup::new(buttons))
+                .await;
+        }
+        let _ = bot.answer_callback_query(q.id).await;
+        return Ok(());
+    }
+
+    if let Some(cid) = data.strip_prefix("admin_set_emoji_") {
+        let categories_def = catalog.get_categories().await?;
+        let (cat_name, cat_icon) = categories_def.get(cid)
+            .map(|c| (c.name.clone(), c.icon.clone()))
+            .unwrap_or_else(|| (cid.to_string(), "📦".to_string()));
+        let current_eid = db.read_data(|d| d.category_emoji_ids.get(cid).cloned());
+        state_mgr.set(user_id, DialogState::AdminAwaitingCategoryEmoji { category_id: cid.to_string() });
+
+        let status = if let Some(eid) = current_eid {
+            format!("📌 <b>Emoji ID hiện tại:</b> <code>{}</code>", eid)
+        } else {
+            "⚠️ <i>Chưa có custom emoji (đang dùng icon mặc định)</i>".to_string()
+        };
+
+        let text = format!(
+            "🎨 <b>Đổi Icon danh mục:</b> {} <b>{}</b>\n{}\n\n\
+            👉 <b>Gửi trực tiếp custom emoji</b> vào đây — bot sẽ tự nhận diện!\n\n\
+            Hoặc nhập emoji ID thủ công (dãy số dài).\n\
+            Nhắn <code>reset</code> để xóa và dùng lại emoji mặc định.",
+            cat_icon, cat_name, status
+        );
+
+        let kb = InlineKeyboardMarkup::new(vec![vec![
+            InlineKeyboardButton::callback("⬅️ Hủy", "admin_set_emoji_list"),
+        ]]);
+
+        if let Some(msg) = q.message {
+            let _ = bot.edit_message_text(msg.chat().id, msg.id(), text)
+                .parse_mode(ParseMode::Html)
+                .reply_markup(kb)
+                .await;
+        }
+        let _ = bot.answer_callback_query(q.id).await;
+        return Ok(());
+    }
+
+    if data == "admin_ui_custom" {
+        let text = "🎨 <b>TÙY CHỈNH GIAO DIỆN & NÚT BẤM</b>\n━━━━━━━━━━━━━━━━━━\nChọn mục muốn tùy chỉnh:".to_string();
+        let buttons = vec![
+            vec![
+                InlineKeyboardButton::callback("🎨 Đổi Icon nút bấm", "admin_edit_btn_list"),
+            ],
+            vec![
+                InlineKeyboardButton::callback("✏️ Sửa lời chào /start (VI)", "admin_edit_welcome"),
+                InlineKeyboardButton::callback("✏️ Sửa lời chào (EN)", "admin_edit_welcome_en"),
+            ],
+            vec![
+                InlineKeyboardButton::callback("✏️ Sửa Menu SP (VI)", "admin_edit_menu_title"),
+                InlineKeyboardButton::callback("✏️ Sửa Menu SP (EN)", "admin_edit_menu_title_en"),
+            ],
+            vec![
+                InlineKeyboardButton::callback("⬅️ Quay lại", "admin_home"),
+            ],
+        ];
+        if let Some(msg) = q.message {
+            let _ = bot.edit_message_text(msg.chat().id, msg.id(), text)
+                .parse_mode(ParseMode::Html)
+                .reply_markup(InlineKeyboardMarkup::new(buttons))
+                .await;
+        }
+        let _ = bot.answer_callback_query(q.id).await;
+        return Ok(());
+    }
+
+    if data == "admin_edit_btn_list" {
+        let ui_emojis = db.read_data(|d| d.ui_emoji_ids.clone());
+        let ui_buttons: Vec<(&str, &str)> = vec![
+            ("menu", "🛒 MENU SẢN PHẨM"),
+            ("wallet", "💰 Ví tiền"),
+            ("history", "📋 Lịch sử mua hàng"),
+            ("referral", "🎁 Giới thiệu"),
+            ("contact", "📞 Liên hệ Admin"),
+            ("language", "🌐 Ngôn ngữ"),
+            ("reload", "🔄 Cập nhật"),
+            ("home", "🏠 Trang chủ"),
+            ("back", "⬅️ Quay lại"),
+        ];
+
+        let mut buttons = Vec::new();
+        for (btn_key, default_text) in ui_buttons {
+            let has = if ui_emojis.contains_key(btn_key) { "✅" } else { "❌" };
+            buttons.push(vec![InlineKeyboardButton::callback(
+                format!("{} {}", has, default_text),
+                format!("admin_edit_btn_{}", btn_key),
+            )]);
+        }
+        buttons.push(vec![
+            InlineKeyboardButton::callback("⬅️ Quay lại", "admin_ui_custom"),
+        ]);
+
+        let text = "🎨 <b>ĐỔI ICON NÚT BẤM (Custom Emoji)</b>\n━━━━━━━━━━━━━━━━━━\n✅ = Đã có custom emoji\n❌ = Đang dùng emoji mặc định\n\nChọn nút bạn muốn đổi icon:".to_string();
+        if let Some(msg) = q.message {
+            let _ = bot.edit_message_text(msg.chat().id, msg.id(), text)
+                .parse_mode(ParseMode::Html)
+                .reply_markup(InlineKeyboardMarkup::new(buttons))
+                .await;
+        }
+        let _ = bot.answer_callback_query(q.id).await;
+        return Ok(());
+    }
+
+    if let Some(btn_key) = data.strip_prefix("admin_edit_btn_") {
+        let current_eid = db.read_data(|d| d.ui_emoji_ids.get(btn_key).cloned());
+        state_mgr.set(user_id, DialogState::AdminAwaitingUiEmoji { button_key: btn_key.to_string() });
+
+        let default_name = match btn_key {
+            "menu" => "🛒 MENU SẢN PHẨM",
+            "wallet" => "💰 Ví tiền",
+            "history" => "📋 Lịch sử mua hàng",
+            "referral" => "🎁 Giới thiệu",
+            "contact" => "📞 Liên hệ Admin",
+            "language" => "🌐 Ngôn ngữ",
+            "reload" => "🔄 Cập nhật",
+            "home" => "🏠 Trang chủ",
+            "back" => "⬅️ Quay lại",
+            _ => btn_key,
+        };
+
+        let status = if let Some(eid) = current_eid {
+            format!("📌 <b>Emoji ID hiện tại:</b> <code>{}</code>", eid)
+        } else {
+            "⚠️ <i>Đang dùng emoji mặc định</i>".to_string()
+        };
+
+        let text = format!(
+            "🎨 <b>Đổi Icon:</b> <b>{}</b>\n{}\n\n\
+            👉 <b>Gửi trực tiếp custom emoji</b> vào đây!\n\
+            Hoặc nhập emoji ID thủ công.\n\
+            Nhắn <code>reset</code> để xóa.",
+            default_name, status
+        );
+
+        let kb = InlineKeyboardMarkup::new(vec![vec![
+            InlineKeyboardButton::callback("⬅️ Hủy", "admin_edit_btn_list"),
+        ]]);
+
+        if let Some(msg) = q.message {
+            let _ = bot.edit_message_text(msg.chat().id, msg.id(), text)
+                .parse_mode(ParseMode::Html)
+                .reply_markup(kb)
+                .await;
+        }
+        let _ = bot.answer_callback_query(q.id).await;
+        return Ok(());
+    }
+
+    if data == "admin_markup" {
+        state_mgr.set(user_id, DialogState::AdminAwaitingMarkup);
+        let cur_markup = db.read_data(|d| d.settings.default_markup_fixed);
+        let text = format!("⚙️ <b>CÀI ĐẶT MARKUP GIÁ BÁN MẶC ĐỊNH</b>\n━━━━━━━━━━━━━━━━━━\nGiá bán CTV/Hypervin sẽ cộng thêm số tiền này.\n\n📌 Markup hiện tại: <b>{}</b>\n\nNhập số tiền VND mới (vd: <code>10000</code>):", format_money(cur_markup));
+        let kb = InlineKeyboardMarkup::new(vec![vec![InlineKeyboardButton::callback("⬅️ Hủy", "admin_home")]]);
+        if let Some(msg) = q.message {
+            let _ = bot.edit_message_text(msg.chat().id, msg.id(), text).parse_mode(ParseMode::Html).reply_markup(kb).await;
+        }
+        let _ = bot.answer_callback_query(q.id).await;
+        return Ok(());
+    }
+
+    if data == "admin_referral" {
+        state_mgr.set(user_id, DialogState::AdminAwaitingReferralReward);
+        let cur_rw = db.read_data(|d| d.settings.referral_reward);
+        let cur_bonus = db.read_data(|d| d.settings.referral_new_user_reward);
+        let text = format!("🎁 <b>CÀI ĐẶT THƯỞNG GIỚI THIỆU</b>\n━━━━━━━━━━━━━━━━━━\n• Thưởng người mời: <b>{}</b>\n• Thưởng người mới: <b>{}</b>\n\nNhập số tiền thưởng người mời mới (VND):", format_money(cur_rw), format_money(cur_bonus));
+        let kb = InlineKeyboardMarkup::new(vec![vec![InlineKeyboardButton::callback("⬅️ Hủy", "admin_home")]]);
+        if let Some(msg) = q.message {
+            let _ = bot.edit_message_text(msg.chat().id, msg.id(), text).parse_mode(ParseMode::Html).reply_markup(kb).await;
+        }
+        let _ = bot.answer_callback_query(q.id).await;
+        return Ok(());
+    }
+
+    if data == "admin_edit_welcome" {
+        state_mgr.set(user_id, DialogState::AdminAwaitingWelcomeMsgVi);
+        let text = "✏️ <b>SỬA LỜI CHÀO /START (TIẾNG VIỆT)</b>\n\nNhắn nội dung mới. Các biến có thể dùng: <code>{name}</code>, <code>{balance}</code>, <code>{id}</code>.\nNhắn <code>reset</code> để dùng mặc định.";
+        let kb = InlineKeyboardMarkup::new(vec![vec![InlineKeyboardButton::callback("⬅️ Hủy", "admin_ui_custom")]]);
+        if let Some(msg) = q.message {
+            let _ = bot.edit_message_text(msg.chat().id, msg.id(), text).parse_mode(ParseMode::Html).reply_markup(kb).await;
+        }
+        let _ = bot.answer_callback_query(q.id).await;
+        return Ok(());
+    }
+
+    if data == "admin_edit_welcome_en" {
+        state_mgr.set(user_id, DialogState::AdminAwaitingWelcomeMsgEn);
+        let text = "✏️ <b>SỬA LỜI CHÀO /START (ENGLISH)</b>\n\nSend new text. Variables: <code>{name}</code>, <code>{balance}</code>, <code>{id}</code>.\nSend <code>reset</code> for default.";
+        let kb = InlineKeyboardMarkup::new(vec![vec![InlineKeyboardButton::callback("⬅️ Hủy", "admin_ui_custom")]]);
+        if let Some(msg) = q.message {
+            let _ = bot.edit_message_text(msg.chat().id, msg.id(), text).parse_mode(ParseMode::Html).reply_markup(kb).await;
+        }
+        let _ = bot.answer_callback_query(q.id).await;
+        return Ok(());
+    }
+
+    if data == "admin_edit_menu_title" {
+        state_mgr.set(user_id, DialogState::AdminAwaitingMenuTitleVi);
+        let text = "✏️ <b>SỬA MENU SẢN PHẨM (TIẾNG VIỆT)</b>\n\nNhắn nội dung đầu trang menu. Biến: <code>{balance}</code>.\nNhắn <code>reset</code> để dùng mặc định.";
+        let kb = InlineKeyboardMarkup::new(vec![vec![InlineKeyboardButton::callback("⬅️ Hủy", "admin_ui_custom")]]);
+        if let Some(msg) = q.message {
+            let _ = bot.edit_message_text(msg.chat().id, msg.id(), text).parse_mode(ParseMode::Html).reply_markup(kb).await;
+        }
+        let _ = bot.answer_callback_query(q.id).await;
+        return Ok(());
+    }
+
+    if data == "admin_edit_menu_title_en" {
+        state_mgr.set(user_id, DialogState::AdminAwaitingMenuTitleEn);
+        let text = "✏️ <b>SỬA MENU SẢN PHẨM (ENGLISH)</b>\n\nSend new menu title text. Variable: <code>{balance}</code>.\nSend <code>reset</code> for default.";
+        let kb = InlineKeyboardMarkup::new(vec![vec![InlineKeyboardButton::callback("⬅️ Hủy", "admin_ui_custom")]]);
+        if let Some(msg) = q.message {
+            let _ = bot.edit_message_text(msg.chat().id, msg.id(), text).parse_mode(ParseMode::Html).reply_markup(kb).await;
+        }
+        let _ = bot.answer_callback_query(q.id).await;
+        return Ok(());
+    }
+
     // --- Lookups & Adjustments ---
     if data == "admin_order_lookup" {
         state_mgr.set(user_id, DialogState::AdminAwaitingOrderLookup);
@@ -597,6 +845,9 @@ pub async fn build_admin_category_grid(
     buttons.push(vec![
         InlineKeyboardButton::callback("➕ Thêm sản phẩm tự bán", "admin_add_prod"),
         InlineKeyboardButton::callback("➕ Thêm danh mục", "admin_add_cat"),
+    ]);
+    buttons.push(vec![
+        InlineKeyboardButton::callback("🎨 Đổi Icon danh mục", "admin_set_emoji_list"),
     ]);
     buttons.push(vec![
         InlineKeyboardButton::callback("⬅️ Quay lại", "admin_home"),
@@ -1138,6 +1389,155 @@ pub async fn handle_admin_text_input(
             } else {
                 bot.send_message(msg.chat.id, "❌ Không tìm thấy đơn hàng nào khớp với tìm kiếm.").await?;
             }
+        }
+
+        DialogState::AdminAwaitingCategoryEmoji { category_id } => {
+            let mut custom_emoji_id = None;
+            if let Some(entities) = msg.entities() {
+                for entity in entities {
+                    if let teloxide::types::MessageEntityKind::CustomEmoji { custom_emoji_id: eid } = &entity.kind {
+                        custom_emoji_id = Some(eid.clone());
+                        break;
+                    }
+                }
+            }
+
+            if input.eq_ignore_ascii_case("reset") {
+                db.write_data(|d| {
+                    d.category_emoji_ids.remove(&category_id);
+                }, true);
+                bot.send_message(
+                    msg.chat.id,
+                    format!("✅ Đã xóa custom emoji cho danh mục <code>{}</code>. Sẽ dùng emoji mặc định.", category_id),
+                )
+                .parse_mode(ParseMode::Html)
+                .reply_markup(InlineKeyboardMarkup::new(vec![vec![
+                    InlineKeyboardButton::callback("⬅️ Quay lại", "admin_set_emoji_list"),
+                    InlineKeyboardButton::callback("🏠 Thoát", "admin_home"),
+                ]]))
+                .await?;
+            } else {
+                let eid_to_set = custom_emoji_id.unwrap_or_else(|| input.trim().to_string());
+                if !eid_to_set.is_empty() {
+                    db.write_data(|d| {
+                        d.category_emoji_ids.insert(category_id.clone(), eid_to_set.clone());
+                    }, true);
+                    bot.send_message(
+                        msg.chat.id,
+                        format!("✅ Đã set custom emoji cho danh mục <code>{}</code>!\n📌 Emoji ID: <code>{}</code>", category_id, eid_to_set),
+                    )
+                    .parse_mode(ParseMode::Html)
+                    .reply_markup(InlineKeyboardMarkup::new(vec![vec![
+                        InlineKeyboardButton::callback("⬅️ Quay lại", "admin_set_emoji_list"),
+                        InlineKeyboardButton::callback("🏠 Thoát", "admin_home"),
+                    ]]))
+                    .await?;
+                } else {
+                    bot.send_message(msg.chat.id, "❌ Vui lòng gửi custom emoji hoặc nhập ID hợp lệ.").await?;
+                }
+            }
+        }
+
+        DialogState::AdminAwaitingUiEmoji { button_key } => {
+            let mut custom_emoji_id = None;
+            if let Some(entities) = msg.entities() {
+                for entity in entities {
+                    if let teloxide::types::MessageEntityKind::CustomEmoji { custom_emoji_id: eid } = &entity.kind {
+                        custom_emoji_id = Some(eid.clone());
+                        break;
+                    }
+                }
+            }
+
+            let btn_name = match button_key.as_str() {
+                "menu" => "🛒 Menu sản phẩm",
+                "wallet" => "💰 Ví tiền",
+                "referral" => "🎁 Giới thiệu",
+                "history" => "📋 Lịch sử mua hàng",
+                "contact" => "📞 Liên hệ Admin",
+                "reload" => "🔄 Cập nhật",
+                "language" => "🌐 Ngôn ngữ",
+                "home" => "🏠 Trang chủ",
+                "back" => "⬅️ Quay lại",
+                _ => button_key.as_str(),
+            };
+
+            if input.eq_ignore_ascii_case("reset") {
+                db.write_data(|d| {
+                    d.ui_emoji_ids.remove(&button_key);
+                }, true);
+                bot.send_message(
+                    msg.chat.id,
+                    format!("✅ Đã xóa custom emoji cho nút <b>{}</b>.", btn_name),
+                )
+                .parse_mode(ParseMode::Html)
+                .reply_markup(InlineKeyboardMarkup::new(vec![vec![
+                    InlineKeyboardButton::callback("⬅️ Quay lại", "admin_edit_btn_list"),
+                    InlineKeyboardButton::callback("🏠 Thoát", "admin_home"),
+                ]]))
+                .await?;
+            } else {
+                let eid_to_set = custom_emoji_id.unwrap_or_else(|| input.trim().to_string());
+                if !eid_to_set.is_empty() {
+                    db.write_data(|d| {
+                        d.ui_emoji_ids.insert(button_key.clone(), eid_to_set.clone());
+                    }, true);
+                    bot.send_message(
+                        msg.chat.id,
+                        format!("✅ Đã set custom emoji cho nút <b>{}</b>!\n📌 Emoji ID: <code>{}</code>", btn_name, eid_to_set),
+                    )
+                    .parse_mode(ParseMode::Html)
+                    .reply_markup(InlineKeyboardMarkup::new(vec![vec![
+                        InlineKeyboardButton::callback("⬅️ Quay lại", "admin_edit_btn_list"),
+                        InlineKeyboardButton::callback("🏠 Thoát", "admin_home"),
+                    ]]))
+                    .await?;
+                } else {
+                    bot.send_message(msg.chat.id, "❌ Vui lòng gửi custom emoji hoặc nhập ID hợp lệ.").await?;
+                }
+            }
+        }
+
+        DialogState::AdminAwaitingMarkup => {
+            if let Ok(val) = input.replace('.', "").replace(',', "").parse::<i64>() {
+                db.write_data(|d| d.settings.default_markup_fixed = val, true);
+                bot.send_message(msg.chat.id, format!("✅ Đã cập nhật markup mặc định: <b>{}</b>", format_money(val))).parse_mode(ParseMode::Html).await?;
+            } else {
+                bot.send_message(msg.chat.id, "❌ Vui lòng nhập số tiền VND hợp lệ.").await?;
+            }
+        }
+
+        DialogState::AdminAwaitingReferralReward => {
+            if let Ok(val) = input.replace('.', "").replace(',', "").parse::<i64>() {
+                db.write_data(|d| d.settings.referral_reward = val, true);
+                bot.send_message(msg.chat.id, format!("✅ Đã cập nhật thưởng người mời: <b>{}</b>", format_money(val))).parse_mode(ParseMode::Html).await?;
+            } else {
+                bot.send_message(msg.chat.id, "❌ Vui lòng nhập số tiền VND hợp lệ.").await?;
+            }
+        }
+
+        DialogState::AdminAwaitingWelcomeMsgVi => {
+            let val = if input.eq_ignore_ascii_case("reset") { None } else { Some(input.to_string()) };
+            db.write_data(|d| d.settings.welcome_message = val.clone(), true);
+            bot.send_message(msg.chat.id, if val.is_some() { "✅ Đã lưu lời chào /start Tiếng Việt mới." } else { "✅ Đã reset về lời chào mặc định." }).await?;
+        }
+
+        DialogState::AdminAwaitingWelcomeMsgEn => {
+            let val = if input.eq_ignore_ascii_case("reset") { None } else { Some(input.to_string()) };
+            db.write_data(|d| d.settings.welcome_message_en = val.clone(), true);
+            bot.send_message(msg.chat.id, if val.is_some() { "✅ Đã lưu lời chào /start Tiếng Anh mới." } else { "✅ Đã reset về lời chào mặc định." }).await?;
+        }
+
+        DialogState::AdminAwaitingMenuTitleVi => {
+            let val = if input.eq_ignore_ascii_case("reset") { None } else { Some(input.to_string()) };
+            db.write_data(|d| d.settings.menu_title = val.clone(), true);
+            bot.send_message(msg.chat.id, if val.is_some() { "✅ Đã lưu tiêu đề menu Tiếng Việt mới." } else { "✅ Đã reset về tiêu đề mặc định." }).await?;
+        }
+
+        DialogState::AdminAwaitingMenuTitleEn => {
+            let val = if input.eq_ignore_ascii_case("reset") { None } else { Some(input.to_string()) };
+            db.write_data(|d| d.settings.menu_title_en = val.clone(), true);
+            bot.send_message(msg.chat.id, if val.is_some() { "✅ Đã lưu tiêu đề menu Tiếng Anh mới." } else { "✅ Đã reset về tiêu đề mặc định." }).await?;
         }
 
         _ => {}

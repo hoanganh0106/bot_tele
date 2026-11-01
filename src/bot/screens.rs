@@ -13,14 +13,8 @@ use super::helpers::{
 };
 
 /// Format button text with optional custom UI emoji replacement.
-pub fn ui_button(db: &DbStore, button_key: &str, fallback_label: &str, callback_data: &str) -> InlineKeyboardButton {
-    let custom_emoji = db.read_data(|d| d.ui_emoji_ids.get(button_key).cloned());
-    let label = if let Some(emoji_id) = custom_emoji {
-        format!("{} {}", fmt_icon(Some(&emoji_id), "⭐"), fallback_label)
-    } else {
-        fallback_label.to_string()
-    };
-    InlineKeyboardButton::callback(label, callback_data)
+pub fn ui_button(_db: &DbStore, _button_key: &str, fallback_label: &str, callback_data: &str) -> InlineKeyboardButton {
+    InlineKeyboardButton::callback(fallback_label.to_string(), callback_data)
 }
 
 /// Render the home greeting text for /start, back, or language changes.
@@ -372,7 +366,9 @@ pub async fn build_category_products_screen(
         cat_name
     };
 
-    let mut panel_title = format!("{} <b>{}</b>", cat_emoji, escape_html(&title_name));
+    let cat_emoji_id = db.read_data(|d| d.category_emoji_ids.get(cat_id).cloned());
+    let cat_icon_html = fmt_icon(cat_emoji_id.as_deref(), &cat_emoji);
+    let mut panel_title = format!("{} <b>{}</b>", cat_icon_html, escape_html(&title_name));
     if total_pages > 1 {
         panel_title.push_str(&format!("\n<i>(Trang {}/{})</i>", page + 1, total_pages));
     }

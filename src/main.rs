@@ -82,8 +82,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Err(e) => warn!("Initial product catalog pre-warm encountered warning: {}", e),
     }
 
-    // 7. Initialize Bot and Shared Context
-    let bot = Bot::new(&config.bot_token);
+    // 7. Initialize Telegram Proxy for Native Custom Emoji Injection & Shared Context
+    let proxy_port = 18081;
+    bot_tele::bot::telegram_proxy::start_telegram_proxy(db.clone(), proxy_port).await?;
+    let proxy_url: reqwest::Url = format!("http://127.0.0.1:{}/", proxy_port).parse()?;
+    let bot = Bot::new(&config.bot_token).set_api_url(proxy_url);
     let fulfillment_locks = FulfillmentMutex::new();
     let state_mgr = Arc::new(StateManager::new());
 

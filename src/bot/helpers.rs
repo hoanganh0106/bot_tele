@@ -176,12 +176,12 @@ pub fn strip_leading_emoji(text: &str) -> &str {
     if let Some((first_token, remainder)) = trimmed.split_once(' ') {
         let is_emoji = first_token.chars().all(|c| {
             matches!(c as u32,
-                0x1F300..=0x1FAFF |
-                0x2600..=0x27BF |
+                0x1F000..=0x1FAFF |
+                0x2000..=0x2BFF |
                 0xFE00..=0xFE0F
-            )
+            ) || (!c.is_alphanumeric() && !c.is_ascii())
         });
-        if is_emoji {
+        if is_emoji && !remainder.trim().is_empty() {
             return remainder.trim_start();
         }
     }
