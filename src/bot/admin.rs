@@ -556,16 +556,17 @@ pub async fn handle_admin_callback(
         let mut row = Vec::new();
 
         for (cid, cat) in cat_list {
-            let label = format!("{} {}", cat.icon, cat.name);
+            let non_breaking_name = cat.name.replace(' ', "\u{00A0}");
+            let label = format!("{} {}", cat.icon, non_breaking_name);
             row.push(InlineKeyboardButton::callback(label, format!("admin_set_cat_{}_{}", sk, cid)));
-            if row.len() == 2 {
+            if row.len() == 3 {
                 buttons.push(row);
                 row = Vec::new();
             }
         }
         if !categories_def.contains_key("khac") {
-            row.push(InlineKeyboardButton::callback("📦 Khác", format!("admin_set_cat_{}_khac", sk)));
-            if row.len() == 2 {
+            row.push(InlineKeyboardButton::callback("📦\u{00A0}Khác", format!("admin_set_cat_{}_khac", sk)));
+            if row.len() == 3 {
                 buttons.push(row);
                 row = Vec::new();
             }
@@ -583,7 +584,8 @@ pub async fn handle_admin_callback(
             InlineKeyboardButton::callback("🏠 Trang chủ", "admin_home"),
         ]);
 
-        let text = format!("🔀 <b>Chọn danh mục mới cho sản phẩm:</b>\n<code>{}</code>", product_key);
+        let base_text = format!("🔀 <b>Chọn danh mục mới cho sản phẩm:</b>\n<code>{}</code>", product_key);
+        let text = format!("{}\n{}", base_text, "\u{3164}".repeat(32));
         if let Some(msg) = q.message {
             let _ = bot.edit_message_text(msg.chat().id, msg.id(), text)
                 .parse_mode(ParseMode::Html)
@@ -719,9 +721,10 @@ pub async fn handle_admin_callback(
         let mut row = Vec::new();
         for (cid, cat) in cat_list {
             let has_emoji = if emoji_ids.contains_key(cid) { "✅" } else { "❌" };
-            let label = format!("{} {} {}", cat.icon, cat.name, has_emoji);
+            let non_breaking_name = cat.name.replace(' ', "\u{00A0}");
+            let label = format!("{} {} {}", cat.icon, non_breaking_name, has_emoji);
             row.push(InlineKeyboardButton::callback(label, format!("admin_set_emoji_{}", cid)));
-            if row.len() == 2 {
+            if row.len() == 3 {
                 buttons.push(row);
                 row = Vec::new();
             }
@@ -734,7 +737,8 @@ pub async fn handle_admin_callback(
             InlineKeyboardButton::callback("🏠 Trang chủ", "admin_home"),
         ]);
 
-        let text = "🎨 <b>ĐỔI ICON DANH MỤC (Custom Emoji)</b>\n━━━━━━━━━━━━━━━━━━\n✅ = Đã có custom emoji\n❌ = Chưa có (đang dùng emoji mặc định)\n\nChọn danh mục bạn muốn đổi icon:".to_string();
+        let base_text = "🎨 <b>ĐỔI ICON DANH MỤC (Custom Emoji)</b>\n━━━━━━━━━━━━━━━━━━\n✅ = Đã có custom emoji\n❌ = Chưa có (đang dùng emoji mặc định)\n\nChọn danh mục bạn muốn đổi icon:";
+        let text = format!("{}\n{}", base_text, "\u{3164}".repeat(32));
         if let Some(msg) = q.message {
             let _ = bot.edit_message_text(msg.chat().id, msg.id(), text)
                 .parse_mode(ParseMode::Html)
@@ -1272,9 +1276,10 @@ pub async fn build_admin_category_grid(
 
     for (cid, cat) in cat_list {
         let count = cat_counts.get(cid).unwrap_or(&0);
-        let label = format!("{} {} ({})", cat.icon, cat.name, count);
+        let non_breaking_name = cat.name.replace(' ', "\u{00A0}");
+        let label = format!("{} {} ({})", cat.icon, non_breaking_name, count);
         row.push(InlineKeyboardButton::callback(label, format!("admin_viewcat_{}:0", cid)));
-        if row.len() == 2 {
+        if row.len() == 3 {
             buttons.push(row);
             row = Vec::new();
         }
@@ -1294,7 +1299,8 @@ pub async fn build_admin_category_grid(
         InlineKeyboardButton::callback("🏠 Trang chủ", "admin_home"),
     ]);
 
-    let text = "📦 <b>QUẢN LÝ SẢN PHẨM THEO DANH MỤC</b>\n\nChọn danh mục để xem và chỉnh sửa sản phẩm:".to_string();
+    let base_text = "📦 <b>QUẢN LÝ SẢN PHẨM THEO DANH MỤC</b>\n\nChọn danh mục để xem và chỉnh sửa sản phẩm:";
+    let text = format!("{}\n{}", base_text, "\u{3164}".repeat(32));
     Ok((text, InlineKeyboardMarkup::new(buttons)))
 }
 
