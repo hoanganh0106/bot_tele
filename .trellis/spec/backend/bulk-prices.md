@@ -30,6 +30,8 @@ without markup for local products.
 
 CTV GET `/api/dealer/stock` and Hypervin GET `/api/products` are the only
 supplier operations needed. Fail closed on invalid/incomplete supplier data.
+Disable urllib's default `Python-urllib` User-Agent to match reqwest defaults:
+the live Hypervin endpoint rejects that header with 403 despite a valid key.
 Supplier cost is the current account's product quote; local base is not known
 supplier acquisition cost. No requests to buy endpoints are allowed.
 

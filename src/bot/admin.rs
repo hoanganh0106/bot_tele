@@ -163,6 +163,92 @@ pub async fn handle_admin_callback(
         return Ok(());
     }
 
+    // --- Restock Notification Menu & Controls ---
+    if data == "admin_restock_menu" {
+        let (text, kb) = screens::build_admin_restock_menu(&db);
+        if let Some(msg) = q.message {
+            let _ = bot.edit_message_text(msg.chat().id, msg.id(), text)
+                .parse_mode(ParseMode::Html)
+                .reply_markup(kb)
+                .await;
+        }
+        let _ = bot.answer_callback_query(q.id).await;
+        return Ok(());
+    }
+
+    if data == "admin_restock_set_all" {
+        db.write_data(|d| {
+            d.settings.restock_notification_target = "all_customers".to_string();
+        }, true);
+        let _ = bot.answer_callback_query(q.id)
+            .text("✅ Đã kích hoạt: Gửi thông báo hàng mới cho TOÀN BỘ khách hàng!")
+            .show_alert(true)
+            .await;
+        let (text, kb) = screens::build_admin_restock_menu(&db);
+        if let Some(msg) = q.message {
+            let _ = bot.edit_message_text(msg.chat().id, msg.id(), text)
+                .parse_mode(ParseMode::Html)
+                .reply_markup(kb)
+                .await;
+        }
+        return Ok(());
+    }
+
+    if data == "admin_restock_set_admin" {
+        db.write_data(|d| {
+            d.settings.restock_notification_target = "admin_only".to_string();
+        }, true);
+        let _ = bot.answer_callback_query(q.id)
+            .text("👑 Đã chuyển sang chế độ: Chỉ gửi cho Admin (Duyệt/Test).")
+            .show_alert(true)
+            .await;
+        let (text, kb) = screens::build_admin_restock_menu(&db);
+        if let Some(msg) = q.message {
+            let _ = bot.edit_message_text(msg.chat().id, msg.id(), text)
+                .parse_mode(ParseMode::Html)
+                .reply_markup(kb)
+                .await;
+        }
+        return Ok(());
+    }
+
+    if data == "admin_restock_set_disabled" {
+        db.write_data(|d| {
+            d.settings.restock_notification_target = "disabled".to_string();
+        }, true);
+        let _ = bot.answer_callback_query(q.id)
+            .text("⏸ Đã tắt tính năng tự động thông báo hàng mới.")
+            .show_alert(true)
+            .await;
+        let (text, kb) = screens::build_admin_restock_menu(&db);
+        if let Some(msg) = q.message {
+            let _ = bot.edit_message_text(msg.chat().id, msg.id(), text)
+                .parse_mode(ParseMode::Html)
+                .reply_markup(kb)
+                .await;
+        }
+        return Ok(());
+    }
+
+    if data == "admin_restock_test_send" {
+        let admin_id = q.from.id.0 as i64;
+        match crate::jobs::product_refresh::send_test_restock_notification(&bot, &db, catalog.as_ref(), admin_id).await {
+            Ok(pname) => {
+                let _ = bot.answer_callback_query(q.id)
+                    .text(format!("✅ Đã gửi thông báo mẫu sản phẩm '{}' tới chat của bạn!", pname))
+                    .show_alert(true)
+                    .await;
+            }
+            Err(e) => {
+                let _ = bot.answer_callback_query(q.id)
+                    .text(format!("❌ Lỗi gửi thông báo mẫu: {}", e))
+                    .show_alert(true)
+                    .await;
+            }
+        }
+        return Ok(());
+    }
+
     if let Some(cat_info) = data.strip_prefix("admin_viewcat_") {
         let (cat_id, page) = if let Some((c, p_str)) = cat_info.split_once(':') {
             (c, p_str.parse::<usize>().unwrap_or(0))

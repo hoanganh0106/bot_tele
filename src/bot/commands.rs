@@ -34,6 +34,8 @@ pub enum Command {
     GetEmoji,
     #[command(description = "Cập nhật tỷ giá USDT/VND")]
     SetRate(String),
+    #[command(description = "Bắn thử thông báo hàng mới mẫu (Admin)")]
+    TestRestock,
 }
 
 /// Parse referral user ID from /start arguments (supports `ref_123456` or `123456`).
@@ -244,6 +246,19 @@ pub async fn handle_command(
                 }
                 _ => {
                     bot.send_message(msg.chat.id, "❌ Tỷ giá phải nằm trong khoảng 10.000–100.000 VND/USDT.").await?;
+                }
+            }
+        }
+        Command::TestRestock => {
+            if !is_admin(&config, user_id) {
+                return Ok(());
+            }
+            match crate::jobs::product_refresh::send_test_restock_notification(&bot, &db, catalog.as_ref(), user_id).await {
+                Ok(name) => {
+                    tracing::info!("Admin {} triggered manual test restock notification for '{}'", user_id, name);
+                }
+                Err(e) => {
+                    let _ = bot.send_message(msg.chat.id, format!("❌ Lỗi test restock: {}", e)).await;
                 }
             }
         }

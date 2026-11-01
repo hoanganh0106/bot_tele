@@ -602,15 +602,74 @@ pub fn build_admin_dashboard() -> (String, InlineKeyboardMarkup) {
         ],
         vec![
             InlineKeyboardButton::callback("📢 Broadcast", "admin_broadcast"),
-            InlineKeyboardButton::callback("🎨 Giao diện", "admin_ui_custom"),
+            InlineKeyboardButton::callback("🔔 Báo hàng mới", "admin_restock_menu"),
         ],
         vec![
+            InlineKeyboardButton::callback("🎨 Giao diện", "admin_ui_custom"),
             InlineKeyboardButton::callback("🚫 Chặn khách sử dụng bot", "admin_customer_blocks"),
         ],
         vec![
             InlineKeyboardButton::callback("📋 Xuất đơn giá", "admin_export_prices"),
         ],
     ];
+    (text, InlineKeyboardMarkup::new(buttons))
+}
+
+/// Build the admin restock notification configuration menu.
+pub fn build_admin_restock_menu(db: &DbStore) -> (String, InlineKeyboardMarkup) {
+    let target = db.read_data(|d| d.settings.restock_notification_target.clone());
+    let (status_text, toggle_buttons) = match target.as_str() {
+        "all_customers" => (
+            "👥 <b>GỬI TOÀN BỘ KHÁCH HÀNG (Đang kích hoạt)</b>\n⚡ <i>Mỗi khi nguồn API cập nhật sản phẩm/kho mới, bot sẽ tự động gửi thông báo đến tất cả khách hàng.</i>",
+            vec![
+                vec![
+                    InlineKeyboardButton::callback("👑 Chuyển về Chỉ gửi Admin (Duyệt/Test)", "admin_restock_set_admin"),
+                ],
+                vec![
+                    InlineKeyboardButton::callback("⏸ Tạm tắt thông báo", "admin_restock_set_disabled"),
+                ],
+            ],
+        ),
+        "disabled" => (
+            "⏸ <b>ĐÃ TẮT THÔNG BÁO</b>\n⚠️ <i>Bot sẽ không gửi thông báo khi có hàng mới.</i>",
+            vec![
+                vec![
+                    InlineKeyboardButton::callback("👑 Bật: Chỉ gửi Admin (Duyệt/Test)", "admin_restock_set_admin"),
+                    InlineKeyboardButton::callback("👥 Bật: Gửi toàn bộ khách hàng", "admin_restock_set_all"),
+                ],
+            ],
+        ),
+        _ => (
+            "👑 <b>CHỈ GỬI ADMIN (Chế độ duyệt / test)</b>\n🧪 <i>Bot chỉ gửi thông báo tới Telegram của Admin để duyệt trước khi kích hoạt cho toàn bộ khách hàng.</i>",
+            vec![
+                vec![
+                    InlineKeyboardButton::callback("👥 DUYỆT & GỬI TOÀN BỘ KHÁCH HÀNG", "admin_restock_set_all"),
+                ],
+                vec![
+                    InlineKeyboardButton::callback("⏸ Tạm tắt thông báo", "admin_restock_set_disabled"),
+                ],
+            ],
+        ),
+    };
+
+    let text = format!(
+        "🔔 <b>CẤU HÌNH THÔNG BÁO HÀNG MỚI TỰ ĐỘNG</b>\n\
+        ━━━━━━━━━━━━━━━━━━\n\
+        Tự động phát thông báo khi nguồn API có sản phẩm mới hoặc kho hàng được cập nhật thêm số lượng.\n\n\
+        📌 <b>Trạng thái hiện tại:</b>\n\
+        {}\n\n\
+        💡 <i>Bạn có thể bấm \"🧪 Bắn thử thông báo mẫu\" bên dưới để kiểm tra tin nhắn và nút Mua ngay trên Telegram của bạn trước.</i>",
+        status_text
+    );
+
+    let mut buttons = toggle_buttons;
+    buttons.push(vec![
+        InlineKeyboardButton::callback("🧪 Bắn thử thông báo mẫu", "admin_restock_test_send"),
+    ]);
+    buttons.push(vec![
+        InlineKeyboardButton::callback("⬅️ Quay lại", "admin_home"),
+    ]);
+
     (text, InlineKeyboardMarkup::new(buttons))
 }
 

@@ -513,8 +513,14 @@ pub struct SettingsData {
     pub phone_rental_price: i64,
     #[serde(default = "default_phone_rental_button_name")]
     pub phone_rental_button_name: String,
+    #[serde(default = "default_restock_target")]
+    pub restock_notification_target: String,
     #[serde(flatten)]
     pub extra: HashMap<String, serde_json::Value>,
+}
+
+fn default_restock_target() -> String {
+    "admin_only".to_string()
 }
 
 impl Default for SettingsData {
@@ -535,6 +541,7 @@ impl Default for SettingsData {
             phone_rental_enabled: true,
             phone_rental_price: default_phone_rental_price(),
             phone_rental_button_name: default_phone_rental_button_name(),
+            restock_notification_target: default_restock_target(),
             extra: HashMap::new(),
         }
     }

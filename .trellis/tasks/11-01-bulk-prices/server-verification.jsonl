@@ -1,0 +1,4 @@
+{"step": "export", "exit": 0, "message": "Exported 154 products", "error": ""}
+{"step": "plan", "exit": 0, "error": ""}
+{"step": "preview", "exit": 0, "error": ""}
+{"exported_products": 154, "sources": {"CTV": 55, "HYPERVIN": 88, "LOCAL": 11}, "pricing_mismatch_count": 126, "usdt_override_count": 5, "preview": "no_op_passed", "prices_unchanged": true, "service_unchanged": true, "service_identity_verified": true, "run_directory": "/home/ubuntu/ctv-bot/price-ops/tool-check-v7vt34dg", "tool_sha256": "7a371853fd608b1ed24a8afabc80076d74f520699e1f21ce047c574e17dc7269", "modes": {"catalog.json": "0o600", "plan-noop.json": "0o600", "changes-noop.json": "0o600", "preview-noop.json": "0o600"}}

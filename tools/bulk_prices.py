@@ -147,7 +147,11 @@ def supplier_get(base, endpoint, key, source):
             raise PriceError("Invalid supplier URL configuration")
         request = urllib.request.Request(base.rstrip("/") + endpoint,
                                          headers={"X-API-Key": key, "Accept": "application/json"})
-        with urllib.request.build_opener(_NoRedirect()).open(request, timeout=10) as response:
+        # Match reqwest's default: no User-Agent. Hypervin rejects urllib's
+        # automatically added Python-urllib header even for a valid API key.
+        opener = urllib.request.build_opener(_NoRedirect())
+        opener.addheaders = []
+        with opener.open(request, timeout=10) as response:
             if response.status != 200:
                 raise PriceError("Supplier HTTP request failed")
             raw = response.read(16 * 1024 * 1024 + 1)
@@ -332,7 +336,10 @@ def validate_plan(plan, current, now=None, max_age=1800):
         mapping(change)
         if set(change) != {"key", "action", "before", "after"}:
             raise PriceError("Invalid plan change structure")
-        actions.append({"key": change["key"], **mapping(change["action"])})
+        action = mapping(change["action"])
+        if len(action) != 1 or not set(action) <= {"selling_price_vnd", "markup_vnd", "reset"}:
+            raise PriceError("Invalid plan action")
+        actions.append({"key": change["key"], **action})
         previous.append(change["before"])
     # Rebuild independently from both recorded state and fresh live inputs. Neither
     # computed targets nor expected fields from a plan are trusted as instructions.
@@ -561,6 +568,11 @@ def apply_plan(config_path, database, plan, *, execute=False, backup=None, recei
             if stop_attempted:
                 service.start()
                 service.ensure_running()
+        persisted = snapshot_rows(catalog(read_json(database), quotes, clock()))
+        for change in checked["changes"]:
+            row = persisted.get(change["key"])
+            if row is None or any(row[field] != value for field, value in change["after"].items() if field != "name"):
+                raise PriceError("Prices changed after restart; inspect receipt and current state before retrying")
         return audit
 
 
