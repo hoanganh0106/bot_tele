@@ -112,10 +112,12 @@ class SupplierTests(unittest.TestCase):
                           "/api/products": {"success": True, "products": [
                               {"id": 1, "name": " HV ", "price": 12345.99, "stock": 2}]}}
         self.requests = []
+        self.user_agents = []
         case = self
         class Handler(BaseHTTPRequestHandler):
             def do_GET(self):
                 case.requests.append((self.path, self.headers.get("X-API-Key")))
+                case.user_agents.append(self.headers.get("User-Agent"))
                 self.send_response(200)
                 self.end_headers()
                 self.wfile.write(json.dumps(case.responses[self.path]).encode())
@@ -135,6 +137,7 @@ class SupplierTests(unittest.TestCase):
 
     def test_read_only_endpoints_fractional_hv_price_truncation_and_redaction(self):
         quotes = bp.fetch_quotes(self.config)
+        self.assertEqual(self.user_agents, [None, None])
         self.assertEqual(quotes["hv_1"]["base_price_vnd"], 12345)
         self.assertEqual(self.requests, [("/api/dealer/stock", "secret-ctv"),
                                         ("/api/products", "secret-hv")])
@@ -279,6 +282,30 @@ class ApplyTests(unittest.TestCase):
         self.assertEqual(json.loads(self.db.read_text())["price_deltas"]["ctv"], 5000)
         self.assertEqual(json.loads(self.receipt.read_text())["status"], "applied")
         self.assertTrue(self.backup.exists())
+
+    def test_restart_price_verification_detects_changed_override_without_restore(self):
+        def restart():
+            data = bp.read_json(self.db)
+            data["price_deltas"]["ctv"] = 9000
+            self.db.write_bytes(bp.json_bytes(data))
+        self.service.start = restart
+        with self.assertRaises(bp.PriceError):
+            self.apply()
+        self.assertEqual(bp.read_json(self.db)["price_deltas"]["ctv"], 9000)
+
+    def test_receipt_failure_keeps_original_and_restarts(self):
+        original = self.db.read_bytes()
+        real_write = bp.write_new
+        def write(path, content):
+            if path == self.receipt:
+                raise OSError("receipt unavailable")
+            real_write(path, content)
+        with patch.object(bp, "write_new", side_effect=write):
+            with self.assertRaises(OSError):
+                self.apply()
+        self.assertEqual(self.db.read_bytes(), original)
+        self.assertTrue(self.backup.exists())
+        self.assertEqual(self.service.events[-2:], ["start", "running"])
 
     def test_unrelated_decimal_values_preserved_exactly(self):
         self.db.write_text(json.dumps(database())[:-1] + ',"future_decimal":0.12345678901234567890123456789}', encoding="utf-8")

@@ -1263,6 +1263,8 @@ pub async fn build_admin_category_products(
     let categories_def = catalog.get_categories().await?;
     let custom_cats = db.read_data(|d| d.custom_categories.clone());
     let hidden_set: std::collections::HashSet<String> = db.read_data(|d| d.custom_hiddens.iter().cloned().collect());
+    let price_deltas = db.read_data(|d| d.price_deltas.clone());
+    let default_markup = db.read_data(|d| d.settings.default_markup_fixed);
 
     let mut cat_products = Vec::new();
     for (k, p) in &products {
@@ -1272,6 +1274,25 @@ pub async fn build_admin_category_products(
             cat_products.push((k.clone(), p.clone()));
         }
     }
+
+    // Sort products by selling price from lowest to highest
+    cat_products.sort_by(|(key_a, prod_a), (key_b, prod_b)| {
+        let price_a = if let Some(&delta) = price_deltas.get(key_a) {
+            prod_a.base_price + delta
+        } else if prod_a.is_custom_local {
+            prod_a.base_price
+        } else {
+            prod_a.base_price + default_markup
+        };
+        let price_b = if let Some(&delta) = price_deltas.get(key_b) {
+            prod_b.base_price + delta
+        } else if prod_b.is_custom_local {
+            prod_b.base_price
+        } else {
+            prod_b.base_price + default_markup
+        };
+        price_a.cmp(&price_b).then_with(|| prod_a.name.cmp(&prod_b.name))
+    });
 
     let total = cat_products.len();
     let page_size = 10;

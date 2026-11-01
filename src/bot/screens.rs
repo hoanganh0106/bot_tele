@@ -136,27 +136,29 @@ pub async fn build_menu_screen(
     }
 
     let custom_cats = db.read_data(|d| d.custom_categories.clone());
-    let hidden_set: std::collections::HashSet<String> = if !is_admin {
-        db.read_data(|d| d.custom_hiddens.iter().cloned().collect())
-    } else {
-        std::collections::HashSet::new()
-    };
+    let hidden_set: std::collections::HashSet<String> = db.read_data(|d| d.custom_hiddens.iter().cloned().collect());
 
     let categories_def = catalog.get_categories().await?;
     let emoji_ids = db.read_data(|d| d.category_emoji_ids.clone());
+    let custom_stocks = db.read_data(|d| d.custom_stocks.clone());
 
     // Aggregate category counts
     let mut category_counts: std::collections::HashMap<String, (String, String, i64)> = std::collections::HashMap::new();
 
     for (key, product) in &products {
-        let stock = product.stock;
-        if !is_admin && (hidden_set.contains(key) || stock == 0) {
+        let effective_stock = if let Some(&s) = custom_stocks.get(key) {
+            s
+        } else {
+            product.stock
+        };
+
+        if hidden_set.contains(key) || product.is_hidden {
             continue;
         }
 
         let (cat_name, icon, cat_id) = classify_product(key, &product.name, &categories_def, custom_cats.get(key).map(|s| s.as_str()));
         let entry = category_counts.entry(cat_id.clone()).or_insert_with(|| (cat_name, icon, 0));
-        entry.2 += stock.max(0);
+        entry.2 += effective_stock.max(0);
     }
 
     // Alphabetical display ordering A-B-C with "khac" at the end
@@ -170,7 +172,7 @@ pub async fn build_menu_screen(
     let mut buttons = Vec::new();
     let mut row = Vec::new();
 
-    for (cat_id, (cat_name, icon, count)) in sorted_cats {
+    for (cat_id, (cat_name, icon, _count)) in sorted_cats {
         let custom_eid = emoji_ids.get(&cat_id).cloned();
         let display_name = if !is_admin && cat_id == "khac" {
             i18n::get_text(lang.as_str(), keys::CATEGORY_OTHER, &[])
@@ -179,14 +181,14 @@ pub async fn build_menu_screen(
         };
 
         let btn_text = if custom_eid.is_some() {
-            format!("{} ({})", display_name, count)
+            display_name.to_string()
         } else {
-            format!("{} {} ({})", icon, display_name, count)
+            format!("{} {}", icon, display_name)
         };
 
         row.push(InlineKeyboardButton::callback(btn_text, format!("viewcat_{}", cat_id)));
 
-        if row.len() == 2 {
+        if row.len() == 3 {
             buttons.push(row);
             row = Vec::new();
         }
@@ -239,11 +241,7 @@ pub async fn build_category_products_screen(
     let lang = i18n::get_user_lang(user_id, |uid| db.get_user(uid).map(|u| u.lang));
 
     let custom_cats = db.read_data(|d| d.custom_categories.clone());
-    let hidden_set: std::collections::HashSet<String> = if !is_admin {
-        db.read_data(|d| d.custom_hiddens.iter().cloned().collect())
-    } else {
-        std::collections::HashSet::new()
-    };
+    let hidden_set: std::collections::HashSet<String> = db.read_data(|d| d.custom_hiddens.iter().cloned().collect());
 
     let categories_def = catalog.get_categories().await?;
     let price_deltas = db.read_data(|d| d.price_deltas.clone());
@@ -262,7 +260,7 @@ pub async fn build_category_products_screen(
             product.stock
         };
 
-        if !is_admin && (hidden_set.contains(key) || effective_stock == 0) {
+        if hidden_set.contains(key) || product.is_hidden {
             continue;
         }
 
@@ -271,6 +269,25 @@ pub async fn build_category_products_screen(
             cat_products.push((key.clone(), product.clone(), effective_stock));
         }
     }
+
+    // Sort products by selling price from lowest to highest (ascending)
+    cat_products.sort_by(|(key_a, prod_a, _), (key_b, prod_b, _)| {
+        let price_a = if let Some(&delta) = price_deltas.get(key_a) {
+            prod_a.base_price + delta
+        } else if prod_a.is_custom_local {
+            prod_a.base_price
+        } else {
+            prod_a.base_price + default_markup
+        };
+        let price_b = if let Some(&delta) = price_deltas.get(key_b) {
+            prod_b.base_price + delta
+        } else if prod_b.is_custom_local {
+            prod_b.base_price
+        } else {
+            prod_b.base_price + default_markup
+        };
+        price_a.cmp(&price_b).then_with(|| prod_a.name.cmp(&prod_b.name))
+    });
 
     let total_items = cat_products.len();
     let page_size = 10;
@@ -299,6 +316,8 @@ pub async fn build_category_products_screen(
 
         let status = if *stock == -1 {
             "🔄".to_string()
+        } else if *stock == 0 {
+            "❌0".to_string()
         } else {
             format!("✅{}", stock)
         };

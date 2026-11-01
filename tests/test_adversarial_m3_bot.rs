@@ -310,20 +310,20 @@ async fn test_adv_m3_customer_category_grid_two_columns_and_prescribed_order() {
     // Check categories layout:
     // Fixed alphabetical order A-B-C:
     // Categories present: capcut ("CapCut"), gpt ("ChatGPT"), netflix ("Netflix / YT"), vpn ("VPN") -> 4 categories
-    // 4 categories in 2 columns = 2 rows of 2 buttons each!
+    // 4 categories in 3 columns = row 0 has 3 buttons, row 1 has 1 button!
     assert!(kb.inline_keyboard.len() >= 5); // 2 cat rows + 3 footer rows
 
     let row_0 = &kb.inline_keyboard[0];
     let row_1 = &kb.inline_keyboard[1];
-    assert_eq!(row_0.len(), 2, "Category row 0 must have exactly 2 columns!");
-    assert_eq!(row_1.len(), 2, "Category row 1 must have exactly 2 columns!");
+    assert_eq!(row_0.len(), 3, "Category row 0 must have exactly 3 columns!");
+    assert_eq!(row_1.len(), 1, "Category row 1 has 1 column for 4th category!");
 
-    // Verify ordering: row 0 has capcut and gpt (CapCut < ChatGPT)
+    // Verify ordering: row 0 has capcut, gpt, netflix (CapCut < ChatGPT < Netflix)
     assert_eq!(get_button_callback(&row_0[0]), Some("viewcat_capcut"));
     assert_eq!(get_button_callback(&row_0[1]), Some("viewcat_gpt"));
-    // row 1 has netflix and vpn (Netflix < VPN)
-    assert_eq!(get_button_callback(&row_1[0]), Some("viewcat_netflix"));
-    assert_eq!(get_button_callback(&row_1[1]), Some("viewcat_vpn"));
+    assert_eq!(get_button_callback(&row_0[2]), Some("viewcat_netflix"));
+    // row 1 has vpn
+    assert_eq!(get_button_callback(&row_1[0]), Some("viewcat_vpn"));
 }
 
 #[test]
@@ -784,4 +784,82 @@ async fn test_adv_m3_category_alphabetical_proxy_and_auto_delta() {
 
     let computed_sell_price = base_price + db.read_data(|d| d.price_deltas.get("partner_prod").copied()).unwrap();
     assert_eq!(computed_sell_price, new_price);
+}
+
+#[tokio::test]
+async fn test_adv_m3_hidden_products_three_cols_price_sort_and_out_of_stock_tag() {
+    let (_dir, db) = create_test_db();
+    let mock_catalog = MockCatalogService::new();
+
+    // 1. Setup products in "vpn" category:
+    // p_cheap: price 20,000, stock 0 -> should show status ❌0 and appear first in price sort
+    // p_mid: price 50,000, stock 5 -> should show status ✅5 and appear second
+    // p_expensive: price 100,000, stock 2 -> should show status ✅2 and appear third
+    // p_hidden: price 10,000, stock 10, marked hidden in custom_hiddens -> MUST NOT APPEAR AT ALL
+    mock_catalog.insert_product(create_mock_product("p_cheap", "VPN Cheap", "vpn", 0, 20000));
+    mock_catalog.insert_product(create_mock_product("p_mid", "VPN Mid", "vpn", 5, 50000));
+    mock_catalog.insert_product(create_mock_product("p_expensive", "VPN Expensive", "vpn", 2, 100000));
+    mock_catalog.insert_product(create_mock_product("p_hidden", "VPN Hidden", "vpn", 10, 10000));
+
+    // Mark p_hidden in custom_hiddens
+    db.write_data(|d| {
+        d.custom_hiddens.push("p_hidden".to_string());
+    }, true);
+
+    // Test 1: Category products screen for normal user and admin (both should NOT see p_hidden)
+    for is_admin_flag in [false, true] {
+        let (title, kb) = build_category_products_screen(&mock_catalog, &db, 12345, "vpn", 0, is_admin_flag)
+            .await
+            .expect("Build category screen failed");
+
+        assert!(title.contains("VPN"));
+
+        // There are 3 visible products + 1 back row = 4 rows
+        assert_eq!(kb.inline_keyboard.len(), 4, "Must have exactly 3 product buttons and 1 nav/back row");
+
+        let btn_0 = &kb.inline_keyboard[0][0];
+        let btn_1 = &kb.inline_keyboard[1][0];
+        let btn_2 = &kb.inline_keyboard[2][0];
+
+        // Ensure p_hidden is NOT in any button label or callback
+        for row in &kb.inline_keyboard {
+            for btn in row {
+                assert!(!btn.text.contains("VPN Hidden"), "Hidden product must not appear in menu!");
+            }
+        }
+
+        // Price ascending sorting:
+        // Item 0: VPN Cheap (20.000đ), stock 0 -> must have status ❌0
+        assert!(btn_0.text.contains("VPN Cheap"));
+        assert!(btn_0.text.contains("20.000đ") || btn_0.text.contains("20,000"));
+        assert!(btn_0.text.contains("❌0"), "Out of stock must show ❌0 instead of ✅0: {}", btn_0.text);
+
+        // Item 1: VPN Mid (50.000đ), stock 5 -> must have status ✅5
+        assert!(btn_1.text.contains("VPN Mid"));
+        assert!(btn_1.text.contains("50.000đ") || btn_1.text.contains("50,000"));
+        assert!(btn_1.text.contains("✅5"));
+
+        // Item 2: VPN Expensive (100.000đ), stock 2 -> must have status ✅2
+        assert!(btn_2.text.contains("VPN Expensive"));
+        assert!(btn_2.text.contains("100.000đ") || btn_2.text.contains("100,000"));
+        assert!(btn_2.text.contains("✅2"));
+    }
+
+    // Test 2: Main menu screen 3-column layout and hidden products exclusion
+    // Add 2 more categories
+    mock_catalog.insert_product(create_mock_product("p_capcut", "Capcut Pro", "capcut", 10, 30000));
+    mock_catalog.insert_product(create_mock_product("p_gpt", "ChatGPT", "gpt", 10, 40000));
+
+    let (_menu_title, menu_kb) = build_menu_screen(&mock_catalog, &db, 12345, 100000, false, false)
+        .await
+        .expect("Build menu screen failed");
+
+    // 3 categories: capcut, gpt, vpn -> exactly 1 row of 3 columns
+    let cat_row = &menu_kb.inline_keyboard[0];
+    assert_eq!(cat_row.len(), 3, "Category row must have exactly 3 columns");
+
+    // Button text must NOT contain "(count)" suffix
+    for btn in cat_row {
+        assert!(!btn.text.contains('('), "Button text must not have (count): {}", btn.text);
+    }
 }
