@@ -249,6 +249,51 @@ pub async fn handle_admin_callback(
         return Ok(());
     }
 
+    if let Some(sk) = data.strip_prefix("admin_broadcast_new_") {
+        let product_key = GLOBAL_SHORT_KEYS.from_short_key(sk);
+        let product = catalog.get_product(&product_key).await?;
+
+        match product {
+            Some(p) => {
+                let is_hidden = db.read_data(|d| d.custom_hiddens.contains(&product_key));
+                if is_hidden || p.is_hidden {
+                    bot.answer_callback_query(q.id)
+                        .text("⚠️ Sản phẩm đang bị ẩn! Hãy hiện sản phẩm trước khi bắn thông báo.")
+                        .show_alert(true)
+                        .await?;
+                    return Ok(());
+                }
+
+                let count = crate::jobs::product_refresh::broadcast_new_product_to_customers(
+                    &bot,
+                    &db,
+                    &p,
+                ).await;
+
+                bot.answer_callback_query(q.id)
+                    .text(format!("✅ Đang bắn thông báo '{}' tới {} khách hàng!", p.name, count))
+                    .show_alert(true)
+                    .await?;
+
+                if let Some(msg) = q.message {
+                    let _ = bot.edit_message_reply_markup(msg.chat().id, msg.id())
+                        .reply_markup(InlineKeyboardMarkup::new(vec![vec![
+                            InlineKeyboardButton::callback("✅ Đã bắn thông báo cho khách", "noop"),
+                            InlineKeyboardButton::callback("🏠 Trang chủ", "admin_home"),
+                        ]]))
+                        .await;
+                }
+            },
+            None => {
+                bot.answer_callback_query(q.id)
+                    .text("❌ Không tìm thấy thông tin sản phẩm.")
+                    .show_alert(true)
+                    .await?;
+            }
+        }
+        return Ok(());
+    }
+
     if let Some(cat_info) = data.strip_prefix("admin_viewcat_") {
         let (cat_id, page) = if let Some((c, p_str)) = cat_info.split_once(':') {
             (c, p_str.parse::<usize>().unwrap_or(0))
@@ -1455,6 +1500,7 @@ pub async fn build_admin_product_detail(
         ],
         vec![
             InlineKeyboardButton::callback("📝 Sửa mô tả VI", format!("admin_do_desc_{}", sk)),
+            InlineKeyboardButton::callback("📢 Bắn thông báo cho khách", format!("admin_broadcast_new_{}", sk)),
         ],
     ];
 

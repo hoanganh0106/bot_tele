@@ -7,7 +7,7 @@ use bot_tele::bot::helpers::GLOBAL_SHORT_KEYS;
 use bot_tele::bot::screens::build_admin_restock_menu;
 use bot_tele::db::DbStore;
 use bot_tele::jobs::product_refresh::{
-    build_restock_notification, reset_stock_tracker,
+    build_new_api_product_admin_notification, build_restock_notification, reset_stock_tracker,
 };
 use bot_tele::services::products::{ApiSource, ProductItem};
 
@@ -102,4 +102,58 @@ fn test_admin_restock_menu_screen_and_target_transitions() {
 fn test_restock_tracker_reset_and_initialization() {
     reset_stock_tracker();
     reset_stock_tracker();
+}
+
+#[test]
+fn test_new_api_product_admin_notification_and_buttons() {
+    let dir = tempdir().unwrap();
+    let db = DbStore::init(dir.path().join("db.json")).unwrap();
+
+    let prod = ProductItem {
+        key: "new_api_gpt5".to_string(),
+        name: "ChatGPT Plus 1 Tháng (Bản API Mới)".to_string(),
+        name_en: None,
+        description: None,
+        description_en: None,
+        base_price: 200000,
+        price: 220000,
+        price_usdt: None,
+        stock: 15,
+        api_source: ApiSource::Hypervin,
+        category: "gpt".to_string(),
+        category_name: "ChatGPT".to_string(),
+        category_icon: "🤖".to_string(),
+        is_custom_local: false,
+        is_auto_delivered: false,
+        is_hidden: false,
+    };
+
+    let (text, kb) = build_new_api_product_admin_notification(&db, &prod);
+
+    assert!(text.contains("PHÁT HIỆN SẢN PHẨM MỚI TỪ NGUỒN API"));
+    assert!(text.contains("ChatGPT Plus 1 Tháng (Bản API Mới)"));
+    assert!(text.contains("Hypervin"));
+    assert!(text.contains("200.000đ"));
+    assert!(text.contains("15"));
+
+    let sk = GLOBAL_SHORT_KEYS.to_short_key("new_api_gpt5");
+
+    // Must have 2 rows of buttons:
+    // Row 0: Chỉnh giá bán, Chỉnh mô tả
+    // Row 1: Cấu hình chi tiết, Bắn thông báo cho khách
+    assert_eq!(kb.inline_keyboard.len(), 2);
+    let row0 = &kb.inline_keyboard[0];
+    let row1 = &kb.inline_keyboard[1];
+
+    assert_eq!(row0[0].text, "💰 Chỉnh giá bán");
+    assert_eq!(get_cb(&row0[0]), Some(format!("admin_do_price_{}", sk).as_str()));
+
+    assert_eq!(row0[1].text, "📝 Chỉnh mô tả");
+    assert_eq!(get_cb(&row0[1]), Some(format!("admin_do_desc_{}", sk).as_str()));
+
+    assert_eq!(row1[0].text, "⚙️ Cấu hình chi tiết");
+    assert_eq!(get_cb(&row1[0]), Some(format!("admin_price_{}", sk).as_str()));
+
+    assert_eq!(row1[1].text, "📢 Bắn thông báo cho khách");
+    assert_eq!(get_cb(&row1[1]), Some(format!("admin_broadcast_new_{}", sk).as_str()));
 }

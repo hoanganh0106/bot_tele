@@ -34,7 +34,7 @@ pub fn reset_stock_tracker() {
     STOCK_TRACKER_INITIALIZED.store(false, Ordering::SeqCst);
 }
 
-/// Constructs the formatted restock notification message and inline purchase button.
+/// Constructs the formatted restock notification message and inline purchase button for customers.
 pub fn build_restock_notification(
     db: &DbStore,
     product: &ProductItem,
@@ -47,6 +47,16 @@ pub fn build_restock_notification(
         product.category_icon.clone()
     };
 
+    let delta = db.read_data(|d| d.price_deltas.get(&product.key).copied());
+    let default_markup = db.read_data(|d| d.settings.default_markup_fixed);
+    let sell_price = if let Some(d) = delta {
+        product.base_price + d
+    } else if product.is_custom_local {
+        product.base_price
+    } else {
+        product.base_price + default_markup
+    };
+
     let text = format!(
         "{} <b>{}</b>\n\
         ➕ Thêm: {}\n\
@@ -56,7 +66,7 @@ pub fn build_restock_notification(
         escape_html(&product.name),
         added_qty,
         product.stock,
-        format_money(product.price)
+        format_money(sell_price)
     );
 
     let sk = GLOBAL_SHORT_KEYS.to_short_key(&product.key);
@@ -65,6 +75,143 @@ pub fn build_restock_notification(
     ]]);
 
     (text, kb)
+}
+
+/// Constructs the admin notification message with price, description edit buttons,
+/// and customer broadcast trigger for newly discovered API products.
+pub fn build_new_api_product_admin_notification(
+    db: &DbStore,
+    product: &ProductItem,
+) -> (String, InlineKeyboardMarkup) {
+    let cat_eid = db.read_data(|d| d.category_emoji_ids.get(&product.category).cloned());
+    let icon_part = if let Some(ref eid) = cat_eid {
+        format!("<tg-emoji emoji-id=\"{}\">{}</tg-emoji>", eid, product.category_icon)
+    } else {
+        product.category_icon.clone()
+    };
+
+    let delta = db.read_data(|d| d.price_deltas.get(&product.key).copied());
+    let default_markup = db.read_data(|d| d.settings.default_markup_fixed);
+    let sell_price = if let Some(d) = delta {
+        product.base_price + d
+    } else if product.is_custom_local {
+        product.base_price
+    } else {
+        product.base_price + default_markup
+    };
+
+    let custom_desc = db.read_data(|d| d.custom_descriptions.get(&product.key).cloned());
+    let desc_display = custom_desc
+        .map(|d| format!("<blockquote>{}</blockquote>", escape_html(&d)))
+        .unwrap_or_else(|| "<i>Chưa có mô tả</i>".to_string());
+
+    let sk = GLOBAL_SHORT_KEYS.to_short_key(&product.key);
+
+    let text = format!(
+        "🆕 <b>PHÁT HIỆN SẢN PHẨM MỚI TỪ NGUỒN API!</b>\n\
+        ━━━━━━━━━━━━━━━━━━\n\
+        📦 <b>Tên SP:</b> {}\n\
+        🗂 <b>Danh mục:</b> {} {}\n\
+        🏷 <b>Nguồn API:</b> {}\n\
+        💰 <b>Giá nhập (gốc):</b> {}\n\
+        💵 <b>Giá bán hiện tại:</b> <b>{}</b>\n\
+        📦 <b>Tồn kho ban đầu:</b> {}\n\
+        📝 <b>Mô tả:</b> {}\n\n\
+        👉 <i>Anh hãy chỉnh giá và mô tả (nếu cần), sau đó bấm '📢 Bắn thông báo cho khách' để công bố sản phẩm!</i>",
+        escape_html(&product.name),
+        icon_part,
+        escape_html(&product.category_name),
+        match product.api_source {
+            ApiSource::Hypervin => "Hypervin",
+            ApiSource::Ctv => "CTV Shop",
+            ApiSource::Local => "Tự bán",
+        },
+        format_money(product.base_price),
+        format_money(sell_price),
+        product.stock,
+        desc_display,
+    );
+
+    let kb = InlineKeyboardMarkup::new(vec![
+        vec![
+            InlineKeyboardButton::callback("💰 Chỉnh giá bán", format!("admin_do_price_{}", sk)),
+            InlineKeyboardButton::callback("📝 Chỉnh mô tả", format!("admin_do_desc_{}", sk)),
+        ],
+        vec![
+            InlineKeyboardButton::callback("⚙️ Cấu hình chi tiết", format!("admin_price_{}", sk)),
+            InlineKeyboardButton::callback("📢 Bắn thông báo cho khách", format!("admin_broadcast_new_{}", sk)),
+        ],
+    ]);
+
+    (text, kb)
+}
+
+/// Dispatches a notification for newly discovered API products to all configured admins.
+pub async fn send_new_api_product_admin_notification(
+    ctx: &BotContext,
+    product: &ProductItem,
+) {
+    let (text, kb) = build_new_api_product_admin_notification(&ctx.db, product);
+
+    info!(
+        "👑 Sending new API product notification for '{}' (stock: {}, price: {}) to {} admins",
+        product.name, product.stock, product.price, ctx.config.admin_ids.len()
+    );
+
+    for &admin_id in &ctx.config.admin_ids {
+        let _ = ctx.bot.send_message(ChatId(admin_id), text.clone())
+            .parse_mode(ParseMode::Html)
+            .reply_markup(kb.clone())
+            .await;
+    }
+}
+
+/// Broadcasts a newly published product announcement to all non-blocked customers.
+pub async fn broadcast_new_product_to_customers(
+    bot: &Bot,
+    db: &DbStore,
+    product: &ProductItem,
+) -> usize {
+    let (text, kb) = build_restock_notification(db, product, product.stock);
+
+    let recipients: Vec<i64> = db.read_data(|d| {
+        let blocklist = &d.settings.customer_blocklist;
+        let bcast_block = &d.settings.broadcast_blocklist;
+        d.users.keys().filter_map(|k| {
+            let uid = k.parse::<i64>().ok()?;
+            if blocklist.contains(&uid) || bcast_block.contains(&uid) {
+                None
+            } else {
+                Some(uid)
+            }
+        }).collect()
+    });
+
+    let count = recipients.len();
+    let bot_clone = bot.clone();
+
+    info!(
+        "📢 Broadcasting new product announcement for '{}' (stock: {}, price: {}) to {} customers",
+        product.name, product.stock, product.price, count
+    );
+
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_millis(35));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+
+        for uid in recipients {
+            interval.tick().await;
+            let res = bot_clone.send_message(ChatId(uid), text.clone())
+                .parse_mode(ParseMode::Html)
+                .reply_markup(kb.clone())
+                .await;
+            if let Err(teloxide::RequestError::RetryAfter(seconds)) = res {
+                tokio::time::sleep(seconds.duration()).await;
+            }
+        }
+    });
+
+    count
 }
 
 /// Dispatches a restock notification according to configured target (admin_only or all_customers).
@@ -152,7 +299,7 @@ pub async fn send_test_restock_notification(
         .or_else(|| catalog_map.values().find(|p| !p.is_hidden && p.stock > 0))
         .cloned();
 
-    let (prod, added) = match sample_prod {
+    let (prod, _added) = match sample_prod {
         Some(p) => (p, 5),
         None => (
             ProductItem {
@@ -177,7 +324,7 @@ pub async fn send_test_restock_notification(
         ),
     };
 
-    let (text, kb) = build_restock_notification(db, &prod, added);
+    let (text, kb) = build_new_api_product_admin_notification(db, &prod);
     bot.send_message(ChatId(admin_id), text)
         .parse_mode(ParseMode::Html)
         .reply_markup(kb)
@@ -201,10 +348,10 @@ pub async fn refresh_products_and_check_balance(
         }
     }
 
-    // 2. Check Restocked or Newly Added API Products
-    let restocked = if let Ok(products) = ctx.catalog.get_catalog().await {
+    // 2. Check Newly Added API Products
+    let new_api_products = if let Ok(products) = ctx.catalog.get_catalog().await {
         let is_init = STOCK_TRACKER_INITIALIZED.load(Ordering::SeqCst);
-        let mut restocked = Vec::new();
+        let mut new_prods = Vec::new();
 
         {
             let mut tracker = LAST_KNOWN_STOCKS.lock();
@@ -224,12 +371,14 @@ pub async fn refresh_products_and_check_balance(
                         if p.is_hidden {
                             continue;
                         }
-                        let old_stock = tracker.get(key).copied().unwrap_or(0);
+                        let is_brand_new = !tracker.contains_key(key);
                         let new_stock = p.stock;
 
-                        if new_stock > old_stock && new_stock > 0 {
-                            let added_qty = new_stock - old_stock;
-                            restocked.push((p.clone(), added_qty));
+                        // Only notify admin when a BRAND-NEW API product is added to the catalog!
+                        // Existing products that simply have stock increases will silently update
+                        // and will NOT notify admin to avoid notification spam.
+                        if is_brand_new && new_stock > 0 {
+                            new_prods.push(p.clone());
                         }
 
                         tracker.insert(key.clone(), new_stock);
@@ -237,27 +386,27 @@ pub async fn refresh_products_and_check_balance(
                 }
 
                 // Cap at max 5 products per refresh cycle to avoid spamming
-                if restocked.len() > 5 {
+                if new_prods.len() > 5 {
                     warn!(
-                        "Restock spike detected: {} products restocked in one cycle. Capping at 5 notifications.",
-                        restocked.len()
+                        "New API products burst detected: {} products added in one cycle. Capping at 5 notifications.",
+                        new_prods.len()
                     );
-                    restocked.truncate(5);
+                    new_prods.truncate(5);
                 }
             }
         } // `tracker` MutexGuard is dropped here before any await
 
-        restocked
+        new_prods
     } else {
         Vec::new()
     };
 
-    for (prod, added_qty) in restocked {
+    for prod in new_api_products {
         info!(
-            "🔔 Product restock notification triggered: '{}' (added: {}, stock: {})",
-            prod.name, added_qty, prod.stock
+            "🔔 Brand new API product detected: '{}' (stock: {}, base_price: {})",
+            prod.name, prod.stock, prod.base_price
         );
-        send_restock_notification(ctx, &prod, added_qty).await;
+        send_new_api_product_admin_notification(ctx, &prod).await;
     }
 
     // 3. Query Hypervin Balance
