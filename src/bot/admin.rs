@@ -127,7 +127,7 @@ pub async fn handle_admin_callback(
             total_users, user_count
         );
         let kb = InlineKeyboardMarkup::new(vec![vec![
-            InlineKeyboardButton::callback("⬅️ Quay lại", "admin_home"),
+            InlineKeyboardButton::callback("🏠 Trang chủ", "admin_home"),
         ]]);
         if let Some(msg) = q.message {
             let _ = bot.edit_message_text(msg.chat().id, msg.id(), text)
@@ -198,7 +198,11 @@ pub async fn handle_admin_callback(
         let product_key = GLOBAL_SHORT_KEYS.from_short_key(sk);
         state_mgr.set(user_id, DialogState::AdminAwaitingPriceUsdt { product_key: product_key.clone() });
         let text = format!("💵 <b>Nhập giá bán USDT (Decimal) cho sản phẩm:</b>\n<code>{}</code>\n\nVí dụ: <code>2.5</code>\nGửi <code>reset</code> để xóa.", product_key);
-        bot.send_message(q.from.id, text).parse_mode(ParseMode::Html).await?;
+        let kb = InlineKeyboardMarkup::new(vec![vec![
+            InlineKeyboardButton::callback("⬅️ Quay lại", format!("admin_price_{}", sk)),
+            InlineKeyboardButton::callback("🏠 Trang chủ", "admin_home"),
+        ]]);
+        bot.send_message(q.from.id, text).parse_mode(ParseMode::Html).reply_markup(kb).await?;
         let _ = bot.answer_callback_query(q.id).await;
         return Ok(());
     }
@@ -207,7 +211,11 @@ pub async fn handle_admin_callback(
         let product_key = GLOBAL_SHORT_KEYS.from_short_key(sk);
         state_mgr.set(user_id, DialogState::AdminAwaitingPriceDelta { product_key: product_key.clone() });
         let text = format!("💰 <b>Nhập giá bán mới (VND) cho sản phẩm:</b>\n<code>{}</code>\n\nHệ thống sẽ tự động tính độ lệch (delta = Giá mới - Giá gốc).\nGửi <code>reset</code> để dùng markup mặc định.", product_key);
-        bot.send_message(q.from.id, text).parse_mode(ParseMode::Html).await?;
+        let kb = InlineKeyboardMarkup::new(vec![vec![
+            InlineKeyboardButton::callback("⬅️ Quay lại", format!("admin_price_{}", sk)),
+            InlineKeyboardButton::callback("🏠 Trang chủ", "admin_home"),
+        ]]);
+        bot.send_message(q.from.id, text).parse_mode(ParseMode::Html).reply_markup(kb).await?;
         let _ = bot.answer_callback_query(q.id).await;
         return Ok(());
     }
@@ -258,7 +266,11 @@ pub async fn handle_admin_callback(
         let product_key = GLOBAL_SHORT_KEYS.from_short_key(sk);
         state_mgr.set(user_id, DialogState::AdminAwaitingStockItems { product_key: product_key.clone() });
         let text = format!("📥 <b>Dán các dòng tài khoản / key để nạp vào kho Auto-Delivery:</b>\n<code>{}</code>\n\nMỗi dòng là một tài khoản (vd: user|pass). Hệ thống sẽ tự động giao FIFO khi khách mua.", product_key);
-        bot.send_message(q.from.id, text).parse_mode(ParseMode::Html).await?;
+        let kb = InlineKeyboardMarkup::new(vec![vec![
+            InlineKeyboardButton::callback("⬅️ Quay lại", format!("admin_price_{}", sk)),
+            InlineKeyboardButton::callback("🏠 Trang chủ", "admin_home"),
+        ]]);
+        bot.send_message(q.from.id, text).parse_mode(ParseMode::Html).reply_markup(kb).await?;
         let _ = bot.answer_callback_query(q.id).await;
         return Ok(());
     }
@@ -267,7 +279,11 @@ pub async fn handle_admin_callback(
         let product_key = GLOBAL_SHORT_KEYS.from_short_key(sk);
         state_mgr.set(user_id, DialogState::AdminAwaitingStockManual { product_key: product_key.clone() });
         let text = format!("📦 <b>Nhập số lượng tồn kho hiển thị (thủ công):</b>\n<code>{}</code>\n\nVí dụ: <code>50</code>", product_key);
-        bot.send_message(q.from.id, text).parse_mode(ParseMode::Html).await?;
+        let kb = InlineKeyboardMarkup::new(vec![vec![
+            InlineKeyboardButton::callback("⬅️ Quay lại", format!("admin_price_{}", sk)),
+            InlineKeyboardButton::callback("🏠 Trang chủ", "admin_home"),
+        ]]);
+        bot.send_message(q.from.id, text).parse_mode(ParseMode::Html).reply_markup(kb).await?;
         let _ = bot.answer_callback_query(q.id).await;
         return Ok(());
     }
@@ -292,7 +308,12 @@ pub async fn handle_admin_callback(
     if let Some(sk) = data.strip_prefix("admin_do_name_") {
         let product_key = GLOBAL_SHORT_KEYS.from_short_key(sk);
         state_mgr.set(user_id, DialogState::AdminAwaitingProductNameVi { product_key: product_key.clone() });
-        bot.send_message(q.from.id, format!("✏️ Nhập tên Tiếng Việt mới cho <code>{}</code> (Gửi reset để hủy):", product_key)).parse_mode(ParseMode::Html).await?;
+        let text = format!("✏️ Nhập tên Tiếng Việt mới cho <code>{}</code> (Gửi reset để hủy):", product_key);
+        let kb = InlineKeyboardMarkup::new(vec![vec![
+            InlineKeyboardButton::callback("⬅️ Quay lại", format!("admin_price_{}", sk)),
+            InlineKeyboardButton::callback("🏠 Trang chủ", "admin_home"),
+        ]]);
+        bot.send_message(q.from.id, text).parse_mode(ParseMode::Html).reply_markup(kb).await?;
         let _ = bot.answer_callback_query(q.id).await;
         return Ok(());
     }
@@ -300,7 +321,12 @@ pub async fn handle_admin_callback(
     if let Some(sk) = data.strip_prefix("admin_do_desc_") {
         let product_key = GLOBAL_SHORT_KEYS.from_short_key(sk);
         state_mgr.set(user_id, DialogState::AdminAwaitingProductDescVi { product_key: product_key.clone() });
-        bot.send_message(q.from.id, format!("📝 Nhập mô tả Tiếng Việt mới cho <code>{}</code> (Gửi reset để hủy):", product_key)).parse_mode(ParseMode::Html).await?;
+        let text = format!("📝 Nhập mô tả Tiếng Việt mới cho <code>{}</code> (Gửi reset để hủy):", product_key);
+        let kb = InlineKeyboardMarkup::new(vec![vec![
+            InlineKeyboardButton::callback("⬅️ Quay lại", format!("admin_price_{}", sk)),
+            InlineKeyboardButton::callback("🏠 Trang chủ", "admin_home"),
+        ]]);
+        bot.send_message(q.from.id, text).parse_mode(ParseMode::Html).reply_markup(kb).await?;
         let _ = bot.answer_callback_query(q.id).await;
         return Ok(());
     }
@@ -337,7 +363,7 @@ pub async fn handle_admin_callback(
         ]);
         buttons.push(vec![
             InlineKeyboardButton::callback("⬅️ Quay lại", format!("admin_price_{}", sk)),
-            InlineKeyboardButton::callback("🏠 Thoát", "admin_home"),
+            InlineKeyboardButton::callback("🏠 Trang chủ", "admin_home"),
         ]);
 
         let text = format!("🔀 <b>Chọn danh mục mới cho sản phẩm:</b>\n<code>{}</code>", product_key);
@@ -357,16 +383,29 @@ pub async fn handle_admin_callback(
             let product_key = GLOBAL_SHORT_KEYS.from_short_key(sk);
             let categories_def = catalog.get_categories().await?;
 
-            let msg = if cid == "reset" {
+            // Capture previous category before mutating DB
+            let (orig_cat_id, orig_cat_name) = {
+                let custom_cats = db.read_data(|d| d.custom_categories.clone());
+                let prod_name = catalog.get_product(&product_key).await.ok().flatten().map(|p| p.name).unwrap_or_else(|| product_key.clone());
+                let (_, _, c_id) = classify_product(&product_key, &prod_name, &categories_def, custom_cats.get(&product_key).map(|s| s.as_str()));
+                let name = categories_def.get(&c_id)
+                    .map(|c| c.name.clone())
+                    .unwrap_or_else(|| if c_id == "khac" { "Khác".to_string() } else { c_id.clone() });
+                (c_id, name)
+            };
+
+            let (msg, target_cat_id) = if cid == "reset" {
                 db.write_data(|d| {
                     d.custom_categories.remove(&product_key);
                 }, true);
-                "✅ Đã xóa chỉ định danh mục tay, kích hoạt tự động phân loại.".to_string()
+                let prod_name = catalog.get_product(&product_key).await.ok().flatten().map(|p| p.name).unwrap_or_else(|| product_key.clone());
+                let (_, _, auto_cid) = classify_product(&product_key, &prod_name, &categories_def, None);
+                ("✅ Đã xóa chỉ định danh mục tay, kích hoạt tự động phân loại.".to_string(), auto_cid)
             } else if cid == "khac" {
                 db.write_data(|d| {
                     d.custom_categories.insert(product_key.clone(), "khac".to_string());
                 }, true);
-                "✅ Đã chuyển sản phẩm sang danh mục 📦 <b>Khác</b>.".to_string()
+                ("✅ Đã chuyển sản phẩm sang danh mục 📦 <b>Khác</b>.".to_string(), "khac".to_string())
             } else {
                 db.write_data(|d| {
                     d.custom_categories.insert(product_key.clone(), cid.to_string());
@@ -374,13 +413,32 @@ pub async fn handle_admin_callback(
                 let (cat_name, cat_icon) = categories_def.get(cid)
                     .map(|c| (c.name.clone(), c.icon.clone()))
                     .unwrap_or_else(|| (cid.to_string(), "📦".to_string()));
-                format!("✅ Đã chuyển sản phẩm sang danh mục {} <b>{}</b>.", cat_icon, cat_name)
+                (format!("✅ Đã chuyển sản phẩm sang danh mục {} <b>{}</b>.", cat_icon, cat_name), cid.to_string())
             };
 
-            let kb = InlineKeyboardMarkup::new(vec![vec![
-                InlineKeyboardButton::callback("⬅️ Quay lại", format!("admin_price_{}", sk)),
-                InlineKeyboardButton::callback("🏠 Thoát", "admin_home"),
-            ]]);
+            let mut nav_rows = Vec::new();
+            let mut row1 = Vec::new();
+            row1.push(InlineKeyboardButton::callback(
+                format!("⬅️ Mục cũ ({})", orig_cat_name),
+                format!("admin_viewcat_{}:0", orig_cat_id),
+            ));
+            if target_cat_id != orig_cat_id {
+                let target_name = categories_def.get(&target_cat_id)
+                    .map(|c| c.name.clone())
+                    .unwrap_or_else(|| if target_cat_id == "khac" { "Khác".to_string() } else { target_cat_id.clone() });
+                row1.push(InlineKeyboardButton::callback(
+                    format!("📂 Mục mới ({})", target_name),
+                    format!("admin_viewcat_{}:0", target_cat_id),
+                ));
+            }
+            nav_rows.push(row1);
+
+            nav_rows.push(vec![
+                InlineKeyboardButton::callback("⚙️ Chi tiết SP", format!("admin_price_{}", sk)),
+                InlineKeyboardButton::callback("🏠 Trang chủ", "admin_home"),
+            ]);
+
+            let kb = InlineKeyboardMarkup::new(nav_rows);
 
             if let Some(msg_obj) = q.message {
                 let _ = bot.edit_message_text(msg_obj.chat().id, msg_obj.id(), msg)
@@ -396,7 +454,11 @@ pub async fn handle_admin_callback(
     if data == "admin_add_prod" {
         state_mgr.set(user_id, DialogState::AdminAwaitingNewProduct);
         let guide = "➕ <b>THÊM SẢN PHẨM TỰ BÁN</b>\n\nNhập theo định dạng:\n<code>Mã_id | Tên sản phẩm | Giá bán VND</code>\n\nVí dụ:\n<code>ytb_1m | Youtube Premium 1 Tháng | 35000</code>";
-        bot.send_message(q.from.id, guide).parse_mode(ParseMode::Html).await?;
+        let kb = InlineKeyboardMarkup::new(vec![vec![
+            InlineKeyboardButton::callback("⬅️ Danh mục", "admin_products"),
+            InlineKeyboardButton::callback("🏠 Trang chủ", "admin_home"),
+        ]]);
+        bot.send_message(q.from.id, guide).parse_mode(ParseMode::Html).reply_markup(kb).await?;
         let _ = bot.answer_callback_query(q.id).await;
         return Ok(());
     }
@@ -404,7 +466,11 @@ pub async fn handle_admin_callback(
     if data == "admin_add_cat" {
         state_mgr.set(user_id, DialogState::AdminAwaitingNewCategory);
         let guide = "➕ <b>THÊM DANH MỤC MỚI</b>\n\nNhập theo định dạng:\n<code>Mã_id | Tên hiển thị | Emoji</code>\n\nVí dụ:\n<code>design | Đồ Họa & Video | 🎨</code>";
-        bot.send_message(q.from.id, guide).parse_mode(ParseMode::Html).await?;
+        let kb = InlineKeyboardMarkup::new(vec![vec![
+            InlineKeyboardButton::callback("⬅️ Danh mục", "admin_products"),
+            InlineKeyboardButton::callback("🏠 Trang chủ", "admin_home"),
+        ]]);
+        bot.send_message(q.from.id, guide).parse_mode(ParseMode::Html).reply_markup(kb).await?;
         let _ = bot.answer_callback_query(q.id).await;
         return Ok(());
     }
@@ -428,7 +494,8 @@ pub async fn handle_admin_callback(
             buttons.push(row);
         }
         buttons.push(vec![
-            InlineKeyboardButton::callback("⬅️ Quay lại", "admin_products"),
+            InlineKeyboardButton::callback("⬅️ Danh mục", "admin_products"),
+            InlineKeyboardButton::callback("🏠 Trang chủ", "admin_home"),
         ]);
 
         let text = "🎨 <b>ĐỔI ICON DANH MỤC (Custom Emoji)</b>\n━━━━━━━━━━━━━━━━━━\n✅ = Đã có custom emoji\n❌ = Chưa có (đang dùng emoji mặc định)\n\nChọn danh mục bạn muốn đổi icon:".to_string();
@@ -465,7 +532,8 @@ pub async fn handle_admin_callback(
         );
 
         let kb = InlineKeyboardMarkup::new(vec![vec![
-            InlineKeyboardButton::callback("⬅️ Hủy", "admin_set_emoji_list"),
+            InlineKeyboardButton::callback("⬅️ Quay lại", "admin_set_emoji_list"),
+            InlineKeyboardButton::callback("🏠 Trang chủ", "admin_home"),
         ]]);
 
         if let Some(msg) = q.message {
@@ -494,6 +562,7 @@ pub async fn handle_admin_callback(
             ],
             vec![
                 InlineKeyboardButton::callback("⬅️ Quay lại", "admin_home"),
+                InlineKeyboardButton::callback("🏠 Trang chủ", "admin_home"),
             ],
         ];
         if let Some(msg) = q.message {
@@ -530,6 +599,7 @@ pub async fn handle_admin_callback(
         }
         buttons.push(vec![
             InlineKeyboardButton::callback("⬅️ Quay lại", "admin_ui_custom"),
+            InlineKeyboardButton::callback("🏠 Trang chủ", "admin_home"),
         ]);
 
         let text = "🎨 <b>ĐỔI ICON NÚT BẤM (Custom Emoji)</b>\n━━━━━━━━━━━━━━━━━━\n✅ = Đã có custom emoji\n❌ = Đang dùng emoji mặc định\n\nChọn nút bạn muốn đổi icon:".to_string();
@@ -575,7 +645,8 @@ pub async fn handle_admin_callback(
         );
 
         let kb = InlineKeyboardMarkup::new(vec![vec![
-            InlineKeyboardButton::callback("⬅️ Hủy", "admin_edit_btn_list"),
+            InlineKeyboardButton::callback("⬅️ Quay lại", "admin_edit_btn_list"),
+            InlineKeyboardButton::callback("🏠 Trang chủ", "admin_home"),
         ]]);
 
         if let Some(msg) = q.message {
@@ -592,7 +663,7 @@ pub async fn handle_admin_callback(
         state_mgr.set(user_id, DialogState::AdminAwaitingMarkup);
         let cur_markup = db.read_data(|d| d.settings.default_markup_fixed);
         let text = format!("⚙️ <b>CÀI ĐẶT MARKUP GIÁ BÁN MẶC ĐỊNH</b>\n━━━━━━━━━━━━━━━━━━\nGiá bán CTV/Hypervin sẽ cộng thêm số tiền này.\n\n📌 Markup hiện tại: <b>{}</b>\n\nNhập số tiền VND mới (vd: <code>10000</code>):", format_money(cur_markup));
-        let kb = InlineKeyboardMarkup::new(vec![vec![InlineKeyboardButton::callback("⬅️ Hủy", "admin_home")]]);
+        let kb = InlineKeyboardMarkup::new(vec![vec![InlineKeyboardButton::callback("🏠 Trang chủ", "admin_home")]]);
         if let Some(msg) = q.message {
             let _ = bot.edit_message_text(msg.chat().id, msg.id(), text).parse_mode(ParseMode::Html).reply_markup(kb).await;
         }
@@ -605,7 +676,7 @@ pub async fn handle_admin_callback(
         let cur_rw = db.read_data(|d| d.settings.referral_reward);
         let cur_bonus = db.read_data(|d| d.settings.referral_new_user_reward);
         let text = format!("🎁 <b>CÀI ĐẶT THƯỞNG GIỚI THIỆU</b>\n━━━━━━━━━━━━━━━━━━\n• Thưởng người mời: <b>{}</b>\n• Thưởng người mới: <b>{}</b>\n\nNhập số tiền thưởng người mời mới (VND):", format_money(cur_rw), format_money(cur_bonus));
-        let kb = InlineKeyboardMarkup::new(vec![vec![InlineKeyboardButton::callback("⬅️ Hủy", "admin_home")]]);
+        let kb = InlineKeyboardMarkup::new(vec![vec![InlineKeyboardButton::callback("🏠 Trang chủ", "admin_home")]]);
         if let Some(msg) = q.message {
             let _ = bot.edit_message_text(msg.chat().id, msg.id(), text).parse_mode(ParseMode::Html).reply_markup(kb).await;
         }
@@ -616,7 +687,10 @@ pub async fn handle_admin_callback(
     if data == "admin_edit_welcome" {
         state_mgr.set(user_id, DialogState::AdminAwaitingWelcomeMsgVi);
         let text = "✏️ <b>SỬA LỜI CHÀO /START (TIẾNG VIỆT)</b>\n\nNhắn nội dung mới. Các biến có thể dùng: <code>{name}</code>, <code>{balance}</code>, <code>{id}</code>.\nNhắn <code>reset</code> để dùng mặc định.";
-        let kb = InlineKeyboardMarkup::new(vec![vec![InlineKeyboardButton::callback("⬅️ Hủy", "admin_ui_custom")]]);
+        let kb = InlineKeyboardMarkup::new(vec![vec![
+            InlineKeyboardButton::callback("⬅️ Quay lại", "admin_ui_custom"),
+            InlineKeyboardButton::callback("🏠 Trang chủ", "admin_home"),
+        ]]);
         if let Some(msg) = q.message {
             let _ = bot.edit_message_text(msg.chat().id, msg.id(), text).parse_mode(ParseMode::Html).reply_markup(kb).await;
         }
@@ -627,7 +701,10 @@ pub async fn handle_admin_callback(
     if data == "admin_edit_welcome_en" {
         state_mgr.set(user_id, DialogState::AdminAwaitingWelcomeMsgEn);
         let text = "✏️ <b>SỬA LỜI CHÀO /START (ENGLISH)</b>\n\nSend new text. Variables: <code>{name}</code>, <code>{balance}</code>, <code>{id}</code>.\nSend <code>reset</code> for default.";
-        let kb = InlineKeyboardMarkup::new(vec![vec![InlineKeyboardButton::callback("⬅️ Hủy", "admin_ui_custom")]]);
+        let kb = InlineKeyboardMarkup::new(vec![vec![
+            InlineKeyboardButton::callback("⬅️ Quay lại", "admin_ui_custom"),
+            InlineKeyboardButton::callback("🏠 Trang chủ", "admin_home"),
+        ]]);
         if let Some(msg) = q.message {
             let _ = bot.edit_message_text(msg.chat().id, msg.id(), text).parse_mode(ParseMode::Html).reply_markup(kb).await;
         }
@@ -638,7 +715,10 @@ pub async fn handle_admin_callback(
     if data == "admin_edit_menu_title" {
         state_mgr.set(user_id, DialogState::AdminAwaitingMenuTitleVi);
         let text = "✏️ <b>SỬA MENU SẢN PHẨM (TIẾNG VIỆT)</b>\n\nNhắn nội dung đầu trang menu. Biến: <code>{balance}</code>.\nNhắn <code>reset</code> để dùng mặc định.";
-        let kb = InlineKeyboardMarkup::new(vec![vec![InlineKeyboardButton::callback("⬅️ Hủy", "admin_ui_custom")]]);
+        let kb = InlineKeyboardMarkup::new(vec![vec![
+            InlineKeyboardButton::callback("⬅️ Quay lại", "admin_ui_custom"),
+            InlineKeyboardButton::callback("🏠 Trang chủ", "admin_home"),
+        ]]);
         if let Some(msg) = q.message {
             let _ = bot.edit_message_text(msg.chat().id, msg.id(), text).parse_mode(ParseMode::Html).reply_markup(kb).await;
         }
@@ -649,7 +729,10 @@ pub async fn handle_admin_callback(
     if data == "admin_edit_menu_title_en" {
         state_mgr.set(user_id, DialogState::AdminAwaitingMenuTitleEn);
         let text = "✏️ <b>SỬA MENU SẢN PHẨM (ENGLISH)</b>\n\nSend new menu title text. Variable: <code>{balance}</code>.\nSend <code>reset</code> for default.";
-        let kb = InlineKeyboardMarkup::new(vec![vec![InlineKeyboardButton::callback("⬅️ Hủy", "admin_ui_custom")]]);
+        let kb = InlineKeyboardMarkup::new(vec![vec![
+            InlineKeyboardButton::callback("⬅️ Quay lại", "admin_ui_custom"),
+            InlineKeyboardButton::callback("🏠 Trang chủ", "admin_home"),
+        ]]);
         if let Some(msg) = q.message {
             let _ = bot.edit_message_text(msg.chat().id, msg.id(), text).parse_mode(ParseMode::Html).reply_markup(kb).await;
         }
@@ -660,14 +743,22 @@ pub async fn handle_admin_callback(
     // --- Lookups & Adjustments ---
     if data == "admin_order_lookup" {
         state_mgr.set(user_id, DialogState::AdminAwaitingOrderLookup);
-        bot.send_message(q.from.id, "🧾 Nhập mã đơn hàng (vd: <code>BOT179...</code>) hoặc mã chuyển khoản (vd: <code>DH482910</code>):").parse_mode(ParseMode::Html).await?;
+        let text = "🧾 Nhập mã đơn hàng (vd: <code>BOT179...</code>) hoặc mã chuyển khoản (vd: <code>DH482910</code>):";
+        let kb = InlineKeyboardMarkup::new(vec![vec![
+            InlineKeyboardButton::callback("🏠 Trang chủ", "admin_home"),
+        ]]);
+        bot.send_message(q.from.id, text).parse_mode(ParseMode::Html).reply_markup(kb).await?;
         let _ = bot.answer_callback_query(q.id).await;
         return Ok(());
     }
 
     if data == "admin_user_lookup" {
         state_mgr.set(user_id, DialogState::AdminAwaitingUserLookup);
-        bot.send_message(q.from.id, "🔍 Nhập User ID hoặc @username của khách hàng cần tra cứu:").await?;
+        let text = "🔍 Nhập User ID hoặc @username của khách hàng cần tra cứu:";
+        let kb = InlineKeyboardMarkup::new(vec![vec![
+            InlineKeyboardButton::callback("🏠 Trang chủ", "admin_home"),
+        ]]);
+        bot.send_message(q.from.id, text).parse_mode(ParseMode::Html).reply_markup(kb).await?;
         let _ = bot.answer_callback_query(q.id).await;
         return Ok(());
     }
@@ -675,7 +766,11 @@ pub async fn handle_admin_callback(
     if let Some(uid_str) = data.strip_prefix("admin_wallet_add_") {
         if let Ok(target_id) = uid_str.parse::<i64>() {
             state_mgr.set(user_id, DialogState::AdminAwaitingWalletAdjust { target_user_id: target_id, is_addition: true });
-            bot.send_message(q.from.id, format!("➕ Nhập số tiền VND muốn <b>CỘNG</b> vào ví khách ID <code>{}</code>:", target_id)).parse_mode(ParseMode::Html).await?;
+            let text = format!("➕ Nhập số tiền VND muốn <b>CỘNG</b> vào ví khách ID <code>{}</code>:", target_id);
+            let kb = InlineKeyboardMarkup::new(vec![vec![
+                InlineKeyboardButton::callback("🏠 Trang chủ", "admin_home"),
+            ]]);
+            bot.send_message(q.from.id, text).parse_mode(ParseMode::Html).reply_markup(kb).await?;
             let _ = bot.answer_callback_query(q.id).await;
             return Ok(());
         }
@@ -684,7 +779,11 @@ pub async fn handle_admin_callback(
     if let Some(uid_str) = data.strip_prefix("admin_wallet_sub_") {
         if let Ok(target_id) = uid_str.parse::<i64>() {
             state_mgr.set(user_id, DialogState::AdminAwaitingWalletAdjust { target_user_id: target_id, is_addition: false });
-            bot.send_message(q.from.id, format!("➖ Nhập số tiền VND muốn <b>TRỪ</b> khỏi ví khách ID <code>{}</code>:", target_id)).parse_mode(ParseMode::Html).await?;
+            let text = format!("➖ Nhập số tiền VND muốn <b>TRỪ</b> khỏi ví khách ID <code>{}</code>:", target_id);
+            let kb = InlineKeyboardMarkup::new(vec![vec![
+                InlineKeyboardButton::callback("🏠 Trang chủ", "admin_home"),
+            ]]);
+            bot.send_message(q.from.id, text).parse_mode(ParseMode::Html).reply_markup(kb).await?;
             let _ = bot.answer_callback_query(q.id).await;
             return Ok(());
         }
@@ -720,7 +819,12 @@ pub async fn handle_admin_callback(
 
     if data == "admin_customer_block_add" {
         state_mgr.set(user_id, DialogState::AdminAwaitingCustomerBlock);
-        bot.send_message(q.from.id, "🚫 Nhập User ID hoặc @username cần chặn (có thể nhập nhiều ID phân cách bởi dấu phẩy):").await?;
+        let text = "🚫 Nhập User ID hoặc @username cần chặn (có thể nhập nhiều ID phân cách bởi dấu phẩy):";
+        let kb = InlineKeyboardMarkup::new(vec![vec![
+            InlineKeyboardButton::callback("⬅️ Quay lại", "admin_customer_blocks"),
+            InlineKeyboardButton::callback("🏠 Trang chủ", "admin_home"),
+        ]]);
+        bot.send_message(q.from.id, text).reply_markup(kb).await?;
         let _ = bot.answer_callback_query(q.id).await;
         return Ok(());
     }
@@ -864,7 +968,7 @@ pub async fn build_admin_stats(
     );
 
     let kb = InlineKeyboardMarkup::new(vec![vec![
-        InlineKeyboardButton::callback("⬅️ Quay lại", "admin_home"),
+        InlineKeyboardButton::callback("🏠 Trang chủ", "admin_home"),
     ]]);
 
     Ok((text, kb))
@@ -893,7 +997,7 @@ pub fn build_admin_recent_users(db: &DbStore) -> (String, InlineKeyboardMarkup) 
     }
 
     let kb = InlineKeyboardMarkup::new(vec![vec![
-        InlineKeyboardButton::callback("⬅️ Quay lại", "admin_home"),
+        InlineKeyboardButton::callback("🏠 Trang chủ", "admin_home"),
     ]]);
 
     (text, kb)
@@ -938,7 +1042,7 @@ pub async fn build_admin_category_grid(
         InlineKeyboardButton::callback("🎨 Đổi Icon danh mục", "admin_set_emoji_list"),
     ]);
     buttons.push(vec![
-        InlineKeyboardButton::callback("⬅️ Quay lại", "admin_home"),
+        InlineKeyboardButton::callback("🏠 Trang chủ", "admin_home"),
     ]);
 
     let text = "📦 <b>QUẢN LÝ SẢN PHẨM THEO DANH MỤC</b>\n\nChọn danh mục để xem và chỉnh sửa sản phẩm:".to_string();
@@ -998,7 +1102,7 @@ pub async fn build_admin_category_products(
 
     buttons.push(vec![
         InlineKeyboardButton::callback("⬅️ Danh mục", "admin_products"),
-        InlineKeyboardButton::callback("🏠 Dashboard", "admin_home"),
+        InlineKeyboardButton::callback("🏠 Trang chủ", "admin_home"),
     ]);
 
     let text = format!("📦 <b>DANH SÁCH SẢN PHẨM (Trang {}/{})</b>", page + 1, total_pages);
@@ -1014,7 +1118,8 @@ pub async fn build_admin_product_detail(
         Some(p) => p,
         None => {
             return Ok(("❌ Không tìm thấy sản phẩm.".to_string(), InlineKeyboardMarkup::new(vec![vec![
-                InlineKeyboardButton::callback("⬅️ Quay lại", "admin_products"),
+                InlineKeyboardButton::callback("⬅️ Danh mục", "admin_products"),
+                InlineKeyboardButton::callback("🏠 Trang chủ", "admin_home"),
             ]])));
         }
     };
@@ -1105,7 +1210,7 @@ pub async fn build_admin_product_detail(
 
     buttons.push(vec![
         InlineKeyboardButton::callback("⬅️ Quay lại", format!("admin_viewcat_{}:0", current_cat_id)),
-        InlineKeyboardButton::callback("🏠 Dashboard", "admin_home"),
+        InlineKeyboardButton::callback("🏠 Trang chủ", "admin_home"),
     ]);
 
     Ok((text, InlineKeyboardMarkup::new(buttons)))
@@ -1130,7 +1235,7 @@ pub fn build_customer_blocks_screen(db: &DbStore) -> (String, InlineKeyboardMark
         InlineKeyboardButton::callback("🗑 Gỡ chặn tất cả", "admin_customer_block_clear"),
     ]);
     rows.push(vec![
-        InlineKeyboardButton::callback("⬅️ Quay lại", "admin_home"),
+        InlineKeyboardButton::callback("🏠 Trang chủ", "admin_home"),
     ]);
 
     (text, InlineKeyboardMarkup::new(rows))
@@ -1271,33 +1376,64 @@ pub async fn handle_admin_text_input(
 
     match state {
         DialogState::AdminAwaitingPriceDelta { product_key } => {
+            let sk = GLOBAL_SHORT_KEYS.to_short_key(&product_key);
+            let kb = InlineKeyboardMarkup::new(vec![vec![
+                InlineKeyboardButton::callback("⬅️ Quay lại SP", format!("admin_price_{}", sk)),
+                InlineKeyboardButton::callback("🏠 Trang chủ", "admin_home"),
+            ]]);
             if input.eq_ignore_ascii_case("reset") {
                 db.write_data(|d| d.price_deltas.remove(&product_key), true);
-                bot.send_message(msg.chat.id, format!("✅ Đã khôi phục markup mặc định cho <code>{}</code>.", product_key)).parse_mode(ParseMode::Html).await?;
+                bot.send_message(msg.chat.id, format!("✅ Đã khôi phục markup mặc định cho <code>{}</code>.", product_key))
+                    .parse_mode(ParseMode::Html)
+                    .reply_markup(kb)
+                    .await?;
             } else if let Ok(new_price) = input.replace('.', "").replace(',', "").parse::<i64>() {
                 // delta = new_price - base_price
                 let base = db.read_data(|d| d.custom_products.get(&product_key).map(|p| p.price)).unwrap_or(0);
                 let delta = new_price - base;
                 db.write_data(|d| d.price_deltas.insert(product_key.clone(), delta), true);
-                bot.send_message(msg.chat.id, format!("✅ Đã đặt giá mới {} (Delta: {}) cho <code>{}</code>.", format_money(new_price), format_money(delta), product_key)).parse_mode(ParseMode::Html).await?;
+                bot.send_message(msg.chat.id, format!("✅ Đã đặt giá mới {} (Delta: {}) cho <code>{}</code>.", format_money(new_price), format_money(delta), product_key))
+                    .parse_mode(ParseMode::Html)
+                    .reply_markup(kb)
+                    .await?;
             } else {
-                bot.send_message(msg.chat.id, "❌ Giá tiền không hợp lệ. Vui lòng nhập số nguyên hoặc 'reset'.").await?;
+                bot.send_message(msg.chat.id, "❌ Giá tiền không hợp lệ. Vui lòng nhập số nguyên hoặc 'reset'.")
+                    .reply_markup(kb)
+                    .await?;
             }
         }
 
         DialogState::AdminAwaitingPriceUsdt { product_key } => {
+            let sk = GLOBAL_SHORT_KEYS.to_short_key(&product_key);
+            let kb = InlineKeyboardMarkup::new(vec![vec![
+                InlineKeyboardButton::callback("⬅️ Quay lại SP", format!("admin_price_{}", sk)),
+                InlineKeyboardButton::callback("🏠 Trang chủ", "admin_home"),
+            ]]);
             if input.eq_ignore_ascii_case("reset") {
                 db.write_data(|d| d.custom_prices_usdt.remove(&product_key), true);
-                bot.send_message(msg.chat.id, format!("✅ Đã xóa giá USDT tùy chỉnh cho <code>{}</code>.", product_key)).parse_mode(ParseMode::Html).await?;
+                bot.send_message(msg.chat.id, format!("✅ Đã xóa giá USDT tùy chỉnh cho <code>{}</code>.", product_key))
+                    .parse_mode(ParseMode::Html)
+                    .reply_markup(kb)
+                    .await?;
             } else if let Ok(dec) = input.parse::<Decimal>() {
                 db.write_data(|d| d.custom_prices_usdt.insert(product_key.clone(), dec.to_string()), true);
-                bot.send_message(msg.chat.id, format!("✅ Đã đặt giá USDT: <b>{} USDT</b> cho <code>{}</code>.", dec, product_key)).parse_mode(ParseMode::Html).await?;
+                bot.send_message(msg.chat.id, format!("✅ Đã đặt giá USDT: <b>{} USDT</b> cho <code>{}</code>.", dec, product_key))
+                    .parse_mode(ParseMode::Html)
+                    .reply_markup(kb)
+                    .await?;
             } else {
-                bot.send_message(msg.chat.id, "❌ Định dạng Decimal không hợp lệ (vd: 2.5).").await?;
+                bot.send_message(msg.chat.id, "❌ Định dạng Decimal không hợp lệ (vd: 2.5).")
+                    .reply_markup(kb)
+                    .await?;
             }
         }
 
         DialogState::AdminAwaitingStockItems { product_key } => {
+            let sk = GLOBAL_SHORT_KEYS.to_short_key(&product_key);
+            let kb = InlineKeyboardMarkup::new(vec![vec![
+                InlineKeyboardButton::callback("⬅️ Quay lại SP", format!("admin_price_{}", sk)),
+                InlineKeyboardButton::callback("🏠 Trang chủ", "admin_home"),
+            ]]);
             let lines: Vec<String> = input.lines().map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
             let added_count = lines.len();
             db.write_data(|d| {
@@ -1307,19 +1443,88 @@ pub async fn handle_admin_text_input(
                 let total = entry.len() as i64;
                 d.custom_stocks.insert(product_key.clone(), total);
             }, true);
-            bot.send_message(msg.chat.id, format!("✅ Đã nạp thành công <b>+{}</b> tài khoản vào kho Auto của <code>{}</code>!", added_count, product_key)).parse_mode(ParseMode::Html).await?;
+            bot.send_message(msg.chat.id, format!("✅ Đã nạp thành công <b>+{}</b> tài khoản vào kho Auto của <code>{}</code>!", added_count, product_key))
+                .parse_mode(ParseMode::Html)
+                .reply_markup(kb)
+                .await?;
         }
 
         DialogState::AdminAwaitingStockManual { product_key } => {
+            let sk = GLOBAL_SHORT_KEYS.to_short_key(&product_key);
+            let kb = InlineKeyboardMarkup::new(vec![vec![
+                InlineKeyboardButton::callback("⬅️ Quay lại SP", format!("admin_price_{}", sk)),
+                InlineKeyboardButton::callback("🏠 Trang chủ", "admin_home"),
+            ]]);
             if let Ok(count) = input.parse::<i64>() {
                 db.write_data(|d| d.custom_stocks.insert(product_key.clone(), count), true);
-                bot.send_message(msg.chat.id, format!("✅ Đã cập nhật tồn kho thủ công: <b>{}</b> cho <code>{}</code>.", count, product_key)).parse_mode(ParseMode::Html).await?;
+                bot.send_message(msg.chat.id, format!("✅ Đã cập nhật tồn kho thủ công: <b>{}</b> cho <code>{}</code>.", count, product_key))
+                    .parse_mode(ParseMode::Html)
+                    .reply_markup(kb)
+                    .await?;
             } else {
-                bot.send_message(msg.chat.id, "❌ Vui lòng nhập số nguyên hợp lệ.").await?;
+                bot.send_message(msg.chat.id, "❌ Vui lòng nhập số nguyên hợp lệ.")
+                    .reply_markup(kb)
+                    .await?;
+            }
+        }
+
+        DialogState::AdminAwaitingProductNameVi { product_key } => {
+            let sk = GLOBAL_SHORT_KEYS.to_short_key(&product_key);
+            let kb = InlineKeyboardMarkup::new(vec![vec![
+                InlineKeyboardButton::callback("⬅️ Quay lại SP", format!("admin_price_{}", sk)),
+                InlineKeyboardButton::callback("🏠 Trang chủ", "admin_home"),
+            ]]);
+            if input.eq_ignore_ascii_case("reset") {
+                db.write_data(|d| {
+                    d.custom_names.remove(&product_key);
+                }, true);
+                bot.send_message(msg.chat.id, format!("✅ Đã xóa tên Tiếng Việt tùy chỉnh cho <code>{}</code>.", product_key))
+                    .parse_mode(ParseMode::Html)
+                    .reply_markup(kb)
+                    .await?;
+            } else {
+                let name = input.trim().to_string();
+                db.write_data(|d| {
+                    d.custom_names.insert(product_key.clone(), name.clone());
+                }, true);
+                bot.send_message(msg.chat.id, format!("✅ Đã đặt tên Tiếng Việt: <b>{}</b> cho <code>{}</code>.", escape_html(&name), product_key))
+                    .parse_mode(ParseMode::Html)
+                    .reply_markup(kb)
+                    .await?;
+            }
+        }
+
+        DialogState::AdminAwaitingProductDescVi { product_key } => {
+            let sk = GLOBAL_SHORT_KEYS.to_short_key(&product_key);
+            let kb = InlineKeyboardMarkup::new(vec![vec![
+                InlineKeyboardButton::callback("⬅️ Quay lại SP", format!("admin_price_{}", sk)),
+                InlineKeyboardButton::callback("🏠 Trang chủ", "admin_home"),
+            ]]);
+            if input.eq_ignore_ascii_case("reset") {
+                db.write_data(|d| {
+                    d.custom_descriptions.remove(&product_key);
+                }, true);
+                bot.send_message(msg.chat.id, format!("✅ Đã xóa mô tả tùy chỉnh cho <code>{}</code>.", product_key))
+                    .parse_mode(ParseMode::Html)
+                    .reply_markup(kb)
+                    .await?;
+            } else {
+                let desc = input.trim().to_string();
+                db.write_data(|d| {
+                    d.custom_descriptions.insert(product_key.clone(), desc.clone());
+                }, true);
+                bot.send_message(msg.chat.id, format!("✅ Đã cập nhật mô tả cho <code>{}</code>:\n<blockquote>{}</blockquote>", product_key, escape_html(&desc)))
+                    .parse_mode(ParseMode::Html)
+                    .reply_markup(kb)
+                    .await?;
             }
         }
 
         DialogState::AdminAwaitingNewProduct => {
+            let kb = InlineKeyboardMarkup::new(vec![vec![
+                InlineKeyboardButton::callback("⬅️ Danh mục", "admin_products"),
+                InlineKeyboardButton::callback("🏠 Trang chủ", "admin_home"),
+            ]]);
             let parts: Vec<&str> = input.split('|').map(|s| s.trim()).collect();
             if parts.len() == 3 {
                 let key = parts[0].to_string();
@@ -1334,16 +1539,28 @@ pub async fn handle_admin_text_input(
                             extra: Default::default(),
                         });
                     }, true);
-                    bot.send_message(msg.chat.id, format!("✅ Đã thêm sản phẩm tự bán: <b>{}</b> (<code>{}</code>) — {}", name, key, format_money(price))).parse_mode(ParseMode::Html).await?;
+                    bot.send_message(msg.chat.id, format!("✅ Đã thêm sản phẩm tự bán: <b>{}</b> (<code>{}</code>) — {}", name, key, format_money(price)))
+                        .parse_mode(ParseMode::Html)
+                        .reply_markup(kb)
+                        .await?;
                 } else {
-                    bot.send_message(msg.chat.id, "❌ Giá tiền không hợp lệ.").await?;
+                    bot.send_message(msg.chat.id, "❌ Giá tiền không hợp lệ.")
+                        .reply_markup(kb)
+                        .await?;
                 }
             } else {
-                bot.send_message(msg.chat.id, "❌ Cú pháp sai. Hãy nhập: <code>Mã_id | Tên | Giá</code>").parse_mode(ParseMode::Html).await?;
+                bot.send_message(msg.chat.id, "❌ Cú pháp sai. Hãy nhập: <code>Mã_id | Tên | Giá</code>")
+                    .parse_mode(ParseMode::Html)
+                    .reply_markup(kb)
+                    .await?;
             }
         }
 
         DialogState::AdminAwaitingNewCategory => {
+            let kb = InlineKeyboardMarkup::new(vec![vec![
+                InlineKeyboardButton::callback("⬅️ Danh mục", "admin_products"),
+                InlineKeyboardButton::callback("🏠 Trang chủ", "admin_home"),
+            ]]);
             let parts: Vec<&str> = input.split('|').map(|s| s.trim()).collect();
             if parts.len() == 3 {
                 let cid = parts[0].to_string();
@@ -1352,9 +1569,15 @@ pub async fn handle_admin_text_input(
                 db.write_data(|d| {
                     d.custom_category_defs.insert(cid.clone(), vec![name.clone(), emoji.clone()]);
                 }, true);
-                bot.send_message(msg.chat.id, format!("✅ Đã thêm danh mục: {} <b>{}</b> (<code>{}</code>)", emoji, name, cid)).parse_mode(ParseMode::Html).await?;
+                bot.send_message(msg.chat.id, format!("✅ Đã thêm danh mục: {} <b>{}</b> (<code>{}</code>)", emoji, name, cid))
+                    .parse_mode(ParseMode::Html)
+                    .reply_markup(kb)
+                    .await?;
             } else {
-                bot.send_message(msg.chat.id, "❌ Cú pháp sai. Hãy nhập: <code>Mã_id | Tên | Emoji</code>").parse_mode(ParseMode::Html).await?;
+                bot.send_message(msg.chat.id, "❌ Cú pháp sai. Hãy nhập: <code>Mã_id | Tên | Emoji</code>")
+                    .parse_mode(ParseMode::Html)
+                    .reply_markup(kb)
+                    .await?;
             }
         }
 
@@ -1404,7 +1627,13 @@ pub async fn handle_admin_text_input(
                     }
                 }
             }
-            bot.send_message(msg.chat.id, format!("✅ Đã thêm {} người dùng vào danh sách chặn!", blocked_count)).await?;
+            let kb = InlineKeyboardMarkup::new(vec![vec![
+                InlineKeyboardButton::callback("⬅️ Quay lại", "admin_customer_blocks"),
+                InlineKeyboardButton::callback("🏠 Trang chủ", "admin_home"),
+            ]]);
+            bot.send_message(msg.chat.id, format!("✅ Đã thêm {} người dùng vào danh sách chặn!", blocked_count))
+                .reply_markup(kb)
+                .await?;
         }
 
         DialogState::AdminAwaitingUserLookup => {
@@ -1440,13 +1669,16 @@ pub async fn handle_admin_text_input(
                         InlineKeyboardButton::callback("➖ Trừ ví", format!("admin_wallet_sub_{}", target_id)),
                     ],
                     vec![
-                        InlineKeyboardButton::callback("⬅️ Quay lại", "admin_home"),
+                        InlineKeyboardButton::callback("🏠 Trang chủ", "admin_home"),
                     ],
                 ]);
 
                 bot.send_message(msg.chat.id, text).parse_mode(ParseMode::Html).reply_markup(kb).await?;
             } else {
-                bot.send_message(msg.chat.id, "❌ Không tìm thấy người dùng phù hợp.").await?;
+                let kb = InlineKeyboardMarkup::new(vec![vec![
+                    InlineKeyboardButton::callback("🏠 Trang chủ", "admin_home"),
+                ]]);
+                bot.send_message(msg.chat.id, "❌ Không tìm thấy người dùng phù hợp.").reply_markup(kb).await?;
             }
         }
 
@@ -1488,12 +1720,15 @@ pub async fn handle_admin_text_input(
                     ]);
                 }
                 rows.push(vec![
-                    InlineKeyboardButton::callback("⬅️ Quay lại", "admin_home"),
+                    InlineKeyboardButton::callback("🏠 Trang chủ", "admin_home"),
                 ]);
 
                 bot.send_message(msg.chat.id, text).parse_mode(ParseMode::Html).reply_markup(InlineKeyboardMarkup::new(rows)).await?;
             } else {
-                bot.send_message(msg.chat.id, "❌ Không tìm thấy đơn hàng nào khớp với tìm kiếm.").await?;
+                let kb = InlineKeyboardMarkup::new(vec![vec![
+                    InlineKeyboardButton::callback("🏠 Trang chủ", "admin_home"),
+                ]]);
+                bot.send_message(msg.chat.id, "❌ Không tìm thấy đơn hàng nào khớp với tìm kiếm.").reply_markup(kb).await?;
             }
         }
 
@@ -1519,7 +1754,7 @@ pub async fn handle_admin_text_input(
                 .parse_mode(ParseMode::Html)
                 .reply_markup(InlineKeyboardMarkup::new(vec![vec![
                     InlineKeyboardButton::callback("⬅️ Quay lại", "admin_set_emoji_list"),
-                    InlineKeyboardButton::callback("🏠 Thoát", "admin_home"),
+                    InlineKeyboardButton::callback("🏠 Trang chủ", "admin_home"),
                 ]]))
                 .await?;
             } else {
@@ -1535,7 +1770,7 @@ pub async fn handle_admin_text_input(
                     .parse_mode(ParseMode::Html)
                     .reply_markup(InlineKeyboardMarkup::new(vec![vec![
                         InlineKeyboardButton::callback("⬅️ Quay lại", "admin_set_emoji_list"),
-                        InlineKeyboardButton::callback("🏠 Thoát", "admin_home"),
+                        InlineKeyboardButton::callback("🏠 Trang chủ", "admin_home"),
                     ]]))
                     .await?;
                 } else {
@@ -1579,7 +1814,7 @@ pub async fn handle_admin_text_input(
                 .parse_mode(ParseMode::Html)
                 .reply_markup(InlineKeyboardMarkup::new(vec![vec![
                     InlineKeyboardButton::callback("⬅️ Quay lại", "admin_edit_btn_list"),
-                    InlineKeyboardButton::callback("🏠 Thoát", "admin_home"),
+                    InlineKeyboardButton::callback("🏠 Trang chủ", "admin_home"),
                 ]]))
                 .await?;
             } else {
@@ -1595,7 +1830,7 @@ pub async fn handle_admin_text_input(
                     .parse_mode(ParseMode::Html)
                     .reply_markup(InlineKeyboardMarkup::new(vec![vec![
                         InlineKeyboardButton::callback("⬅️ Quay lại", "admin_edit_btn_list"),
-                        InlineKeyboardButton::callback("🏠 Thoát", "admin_home"),
+                        InlineKeyboardButton::callback("🏠 Trang chủ", "admin_home"),
                     ]]))
                     .await?;
                 } else {
@@ -1605,45 +1840,85 @@ pub async fn handle_admin_text_input(
         }
 
         DialogState::AdminAwaitingMarkup => {
+            let kb = InlineKeyboardMarkup::new(vec![vec![
+                InlineKeyboardButton::callback("🏠 Trang chủ", "admin_home"),
+            ]]);
             if let Ok(val) = input.replace('.', "").replace(',', "").parse::<i64>() {
                 db.write_data(|d| d.settings.default_markup_fixed = val, true);
-                bot.send_message(msg.chat.id, format!("✅ Đã cập nhật markup mặc định: <b>{}</b>", format_money(val))).parse_mode(ParseMode::Html).await?;
+                bot.send_message(msg.chat.id, format!("✅ Đã cập nhật markup mặc định: <b>{}</b>", format_money(val)))
+                    .parse_mode(ParseMode::Html)
+                    .reply_markup(kb)
+                    .await?;
             } else {
-                bot.send_message(msg.chat.id, "❌ Vui lòng nhập số tiền VND hợp lệ.").await?;
+                bot.send_message(msg.chat.id, "❌ Vui lòng nhập số tiền VND hợp lệ.")
+                    .reply_markup(kb)
+                    .await?;
             }
         }
 
         DialogState::AdminAwaitingReferralReward => {
+            let kb = InlineKeyboardMarkup::new(vec![vec![
+                InlineKeyboardButton::callback("🏠 Trang chủ", "admin_home"),
+            ]]);
             if let Ok(val) = input.replace('.', "").replace(',', "").parse::<i64>() {
                 db.write_data(|d| d.settings.referral_reward = val, true);
-                bot.send_message(msg.chat.id, format!("✅ Đã cập nhật thưởng người mời: <b>{}</b>", format_money(val))).parse_mode(ParseMode::Html).await?;
+                bot.send_message(msg.chat.id, format!("✅ Đã cập nhật thưởng người mời: <b>{}</b>", format_money(val)))
+                    .parse_mode(ParseMode::Html)
+                    .reply_markup(kb)
+                    .await?;
             } else {
-                bot.send_message(msg.chat.id, "❌ Vui lòng nhập số tiền VND hợp lệ.").await?;
+                bot.send_message(msg.chat.id, "❌ Vui lòng nhập số tiền VND hợp lệ.")
+                    .reply_markup(kb)
+                    .await?;
             }
         }
 
         DialogState::AdminAwaitingWelcomeMsgVi => {
+            let kb = InlineKeyboardMarkup::new(vec![vec![
+                InlineKeyboardButton::callback("⬅️ Quay lại", "admin_ui_custom"),
+                InlineKeyboardButton::callback("🏠 Trang chủ", "admin_home"),
+            ]]);
             let val = if input.eq_ignore_ascii_case("reset") { None } else { Some(input.to_string()) };
             db.write_data(|d| d.settings.welcome_message = val.clone(), true);
-            bot.send_message(msg.chat.id, if val.is_some() { "✅ Đã lưu lời chào /start Tiếng Việt mới." } else { "✅ Đã reset về lời chào mặc định." }).await?;
+            bot.send_message(msg.chat.id, if val.is_some() { "✅ Đã lưu lời chào /start Tiếng Việt mới." } else { "✅ Đã reset về lời chào mặc định." })
+                .reply_markup(kb)
+                .await?;
         }
 
         DialogState::AdminAwaitingWelcomeMsgEn => {
+            let kb = InlineKeyboardMarkup::new(vec![vec![
+                InlineKeyboardButton::callback("⬅️ Quay lại", "admin_ui_custom"),
+                InlineKeyboardButton::callback("🏠 Trang chủ", "admin_home"),
+            ]]);
             let val = if input.eq_ignore_ascii_case("reset") { None } else { Some(input.to_string()) };
             db.write_data(|d| d.settings.welcome_message_en = val.clone(), true);
-            bot.send_message(msg.chat.id, if val.is_some() { "✅ Đã lưu lời chào /start Tiếng Anh mới." } else { "✅ Đã reset về lời chào mặc định." }).await?;
+            bot.send_message(msg.chat.id, if val.is_some() { "✅ Đã lưu lời chào /start Tiếng Anh mới." } else { "✅ Đã reset về lời chào mặc định." })
+                .reply_markup(kb)
+                .await?;
         }
 
         DialogState::AdminAwaitingMenuTitleVi => {
+            let kb = InlineKeyboardMarkup::new(vec![vec![
+                InlineKeyboardButton::callback("⬅️ Quay lại", "admin_ui_custom"),
+                InlineKeyboardButton::callback("🏠 Trang chủ", "admin_home"),
+            ]]);
             let val = if input.eq_ignore_ascii_case("reset") { None } else { Some(input.to_string()) };
             db.write_data(|d| d.settings.menu_title = val.clone(), true);
-            bot.send_message(msg.chat.id, if val.is_some() { "✅ Đã lưu tiêu đề menu Tiếng Việt mới." } else { "✅ Đã reset về tiêu đề mặc định." }).await?;
+            bot.send_message(msg.chat.id, if val.is_some() { "✅ Đã lưu tiêu đề menu Tiếng Việt mới." } else { "✅ Đã reset về tiêu đề mặc định." })
+                .reply_markup(kb)
+                .await?;
         }
 
         DialogState::AdminAwaitingMenuTitleEn => {
+            let kb = InlineKeyboardMarkup::new(vec![vec![
+                InlineKeyboardButton::callback("⬅️ Quay lại", "admin_ui_custom"),
+                InlineKeyboardButton::callback("🏠 Trang chủ", "admin_home"),
+            ]]);
             let val = if input.eq_ignore_ascii_case("reset") { None } else { Some(input.to_string()) };
             db.write_data(|d| d.settings.menu_title_en = val.clone(), true);
-            bot.send_message(msg.chat.id, if val.is_some() { "✅ Đã lưu tiêu đề menu Tiếng Anh mới." } else { "✅ Đã reset về tiêu đề mặc định." }).await?;
+            bot.send_message(msg.chat.id, if val.is_some() { "✅ Đã lưu tiêu đề menu Tiếng Anh mới." } else { "✅ Đã reset về tiêu đề mặc định." })
+                .reply_markup(kb)
+                .await?;
         }
 
         _ => {}
