@@ -78,7 +78,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     ));
 
     match catalog.refresh_catalog().await {
-        Ok(_) => info!("Product catalog cache pre-warmed successfully."),
+        Ok(_) => {
+            info!("Product catalog cache pre-warmed successfully.");
+            if let Ok(prods) = catalog.get_catalog().await {
+                for (key, p) in &prods {
+                    bot_tele::bot::helpers::GLOBAL_SHORT_KEYS.register_meta(key, &p.name, &p.category, &p.category_icon);
+                }
+            }
+        }
         Err(e) => warn!("Initial product catalog pre-warm encountered warning: {}", e),
     }
 

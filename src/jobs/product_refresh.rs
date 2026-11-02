@@ -9,7 +9,7 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, LazyLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use parking_lot::Mutex;
 use teloxide::prelude::*;
 use teloxide::types::{ChatId, InlineKeyboardButton, InlineKeyboardMarkup, ParseMode};
@@ -26,11 +26,14 @@ use crate::services::CatalogService;
 
 static LAST_KNOWN_STOCKS: LazyLock<Mutex<HashMap<String, i64>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
+static LAST_RESTOCK_BROADCAST: LazyLock<Mutex<HashMap<String, Instant>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 static STOCK_TRACKER_INITIALIZED: AtomicBool = AtomicBool::new(false);
 
 /// Resets the internal stock tracker (useful for testing).
 pub fn reset_stock_tracker() {
     LAST_KNOWN_STOCKS.lock().clear();
+    LAST_RESTOCK_BROADCAST.lock().clear();
     STOCK_TRACKER_INITIALIZED.store(false, Ordering::SeqCst);
 }
 
@@ -61,7 +64,7 @@ pub fn build_restock_notification(
         "{} <b>{}</b>\n\
         ➕ Thêm: {}\n\
         📦 Tồn kho hiện tại: {}\n\
-        💵 Giá: {}",
+        💸 Giá: {}",
         icon_part,
         escape_html(&product.name),
         added_qty,
@@ -69,7 +72,6 @@ pub fn build_restock_notification(
         format_money(sell_price)
     );
 
-    GLOBAL_SHORT_KEYS.register_meta(&product.key, &product.name, &product.category, &product.category_icon);
     GLOBAL_SHORT_KEYS.register_meta(&product.key, &product.name, &product.category, &product.category_icon);
     let sk = GLOBAL_SHORT_KEYS.to_short_key(&product.key);
     let kb = InlineKeyboardMarkup::new(vec![vec![
@@ -193,6 +195,9 @@ pub async fn broadcast_new_product_to_customers(
     let count = recipients.len();
     let bot_clone = bot.clone();
 
+    // Mark product as broadcasted to prevent immediate duplicate restock broadcasts
+    LAST_RESTOCK_BROADCAST.lock().insert(product.key.clone(), Instant::now());
+
     info!(
         "📢 Broadcasting new product announcement for '{}' (stock: {}, price: {}) to {} customers",
         product.name, product.stock, product.price, count
@@ -210,6 +215,10 @@ pub async fn broadcast_new_product_to_customers(
                 .await;
             if let Err(teloxide::RequestError::RetryAfter(seconds)) = res {
                 tokio::time::sleep(seconds.duration()).await;
+                let _ = bot_clone.send_message(ChatId(uid), text.clone())
+                    .parse_mode(ParseMode::Html)
+                    .reply_markup(kb.clone())
+                    .await;
             }
         }
     });
@@ -265,6 +274,10 @@ pub async fn send_restock_notification(
                     .await;
                 if let Err(teloxide::RequestError::RetryAfter(seconds)) = res {
                     tokio::time::sleep(seconds.duration()).await;
+                    let _ = bot.send_message(ChatId(uid), text.clone())
+                        .parse_mode(ParseMode::Html)
+                        .reply_markup(kb.clone())
+                        .await;
                 }
             }
         });
@@ -381,9 +394,14 @@ pub async fn refresh_products_and_check_balance(
                         if is_brand_new && new_stock > 0 {
                             new_prods.push(p.clone());
                         } else if !is_brand_new && new_stock > old_stock && new_stock > 0 {
-                            // Existing product restocked -> broadcast to customers (admin excluded to avoid spam)
                             let added_qty = new_stock - old_stock;
-                            restock_prods.push((p.clone(), added_qty));
+                            // Only qualify as restock if:
+                            // 1. Previously out of stock (old_stock == 0 && new_stock > 0), OR
+                            // 2. Added batch is substantial (added_qty >= 5)
+                            // This prevents +1 or +2 supplier stock noise from spamming 400+ customers every 30s!
+                            if old_stock == 0 || added_qty >= 5 {
+                                restock_prods.push((p.clone(), added_qty));
+                            }
                         }
 
                         tracker.insert(key.clone(), new_stock);
@@ -419,7 +437,24 @@ pub async fn refresh_products_and_check_balance(
     }
 
     // 2) Existing API products restocked -> broadcast restock notification to customers (admins excluded)
+    let now = Instant::now();
     for (prod, added_qty) in new_api_products.1 {
+        // Enforce 1-hour cooldown per product to guarantee zero restock notification spam
+        {
+            let mut last_broadcast = LAST_RESTOCK_BROADCAST.lock();
+            if let Some(&last_time) = last_broadcast.get(&prod.key) {
+                if now.duration_since(last_time) < Duration::from_secs(3600) {
+                    debug!(
+                        "Skipping restock broadcast for '{}': cooldown active ({:?} remaining)",
+                        prod.name,
+                        Duration::from_secs(3600).saturating_sub(now.duration_since(last_time))
+                    );
+                    continue;
+                }
+            }
+            last_broadcast.insert(prod.key.clone(), now);
+        }
+
         info!(
             "📢 Existing product restocked: '{}' (+{}, new stock: {}) -> broadcasting to customers",
             prod.name, added_qty, prod.stock
@@ -497,4 +532,75 @@ pub fn spawn_product_refresh_job(
     tokio::spawn(async move {
         run_product_refresh_job(ctx, shutdown_rx).await;
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[test]
+    fn test_build_restock_notification_format() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("test_db.json");
+        let db = DbStore::open(&db_path).unwrap();
+
+        let prod = ProductItem {
+            key: "test_gemini".to_string(),
+            name: "Gemini Pro 18 Tháng".to_string(),
+            name_en: None,
+            description: None,
+            description_en: None,
+            base_price: 80000,
+            price: 90000,
+            price_usdt: None,
+            stock: 10,
+            api_source: ApiSource::Hypervin,
+            category: "gemini".to_string(),
+            category_name: "Gemini".to_string(),
+            category_icon: "🤖".to_string(),
+            is_custom_local: false,
+            is_auto_delivered: false,
+            is_hidden: false,
+            format: None,
+        };
+
+        let (text, kb) = build_restock_notification(&db, &prod, 5);
+        assert!(text.contains("Gemini Pro 18 Tháng"));
+        assert!(text.contains("➕ Thêm: 5"));
+        assert!(text.contains("📦 Tồn kho hiện tại: 10"));
+        assert!(text.contains("💸 Giá: 90.000đ"));
+
+        // Inline button must have short key for buy action
+        let rows = kb.inline_keyboard;
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].len(), 1);
+        if let teloxide::types::InlineKeyboardButtonKind::CallbackData(ref data) = rows[0][0].kind {
+            assert!(data.starts_with("prod_"));
+        } else {
+            panic!("Expected CallbackData button");
+        }
+    }
+
+    #[test]
+    fn test_restock_cooldown_map() {
+        reset_stock_tracker();
+        let key = "test_cooldown_prod".to_string();
+        let now = Instant::now();
+
+        {
+            let mut last_bcast = LAST_RESTOCK_BROADCAST.lock();
+            last_bcast.insert(key.clone(), now);
+        }
+
+        {
+            let last_bcast = LAST_RESTOCK_BROADCAST.lock();
+            assert!(last_bcast.contains_key(&key));
+            let ts = last_bcast.get(&key).unwrap();
+            assert!(Instant::now().duration_since(*ts) < Duration::from_secs(60));
+        }
+
+        reset_stock_tracker();
+        assert!(LAST_RESTOCK_BROADCAST.lock().is_empty());
+    }
 }

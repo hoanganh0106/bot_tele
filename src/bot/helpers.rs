@@ -227,6 +227,7 @@ impl ShortKeyRegistry {
                 icon: icon.to_string(),
             },
         );
+        self.to_short_key(key);
     }
 
     pub fn get_meta(&self, key: &str) -> Option<ProductMeta> {
@@ -259,6 +260,14 @@ impl ShortKeyRegistry {
     pub fn from_short_key(&self, token: &str) -> String {
         if let Some(original) = self.short_to_long.get(token) {
             return original.clone();
+        }
+        // Fallback: check if any registered product meta key hashes to this token
+        if token.starts_with("k_") {
+            for entry in self.product_meta.iter() {
+                if self.to_short_key(entry.key()) == token {
+                    return entry.key().clone();
+                }
+            }
         }
         token.to_string()
     }
@@ -386,4 +395,33 @@ pub fn crypto_poll_start_ms(watermark_ms: i64, cycle_now_ms: i64, lookback_ms: i
     let start = watermark_ms.min(cycle_now_ms) - lookback_ms;
     let floor = cycle_now_ms - max_lookback_ms;
     start.max(floor)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_short_key_registry_deterministic_and_fallback() {
+        let registry = ShortKeyRegistry::new();
+        let long_key = "very_long_product_key_that_exceeds_twenty_eight_bytes_length";
+        
+        // Register metadata should automatically populate short_to_long
+        registry.register_meta(long_key, "Test Product", "AI", "🤖");
+        let short_key = registry.to_short_key(long_key);
+        assert!(short_key.starts_with("k_"));
+        assert_eq!(registry.from_short_key(&short_key), long_key);
+
+        // Test fallback resolution when short_to_long is empty but product_meta has it
+        let registry_fallback = ShortKeyRegistry::new();
+        registry_fallback.product_meta.insert(
+            long_key.to_string(),
+            ProductMeta {
+                name: "Test Product".to_string(),
+                category: "AI".to_string(),
+                icon: "🤖".to_string(),
+            },
+        );
+        assert_eq!(registry_fallback.from_short_key(&short_key), long_key);
+    }
 }

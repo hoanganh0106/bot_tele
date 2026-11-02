@@ -1641,12 +1641,13 @@ pub async fn execute_broadcast(
 
         let mut all_sent = true;
         for &msg_id in &message_ids {
-            let res = bot.copy_message(ChatId(uid), admin_chat_id, teloxide::types::MessageId(msg_id)).await;
-            if let Err(e) = res {
+            let mut res = bot.copy_message(ChatId(uid), admin_chat_id, teloxide::types::MessageId(msg_id)).await;
+            if let Err(teloxide::RequestError::RetryAfter(seconds)) = res {
+                tokio::time::sleep(seconds.duration()).await;
+                res = bot.copy_message(ChatId(uid), admin_chat_id, teloxide::types::MessageId(msg_id)).await;
+            }
+            if res.is_err() {
                 all_sent = false;
-                if let teloxide::RequestError::RetryAfter(seconds) = e {
-                    tokio::time::sleep(seconds.duration()).await;
-                }
             }
         }
 
@@ -1681,7 +1682,7 @@ pub async fn handle_admin_text_input(
     msg: Message,
     db: Arc<DbStore>,
     config: Arc<Config>,
-    _state_mgr: Arc<StateManager>,
+    state_mgr: Arc<StateManager>,
     catalog: Arc<dyn CatalogService>,
     state: DialogState,
     input: &str,
@@ -2308,6 +2309,27 @@ pub async fn handle_admin_text_input(
             let val = if input.eq_ignore_ascii_case("reset") { None } else { Some(input.to_string()) };
             db.write_data(|d| d.settings.menu_title_en = val.clone(), true);
             bot.send_message(msg.chat.id, if val.is_some() { "✅ Đã lưu tiêu đề menu Tiếng Anh mới." } else { "✅ Đã reset về tiêu đề mặc định." })
+                .reply_markup(kb)
+                .await?;
+        }
+
+        DialogState::AdminAwaitingBroadcast { mut message_ids } => {
+            message_ids.push(msg.id.0);
+            let count = message_ids.len();
+            state_mgr.set(user_id, DialogState::AdminAwaitingBroadcast { message_ids });
+
+            let text = format!(
+                "📝 <b>Đã nhận {} nội dung vào hàng đợi Broadcast.</b>\n\n\
+                Gửi thêm tin nhắn/ảnh/video hoặc bấm nút bên dưới để phát sóng:",
+                count
+            );
+            let kb = InlineKeyboardMarkup::new(vec![vec![
+                InlineKeyboardButton::callback(format!("📤 Gửi ngay ({} tin)", count), "broadcast_send"),
+                InlineKeyboardButton::callback("🗑 Hủy bỏ", "broadcast_cancel"),
+            ]]);
+
+            bot.send_message(msg.chat.id, text)
+                .parse_mode(ParseMode::Html)
                 .reply_markup(kb)
                 .await?;
         }
