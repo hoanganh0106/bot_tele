@@ -332,22 +332,20 @@ pub async fn handle_product_select(
         desc_block = format!("\n<blockquote>{}</blockquote>\n", escape_html(&desc));
     }
 
-    let (has_auto_accounts, delivery_mode) = db.read_data(|d| {
+    let (has_auto_accounts, custom_mode) = db.read_data(|d| {
         let has_auto = d.custom_accounts_inventory.get(&product_key).map(|v| !v.is_empty()).unwrap_or(false);
-        let mode = d.custom_delivery_modes.get(&product_key).cloned().unwrap_or_else(|| {
-            if product_key == "slot_gpt_team" { "email".to_string() } else { "direct_contact".to_string() }
-        });
+        let mode = d.custom_delivery_modes.get(&product_key).cloned();
         (has_auto, mode)
     });
 
+    let needs_mail = product.needs_email(custom_mode.as_deref(), has_auto_accounts);
+
     if has_auto_accounts {
         desc_block.push_str("\n⚡ <i>Giao tài khoản tự động ngay sau khi thanh toán</i>\n");
+    } else if needs_mail {
+        desc_block.push_str("\n📧 <i>Yêu cầu cung cấp Email sau khi thanh toán để kích hoạt</i>\n");
     } else if product.is_custom_local {
-        if delivery_mode == "email" {
-            desc_block.push_str("\n📧 <i>Yêu cầu cung cấp Email sau khi thanh toán để kích hoạt</i>\n");
-        } else {
-            desc_block.push_str("\n📞 <i>Liên hệ Admin kèm mã đơn sau khi thanh toán để nhận hàng</i>\n");
-        }
+        desc_block.push_str("\n📞 <i>Liên hệ Admin kèm mã đơn sau khi thanh toán để nhận hàng</i>\n");
     }
 
     let max_qty = if effective_stock > 0 {
@@ -530,21 +528,10 @@ pub async fn handle_qty_select(
 
     let (is_auto_delivered, needs_email) = db.read_data(|d| {
         let has_accounts = d.custom_accounts_inventory.get(&product_key).map(|v| !v.is_empty()).unwrap_or(false);
-        if product.is_custom_local && has_accounts {
-            (true, false)
-        } else if product.is_custom_local {
-            let mode = d.custom_delivery_modes.get(&product_key).map(|s| s.as_str());
-            let needs_mail = match mode {
-                Some("email") => true,
-                Some("direct_contact") => false,
-                _ => false, // Default for custom local is direct contact
-            };
-            (false, needs_mail)
-        } else {
-            // Partner products
-            let needs_mail = product_key == "slot_gpt_team";
-            (false, needs_mail)
-        }
+        let mode = d.custom_delivery_modes.get(&product_key).map(|s| s.as_str());
+        let needs_mail = product.needs_email(mode, has_accounts);
+        let is_auto = has_accounts || (product.is_auto_delivered && !needs_mail);
+        (is_auto, needs_mail)
     });
 
     let order = crate::db::OrderRecord {

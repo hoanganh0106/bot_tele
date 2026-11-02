@@ -19,8 +19,8 @@ use crate::services::hypervin::HypervinClient;
 use crate::services::products::ApiSource;
 use crate::services::CatalogService;
 use super::helpers::{
-    crypto_network_label, escape_html, estimate_order_usdt, format_money, format_user_link,
-    generate_qr_url, GLOBAL_SHORT_KEYS,
+    crypto_network_label, escape_html, estimate_order_usdt, format_money,
+    format_user_link_html, generate_qr_url, GLOBAL_SHORT_KEYS,
 };
 use super::state::{DialogState, StateManager};
 
@@ -653,7 +653,7 @@ async fn process_paid_order_locked(
         // Refund total to user wallet
         ctx.db.credit_wallet_with_reason(order.user_id, order.total, "product_hidden_refund")?;
 
-        let user_link = format_user_link(order.username.as_deref(), order.user_id);
+        let user_link = format_user_link_html(order.username.as_deref(), order.user_id);
         let admin_alert = format!(
             "⚠️ <b>ĐƠN SẢN PHẨM ĐÃ ẨN — ĐÃ HOÀN VÍ</b>\n\
             ━━━━━━━━━━━━━━━━━━\n\
@@ -739,7 +739,7 @@ async fn process_paid_order_locked(
                         ..Default::default()
                     })?;
 
-                    let user_link = format_user_link(order.username.as_deref(), order.user_id);
+                    let user_link = format_user_link_html(order.username.as_deref(), order.user_id);
                     let alert_msg = format!(
                         "🚨 <b>[HÀNG TỰ BÁN] AUTO GIAO HÀNG HẾT KHO</b>\n\
                         ━━━━━━━━━━━━━━━━━━\n\
@@ -793,7 +793,7 @@ async fn process_paid_order_locked(
             );
             let _ = ctx.bot.send_message(ChatId(order.user_id), delivery_msg).parse_mode(ParseMode::Html).await;
 
-            let user_link = format_user_link(order.username.as_deref(), order.user_id);
+            let user_link = format_user_link_html(order.username.as_deref(), order.user_id);
             let admin_msg = format!(
                 "✅ <b>[AUTO HOÀN TẤT] ĐƠN TỰ BÁN</b>\n\
                 ━━━━━━━━━━━━━━━━━━\n\
@@ -839,7 +839,7 @@ async fn process_paid_order_locked(
                 );
                 let _ = ctx.bot.send_message(ChatId(order.user_id), cust_msg).parse_mode(ParseMode::Html).await;
 
-                let user_link = format_user_link(order.username.as_deref(), order.user_id);
+                let user_link = format_user_link_html(order.username.as_deref(), order.user_id);
                 let admin_alert = format!(
                     "🔔 <b>[ĐƠN HÀNG MỚI] CẦN KÍCH HOẠT QUA EMAIL</b>\n\
                     ━━━━━━━━━━━━━━━━━━\n\
@@ -891,7 +891,7 @@ async fn process_paid_order_locked(
                     .reply_markup(kb)
                     .await;
 
-                let user_link = format_user_link(order.username.as_deref(), order.user_id);
+                let user_link = format_user_link_html(order.username.as_deref(), order.user_id);
                 let admin_alert = format!(
                     "🔔 <b>[ĐƠN HÀNG MỚI] LIÊN HỆ TRỰC TIẾP NHẬN HÀNG</b>\n\
                     ━━━━━━━━━━━━━━━━━━\n\
@@ -922,7 +922,8 @@ async fn process_paid_order_locked(
 
     let supplier_result = match api_source {
         ApiSource::Hypervin => {
-            ctx.hypervin.create_order(&order.product_key, order.qty as u32).await
+            let customer_email = order.emails.first().map(|s| s.as_str());
+            ctx.hypervin.create_order(&order.product_key, order.qty as u32, customer_email).await
         }
         ApiSource::Ctv | ApiSource::Local => {
             let emails = if order.emails.is_empty() {
@@ -965,7 +966,7 @@ async fn process_paid_order_locked(
             );
             let _ = ctx.bot.send_message(ChatId(order.user_id), cust_msg).parse_mode(ParseMode::Html).await;
 
-            let user_link = format_user_link(order.username.as_deref(), order.user_id);
+            let user_link = format_user_link_html(order.username.as_deref(), order.user_id);
             let admin_msg = format!(
                 "💰 <b>[ĐƠN THÀNH CÔNG]</b>\n\
                 ━━━━━━━━━━━━━━━━━━\n\
@@ -1008,12 +1009,23 @@ async fn process_paid_order_locked(
     }
 }
 
-pub async fn notify_all_admins(ctx: &BotContext, text: &str) {
+pub async fn notify_all_admins_with_kb(
+    ctx: &BotContext,
+    text: &str,
+    kb: Option<InlineKeyboardMarkup>,
+) {
     for &admin_id in &ctx.config.admin_ids {
-        let _ = ctx.bot.send_message(ChatId(admin_id), text.to_string())
-            .parse_mode(ParseMode::Html)
-            .await;
+        let mut req = ctx.bot.send_message(ChatId(admin_id), text.to_string())
+            .parse_mode(ParseMode::Html);
+        if let Some(ref markup) = kb {
+            req = req.reply_markup(markup.clone());
+        }
+        let _ = req.await;
     }
+}
+
+pub async fn notify_all_admins(ctx: &BotContext, text: &str) {
+    notify_all_admins_with_kb(ctx, text, None).await;
 }
 
 pub async fn notify_admins_order_failed(
@@ -1023,8 +1035,10 @@ pub async fn notify_admins_order_failed(
     source: &str,
 ) {
     let order = ctx.db.get_order(order_code);
-    let user_link = order.as_ref().map(|o| format_user_link(o.username.as_deref(), o.user_id)).unwrap_or_else(|| "Khách".to_string());
+    let user_link = order.as_ref().map(|o| format_user_link_html(o.username.as_deref(), o.user_id)).unwrap_or_else(|| "Khách".to_string());
     let prod_name = order.as_ref().map(|o| o.product_name.as_str()).unwrap_or("Sản phẩm");
+    let user_id = order.as_ref().map(|o| o.user_id).unwrap_or(0);
+    let username = order.as_ref().and_then(|o| o.username.clone());
 
     let text = format!(
         "🚨 <b>[LỖI GIAO HÀNG ĐỐI TÁC]</b>\n\
@@ -1041,7 +1055,34 @@ pub async fn notify_admins_order_failed(
         source,
         escape_html(err_msg),
     );
-    notify_all_admins(ctx, &text).await;
+
+    let mut action_row = Vec::new();
+    if user_id > 0 {
+        let contact_url = if let Some(ref u) = username {
+            let clean = u.trim().trim_start_matches('@');
+            if !clean.is_empty() && clean != "?" && !clean.eq_ignore_ascii_case("none") {
+                reqwest::Url::parse(&format!("https://t.me/{}", clean)).ok()
+            } else {
+                reqwest::Url::parse(&format!("tg://user?id={}", user_id)).ok()
+            }
+        } else {
+            reqwest::Url::parse(&format!("tg://user?id={}", user_id)).ok()
+        };
+
+        if let Some(url) = contact_url {
+            action_row.push(InlineKeyboardButton::url("💬 Nhắn tin khách", url));
+        }
+
+        action_row.push(InlineKeyboardButton::callback("➕ Hoàn ví", format!("admin_wallet_add_{}", user_id)));
+    }
+
+    let kb = if !action_row.is_empty() {
+        Some(InlineKeyboardMarkup::new(vec![action_row]))
+    } else {
+        None
+    };
+
+    notify_all_admins_with_kb(ctx, &text, kb).await;
 }
 
 pub async fn notify_customer_order_error(ctx: &BotContext, order_code: &str) {

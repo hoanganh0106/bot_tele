@@ -27,6 +27,8 @@ pub struct SupplierProduct {
     pub price: i64,
     pub stock: i64,
     pub api_source: String, // "CTV" or "HYPERVIN"
+    #[serde(default)]
+    pub format: Option<String>,
 }
 
 pub type HypervinProduct = SupplierProduct;
@@ -149,6 +151,8 @@ struct HypervinProductDto {
     name: String,
     price: f64,
     stock: i64,
+    #[serde(default)]
+    format: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -290,6 +294,7 @@ impl HypervinClient {
                 price: item.price as i64,
                 stock: item.stock,
                 api_source: "HYPERVIN".to_string(),
+                format: item.format,
             });
         }
 
@@ -353,7 +358,7 @@ impl HypervinClient {
     }
 
     /// Place product order on Hypervin.
-    pub async fn create_order(&self, product_id: &str, quantity: u32) -> Result<SupplierOrderResult, SupplierError> {
+    pub async fn create_order(&self, product_id: &str, quantity: u32, customer_email: Option<&str>) -> Result<SupplierOrderResult, SupplierError> {
         let api_key = match &self.api_key {
             Some(k) if !k.trim().is_empty() => k,
             _ => return Err(SupplierError::AuthFailed { service: "HYPERVIN", status: 401 }),
@@ -365,10 +370,17 @@ impl HypervinClient {
         let raw_product_id = product_id.strip_prefix("hv_").unwrap_or(product_id);
 
         let url = format!("{}/api/orders", self.base_url);
-        let payload = serde_json::json!({
+        let mut payload = serde_json::json!({
             "product_id": raw_product_id,
             "quantity": quantity
         });
+
+        if let Some(email) = customer_email {
+            if let Some(obj) = payload.as_object_mut() {
+                obj.insert("customer_email".to_string(), serde_json::json!(email));
+                obj.insert("email".to_string(), serde_json::json!(email));
+            }
+        }
 
         let resp = match self.client.post(&url)
             .header("X-API-Key", api_key)
@@ -450,8 +462,8 @@ impl HypervinClient {
     }
 
     /// Convenience wrapper for buy.
-    pub async fn buy(&self, product_id: &str, quantity: u32) -> Result<SupplierOrderResult, SupplierError> {
-        self.create_order(product_id, quantity).await
+    pub async fn buy(&self, product_id: &str, quantity: u32, customer_email: Option<&str>) -> Result<SupplierOrderResult, SupplierError> {
+        self.create_order(product_id, quantity, customer_email).await
     }
 }
 

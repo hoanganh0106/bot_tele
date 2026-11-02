@@ -313,6 +313,28 @@ pub fn format_user_link(username: Option<&str>, user_id: i64) -> String {
     "Không rõ".to_string()
 }
 
+/// Formats clickable user link in HTML mode:
+/// - If username is available: <a href="https://t.me/clean">@clean</a>
+/// - If no username: <a href="tg://user?id=123">Khách #123</a>
+/// - Fallback: "Không rõ"
+pub fn format_user_link_html(username: Option<&str>, user_id: i64) -> String {
+    if let Some(u) = username {
+        let clean = u.trim().trim_start_matches('@');
+        if clean.len() >= 5
+            && clean.len() <= 32
+            && clean.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+            && !clean.eq_ignore_ascii_case("none")
+            && clean != "?"
+        {
+            return format!("<a href=\"https://t.me/{}\">@{}</a>", clean, clean);
+        }
+    }
+    if user_id > 0 {
+        return format!("<a href=\"tg://user?id={}\">Khách #{}</a>", user_id, user_id);
+    }
+    "Không rõ".to_string()
+}
+
 // --- VietQR URL Generator ---
 
 pub fn generate_qr_url(bank_account: &str, bank_bin: &str, amount: i64, content: &str) -> String {

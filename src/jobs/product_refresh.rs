@@ -233,12 +233,13 @@ pub async fn send_restock_notification(
     let (text, kb) = build_restock_notification(&ctx.db, product, added_qty);
 
     if target == "all_customers" {
-        let mut recipients: Vec<i64> = ctx.db.read_data(|d| {
+        let recipients: Vec<i64> = ctx.db.read_data(|d| {
             let blocklist = &d.settings.customer_blocklist;
             let bcast_block = &d.settings.broadcast_blocklist;
+            let admin_set: std::collections::HashSet<i64> = ctx.config.admin_ids.iter().copied().collect();
             d.users.keys().filter_map(|k| {
                 let uid = k.parse::<i64>().ok()?;
-                if blocklist.contains(&uid) || bcast_block.contains(&uid) {
+                if blocklist.contains(&uid) || bcast_block.contains(&uid) || admin_set.contains(&uid) {
                     None
                 } else {
                     Some(uid)
@@ -246,15 +247,8 @@ pub async fn send_restock_notification(
             }).collect()
         });
 
-        // Always include admins in the broadcast
-        for &aid in &ctx.config.admin_ids {
-            if !recipients.contains(&aid) {
-                recipients.push(aid);
-            }
-        }
-
         info!(
-            "📢 Broadcasting restock notification for '{}' (added: {}) to {} users",
+            "📢 Broadcasting restock notification for '{}' (added: {}) to {} customers (admins excluded)",
             product.name, added_qty, recipients.len()
         );
 
@@ -322,6 +316,7 @@ pub async fn send_test_restock_notification(
                 is_custom_local: false,
                 is_auto_delivered: false,
                 is_hidden: false,
+                format: None,
             },
             5,
         ),
@@ -358,6 +353,7 @@ pub async fn refresh_products_and_check_balance(
         }
         let is_init = STOCK_TRACKER_INITIALIZED.load(Ordering::SeqCst);
         let mut new_prods = Vec::new();
+        let mut restock_prods = Vec::new();
 
         {
             let mut tracker = LAST_KNOWN_STOCKS.lock();
@@ -378,20 +374,23 @@ pub async fn refresh_products_and_check_balance(
                             continue;
                         }
                         let is_brand_new = !tracker.contains_key(key);
+                        let old_stock = tracker.get(key).copied().unwrap_or(0);
                         let new_stock = p.stock;
 
-                        // Only notify admin when a BRAND-NEW API product is added to the catalog!
-                        // Existing products that simply have stock increases will silently update
-                        // and will NOT notify admin to avoid notification spam.
+                        // Brand-new API product -> notify admin first with edit & broadcast buttons
                         if is_brand_new && new_stock > 0 {
                             new_prods.push(p.clone());
+                        } else if !is_brand_new && new_stock > old_stock && new_stock > 0 {
+                            // Existing product restocked -> broadcast to customers (admin excluded to avoid spam)
+                            let added_qty = new_stock - old_stock;
+                            restock_prods.push((p.clone(), added_qty));
                         }
 
                         tracker.insert(key.clone(), new_stock);
                     }
                 }
 
-                // Cap at max 5 products per refresh cycle to avoid spamming
+                // Cap at max 5 new products and 10 restock notifications per refresh cycle to avoid spamming
                 if new_prods.len() > 5 {
                     warn!(
                         "New API products burst detected: {} products added in one cycle. Capping at 5 notifications.",
@@ -399,20 +398,33 @@ pub async fn refresh_products_and_check_balance(
                     );
                     new_prods.truncate(5);
                 }
+                if restock_prods.len() > 10 {
+                    restock_prods.truncate(10);
+                }
             }
         } // `tracker` MutexGuard is dropped here before any await
 
-        new_prods
+        (new_prods, restock_prods)
     } else {
-        Vec::new()
+        (Vec::new(), Vec::new())
     };
 
-    for prod in new_api_products {
+    // 1) Brand new API products -> notify admin to review / set price / broadcast
+    for prod in new_api_products.0 {
         info!(
             "🔔 Brand new API product detected: '{}' (stock: {}, base_price: {})",
             prod.name, prod.stock, prod.base_price
         );
         send_new_api_product_admin_notification(ctx, &prod).await;
+    }
+
+    // 2) Existing API products restocked -> broadcast restock notification to customers (admins excluded)
+    for (prod, added_qty) in new_api_products.1 {
+        info!(
+            "📢 Existing product restocked: '{}' (+{}, new stock: {}) -> broadcasting to customers",
+            prod.name, added_qty, prod.stock
+        );
+        send_restock_notification(ctx, &prod, added_qty).await;
     }
 
     // 3. Query Hypervin Balance

@@ -13,7 +13,7 @@ use crate::services::products::classify_product;
 use crate::services::CatalogService;
 use super::access_control::is_admin;
 use super::helpers::{
-    escape_html, format_money, format_user_link, GLOBAL_SHORT_KEYS,
+    escape_html, format_money, format_user_link_html, GLOBAL_SHORT_KEYS,
 };
 use super::payment::{process_paid_order, BotContext};
 use super::screens;
@@ -1234,7 +1234,7 @@ pub fn build_admin_recent_users(db: &DbStore) -> (String, InlineKeyboardMarkup) 
     let mut text = "👥 <b>10 KHÁCH HÀNG MỚI ĐĂNG KÝ GẦN NHẤT</b>\n━━━━━━━━━━━━━━━━━━\n\n".to_string();
 
     for (uid, uname, bal, spent, joined) in users {
-        let ulink = format_user_link(if uname.is_empty() { None } else { Some(&uname) }, uid);
+        let ulink = format_user_link_html(if uname.is_empty() { None } else { Some(&uname) }, uid);
         let date_str = if joined.len() >= 16 { &joined[..16] } else { &joined };
         text.push_str(&format!(
             "• {} (ID: <code>{}</code>)\n  💰 Ví: {} | Đã tiêu: {}\n  📅 Tham gia: {}\n\n",
@@ -2030,7 +2030,7 @@ pub async fn handle_admin_text_input(
         DialogState::AdminAwaitingUserLookup => {
             if let Some(target_id) = db.resolve_user(input) {
                 let user_record = db.get_user(target_id).unwrap_or_default();
-                let user_link = format_user_link(user_record.username.as_deref(), target_id);
+                let user_link = format_user_link_html(user_record.username.as_deref(), target_id);
                 let is_blocked = db.is_customer_blocked(target_id);
 
                 let text = format!(
@@ -2078,7 +2078,7 @@ pub async fn handle_admin_text_input(
                 .or_else(|| db.find_order_by_content(input));
 
             if let Some((code, o)) = matched {
-                let user_link = format_user_link(o.username.as_deref(), o.user_id);
+                let user_link = format_user_link_html(o.username.as_deref(), o.user_id);
                 let text = format!(
                     "🧾 <b>KẾT QUẢ TRA CỨU ĐƠN HÀNG</b>\n\
                     ━━━━━━━━━━━━━━━━━━\n\

@@ -114,6 +114,7 @@ impl CtvClient {
                 price: v.price,
                 stock: v.stock,
                 api_source: "CTV".to_string(),
+                format: None,
             });
         }
 
@@ -125,6 +126,7 @@ impl CtvClient {
                 price: 5000,
                 stock: 999,
                 api_source: "CTV".to_string(),
+                format: None,
             });
         }
 

@@ -45,6 +45,7 @@ fn test_build_restock_notification_format_and_button() {
         is_custom_local: false,
         is_auto_delivered: false,
         is_hidden: false,
+        format: None,
     };
 
     let (text, kb) = build_restock_notification(&db, &prod, 5);
@@ -126,6 +127,7 @@ fn test_new_api_product_admin_notification_and_buttons() {
         is_custom_local: false,
         is_auto_delivered: false,
         is_hidden: false,
+        format: None,
     };
 
     let (text, kb) = build_new_api_product_admin_notification(&db, &prod);
@@ -180,6 +182,7 @@ fn test_out_of_stock_metadata_and_notification() {
         is_custom_local: false,
         is_auto_delivered: false,
         is_hidden: false,
+        format: None,
     };
 
     let (_text, _kb) = build_restock_notification(&db, &prod, 3);

@@ -87,6 +87,7 @@ fn create_mock_product(key: &str, name: &str, category: &str, stock: i64, base_p
         is_custom_local: true,
         is_auto_delivered: false,
         is_hidden: false,
+        format: None,
     }
 }
 

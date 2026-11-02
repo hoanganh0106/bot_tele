@@ -72,6 +72,8 @@ pub struct ProductItem {
     pub is_custom_local: bool,
     pub is_auto_delivered: bool,
     pub is_hidden: bool,
+    #[serde(default)]
+    pub format: Option<String>,
 }
 
 impl ProductItem {
@@ -100,6 +102,65 @@ impl ProductItem {
     pub fn is_available(&self, qty: i64) -> bool {
         !self.is_hidden && self.stock >= qty
     }
+
+    pub fn needs_email(&self, custom_delivery_mode: Option<&str>, has_custom_accounts: bool) -> bool {
+        product_needs_email(
+            &self.key,
+            &self.name,
+            self.format.as_deref(),
+            custom_delivery_mode,
+            has_custom_accounts,
+        )
+    }
+}
+
+/// Determines whether a product requires customer to provide email upon purchase.
+pub fn product_needs_email(
+    product_key: &str,
+    product_name: &str,
+    format: Option<&str>,
+    custom_delivery_mode: Option<&str>,
+    has_custom_accounts: bool,
+) -> bool {
+    // 1. Explicit admin delivery mode override
+    if let Some(mode) = custom_delivery_mode {
+        if mode == "email" {
+            return true;
+        }
+        if mode == "account" || mode == "manual" || mode == "direct_contact" {
+            return false;
+        }
+    }
+
+    // 2. If it has custom local accounts uploaded by admin, account is delivered directly
+    if has_custom_accounts {
+        return false;
+    }
+
+    // 3. If supplier format indicates invite
+    if let Some(fmt) = format {
+        if fmt.eq_ignore_ascii_case("invite") {
+            return true;
+        }
+    }
+
+    // 4. Backward compatibility
+    if product_key == "slot_gpt_team" {
+        return true;
+    }
+
+    // 5. Keyword analysis on product name and key
+    let name_lower = product_name.to_lowercase();
+    let key_lower = product_key.to_lowercase();
+
+    let is_invite = name_lower.contains("invite") || key_lower.contains("invite");
+    let is_slot = name_lower.contains("slot") || key_lower.contains("slot");
+    let is_upgrade = name_lower.contains("nâng cấp") || name_lower.contains("nang cap");
+    let is_renew = name_lower.contains("gia hạn") || name_lower.contains("gia han");
+    let is_add_team = name_lower.contains("add team") || name_lower.contains("chính chủ") || name_lower.contains("chinh chu");
+    let is_mail = name_lower.contains("login email") || name_lower.contains("nhập mail") || name_lower.contains("nhap mail");
+
+    is_invite || is_slot || is_upgrade || is_renew || is_add_team || is_mail
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -453,6 +514,7 @@ impl CatalogAggregator {
                         is_custom_local,
                         is_auto_delivered,
                         is_hidden,
+                        format: None,
                     },
                 );
             }
@@ -514,6 +576,7 @@ impl CatalogAggregator {
                         is_custom_local,
                         is_auto_delivered,
                         is_hidden,
+                        format: p.format.clone(),
                     },
                 );
             }
@@ -575,6 +638,7 @@ impl CatalogAggregator {
                         is_custom_local,
                         is_auto_delivered,
                         is_hidden,
+                        format: None,
                     },
                 );
             }
