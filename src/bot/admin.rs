@@ -266,7 +266,7 @@ pub async fn handle_admin_callback(
 
                 let count = crate::jobs::product_refresh::broadcast_new_product_to_customers(
                     &bot,
-                    &db,
+                    db.clone(),
                     &p,
                 ).await;
 
@@ -1651,23 +1651,33 @@ pub async fn execute_broadcast(
         join_set.spawn(async move {
             let _permit = permit;
             let mut all_sent = true;
+            let mut blocked_uid = None;
             for &msg_id in &message_ids_clone {
                 let mut res = bot_clone.copy_message(ChatId(uid), admin_chat_id, teloxide::types::MessageId(msg_id)).await;
                 if let Err(teloxide::RequestError::RetryAfter(seconds)) = res {
                     tokio::time::sleep(seconds.duration()).await;
                     res = bot_clone.copy_message(ChatId(uid), admin_chat_id, teloxide::types::MessageId(msg_id)).await;
                 }
-                if res.is_err() {
+                if let Err(ref err) = res {
                     all_sent = false;
+                    if let teloxide::RequestError::Api(teloxide::ApiError::BotBlocked | teloxide::ApiError::UserDeactivated) = err {
+                        blocked_uid = Some(uid);
+                    }
                 }
             }
-            all_sent
+            (all_sent, blocked_uid)
         });
     }
 
     while let Some(res) = join_set.join_next().await {
         match res {
-            Ok(true) => success_count += 1,
+            Ok((true, _)) => success_count += 1,
+            Ok((false, blocked)) => {
+                failed_count += 1;
+                if let Some(uid) = blocked {
+                    db.add_broadcast_block(uid);
+                }
+            }
             _ => failed_count += 1,
         }
     }

@@ -174,10 +174,10 @@ pub async fn send_new_api_product_admin_notification(
 /// Broadcasts a newly published product announcement to all non-blocked customers.
 pub async fn broadcast_new_product_to_customers(
     bot: &Bot,
-    db: &DbStore,
+    db: Arc<DbStore>,
     product: &ProductItem,
 ) -> usize {
-    let (text, kb) = build_restock_notification(db, product, product.stock);
+    let (text, kb) = build_restock_notification(&db, product, product.stock);
 
     let recipients: Vec<i64> = db.read_data(|d| {
         let blocklist = &d.settings.customer_blocklist;
@@ -203,6 +203,7 @@ pub async fn broadcast_new_product_to_customers(
         product.name, product.stock, product.price, count
     );
 
+    let db_clone = db.clone();
     tokio::spawn(async move {
         let semaphore = Arc::new(tokio::sync::Semaphore::new(25));
         let mut join_set = tokio::task::JoinSet::new();
@@ -226,17 +227,33 @@ pub async fn broadcast_new_product_to_customers(
                     .parse_mode(ParseMode::Html)
                     .reply_markup(markup.clone())
                     .await;
-                if let Err(teloxide::RequestError::RetryAfter(seconds)) = res {
-                    tokio::time::sleep(seconds.duration()).await;
-                    let _ = b.send_message(ChatId(uid), msg_text)
-                        .parse_mode(ParseMode::Html)
-                        .reply_markup(markup)
-                        .await;
+                let mut blocked_uid = None;
+                match res {
+                    Ok(_) => {}
+                    Err(teloxide::RequestError::RetryAfter(seconds)) => {
+                        tokio::time::sleep(seconds.duration()).await;
+                        let retry_res = b.send_message(ChatId(uid), msg_text)
+                            .parse_mode(ParseMode::Html)
+                            .reply_markup(markup)
+                            .await;
+                        if let Err(teloxide::RequestError::Api(teloxide::ApiError::BotBlocked | teloxide::ApiError::UserDeactivated)) = retry_res {
+                            blocked_uid = Some(uid);
+                        }
+                    }
+                    Err(teloxide::RequestError::Api(teloxide::ApiError::BotBlocked | teloxide::ApiError::UserDeactivated)) => {
+                        blocked_uid = Some(uid);
+                    }
+                    Err(_) => {}
                 }
+                blocked_uid
             });
         }
 
-        while join_set.join_next().await.is_some() {}
+        while let Some(res) = join_set.join_next().await {
+            if let Ok(Some(uid)) = res {
+                db_clone.add_broadcast_block(uid);
+            }
+        }
     });
 
     count
@@ -278,6 +295,7 @@ pub async fn send_restock_notification(
         );
 
         let bot = ctx.bot.clone();
+        let db = ctx.db.clone();
         tokio::spawn(async move {
             let semaphore = Arc::new(tokio::sync::Semaphore::new(25));
             let mut join_set = tokio::task::JoinSet::new();
@@ -301,17 +319,33 @@ pub async fn send_restock_notification(
                         .parse_mode(ParseMode::Html)
                         .reply_markup(markup.clone())
                         .await;
-                    if let Err(teloxide::RequestError::RetryAfter(seconds)) = res {
-                        tokio::time::sleep(seconds.duration()).await;
-                        let _ = b.send_message(ChatId(uid), msg_text)
-                            .parse_mode(ParseMode::Html)
-                            .reply_markup(markup)
-                            .await;
+                    let mut blocked_uid = None;
+                    match res {
+                        Ok(_) => {}
+                        Err(teloxide::RequestError::RetryAfter(seconds)) => {
+                            tokio::time::sleep(seconds.duration()).await;
+                            let retry_res = b.send_message(ChatId(uid), msg_text)
+                                .parse_mode(ParseMode::Html)
+                                .reply_markup(markup)
+                                .await;
+                            if let Err(teloxide::RequestError::Api(teloxide::ApiError::BotBlocked | teloxide::ApiError::UserDeactivated)) = retry_res {
+                                blocked_uid = Some(uid);
+                            }
+                        }
+                        Err(teloxide::RequestError::Api(teloxide::ApiError::BotBlocked | teloxide::ApiError::UserDeactivated)) => {
+                            blocked_uid = Some(uid);
+                        }
+                        Err(_) => {}
                     }
+                    blocked_uid
                 });
             }
 
-            while join_set.join_next().await.is_some() {}
+            while let Some(res) = join_set.join_next().await {
+                if let Ok(Some(uid)) = res {
+                    db.add_broadcast_block(uid);
+                }
+            }
         });
     } else {
         // Default / test mode: "admin_only"
@@ -427,12 +461,12 @@ pub async fn refresh_products_and_check_balance(
                             new_prods.push(p.clone());
                         } else if !is_brand_new && new_stock > old_stock && new_stock > 0 {
                             let added_qty = new_stock - old_stock;
+                            let is_from_zero = old_stock == 0;
                             // Only qualify as restock if:
-                            // 1. Previously out of stock (old_stock == 0 && new_stock > 0), OR
-                            // 2. Added batch is substantial (added_qty >= 5)
-                            // This prevents +1 or +2 supplier stock noise from spamming 400+ customers every 30s!
-                            if old_stock == 0 || added_qty >= 5 {
-                                restock_prods.push((p.clone(), added_qty));
+                            // 1. Previously completely out of stock (old_stock == 0 && new_stock > 0): ALWAYS restock!
+                            // 2. Added batch is >= 2: Genuine restock batch
+                            if is_from_zero || added_qty >= 2 {
+                                restock_prods.push((p.clone(), added_qty, is_from_zero));
                             }
                         }
 
@@ -470,21 +504,24 @@ pub async fn refresh_products_and_check_balance(
 
     // 2) Existing API products restocked -> broadcast restock notification to customers (admins excluded)
     let now = Instant::now();
-    for (prod, added_qty) in new_api_products.1 {
-        // Enforce 1-hour cooldown per product to guarantee zero restock notification spam
-        {
+    for (prod, added_qty, is_from_zero) in new_api_products.1 {
+        // If product was completely out of stock (old_stock == 0), notify immediately without cooldown!
+        // If it already had stock and was merely topped up, debounce with 120s cooldown so rapid API oscillations don't spam.
+        if !is_from_zero {
             let mut last_broadcast = LAST_RESTOCK_BROADCAST.lock();
             if let Some(&last_time) = last_broadcast.get(&prod.key) {
-                if now.duration_since(last_time) < Duration::from_secs(3600) {
+                if now.duration_since(last_time) < Duration::from_secs(120) {
                     debug!(
-                        "Skipping restock broadcast for '{}': cooldown active ({:?} remaining)",
+                        "Skipping restock broadcast for '{}': 2-min debounce cooldown active ({:?} remaining)",
                         prod.name,
-                        Duration::from_secs(3600).saturating_sub(now.duration_since(last_time))
+                        Duration::from_secs(120).saturating_sub(now.duration_since(last_time))
                     );
                     continue;
                 }
             }
             last_broadcast.insert(prod.key.clone(), now);
+        } else {
+            LAST_RESTOCK_BROADCAST.lock().insert(prod.key.clone(), now);
         }
 
         info!(
