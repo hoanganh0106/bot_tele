@@ -179,6 +179,12 @@ pub async fn handle_command(
                 referred_by,
             );
 
+            // If user previously blocked the bot and was placed in broadcast blocklist,
+            // unblock them immediately upon restarting the bot so they receive future broadcasts.
+            if db.remove_broadcast_block(user_id) {
+                tracing::info!("User {} re-started the bot -> unblocked from broadcast blocklist", user_id);
+            }
+
             // Notify referrer if commission was credited
             if referral_credited && referred_by.is_some() {
                 let ref_id = referred_by.unwrap();

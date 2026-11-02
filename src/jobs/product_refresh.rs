@@ -28,12 +28,15 @@ static LAST_KNOWN_STOCKS: LazyLock<Mutex<HashMap<String, i64>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 static LAST_RESTOCK_BROADCAST: LazyLock<Mutex<HashMap<String, Instant>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
+static LAST_OUT_OF_STOCK_BROADCAST: LazyLock<Mutex<HashMap<String, Instant>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 static STOCK_TRACKER_INITIALIZED: AtomicBool = AtomicBool::new(false);
 
 /// Resets the internal stock tracker (useful for testing).
 pub fn reset_stock_tracker() {
     LAST_KNOWN_STOCKS.lock().clear();
     LAST_RESTOCK_BROADCAST.lock().clear();
+    LAST_OUT_OF_STOCK_BROADCAST.lock().clear();
     STOCK_TRACKER_INITIALIZED.store(false, Ordering::SeqCst);
 }
 
@@ -62,6 +65,7 @@ pub fn build_restock_notification(
 
     let text = format!(
         "{} <b>{}</b>\n\
+        🟢 <b>ĐÃ CÓ HÀNG TRỞ LẠI!</b>\n\
         ➕ Thêm: {}\n\
         📦 Tồn kho hiện tại: {}\n\
         💸 Giá: {}",
@@ -76,6 +80,34 @@ pub fn build_restock_notification(
     let sk = GLOBAL_SHORT_KEYS.to_short_key(&product.key);
     let kb = InlineKeyboardMarkup::new(vec![vec![
         InlineKeyboardButton::callback("🛒 Mua ngay", format!("prod_{}", sk)),
+    ]]);
+
+    (text, kb)
+}
+
+/// Constructs the formatted out-of-stock notification message for customers.
+pub fn build_out_of_stock_notification(
+    db: &DbStore,
+    product: &ProductItem,
+) -> (String, InlineKeyboardMarkup) {
+    let cat_eid = db.read_data(|d| d.category_emoji_ids.get(&product.category).cloned());
+    let icon_part = if let Some(ref eid) = cat_eid {
+        format!("<tg-emoji emoji-id=\"{}\">{}</tg-emoji>", eid, product.category_icon)
+    } else {
+        product.category_icon.clone()
+    };
+
+    let text = format!(
+        "{} <b>{}</b>\n\
+        🔴 <b>SẢN PHẨM TẠM HẾT HÀNG!</b>\n\
+        ━━━━━━━━━━━━━━━━━━\n\
+        Sản phẩm này hiện đã tạm hết hàng trong kho. Khi có hàng trở lại, bot sẽ thông báo ngay cho bạn nhé!",
+        icon_part,
+        escape_html(&product.name)
+    );
+
+    let kb = InlineKeyboardMarkup::new(vec![vec![
+        InlineKeyboardButton::callback("🔍 Xem danh mục", format!("viewcat_{}", product.category)),
     ]]);
 
     (text, kb)
@@ -362,6 +394,108 @@ pub async fn send_restock_notification(
     }
 }
 
+/// Dispatches an out-of-stock notification according to configured target (admin_only or all_customers).
+pub async fn send_out_of_stock_notification(
+    ctx: &BotContext,
+    product: &ProductItem,
+) {
+    let target = ctx.db.read_data(|d| d.settings.restock_notification_target.clone());
+
+    if target == "disabled" {
+        debug!("Out-of-stock notification skipped: notifications disabled in settings.");
+        return;
+    }
+
+    let (text, kb) = build_out_of_stock_notification(&ctx.db, product);
+
+    if target == "all_customers" {
+        let recipients: Vec<i64> = ctx.db.read_data(|d| {
+            let blocklist = &d.settings.customer_blocklist;
+            let bcast_block = &d.settings.broadcast_blocklist;
+            let admin_set: std::collections::HashSet<i64> = ctx.config.admin_ids.iter().copied().collect();
+            d.users.keys().filter_map(|k| {
+                let uid = k.parse::<i64>().ok()?;
+                if blocklist.contains(&uid) || bcast_block.contains(&uid) || admin_set.contains(&uid) {
+                    None
+                } else {
+                    Some(uid)
+                }
+            }).collect()
+        });
+
+        info!(
+            "📢 Broadcasting out-of-stock notification for '{}' to {} customers concurrently (admins excluded)",
+            product.name, recipients.len()
+        );
+
+        let bot = ctx.bot.clone();
+        let db = ctx.db.clone();
+        tokio::spawn(async move {
+            let semaphore = Arc::new(tokio::sync::Semaphore::new(25));
+            let mut join_set = tokio::task::JoinSet::new();
+            let mut interval = tokio::time::interval(Duration::from_millis(35));
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+
+            for uid in recipients {
+                interval.tick().await;
+
+                let permit = match semaphore.clone().acquire_owned().await {
+                    Ok(p) => p,
+                    Err(_) => break,
+                };
+                let b = bot.clone();
+                let msg_text = text.clone();
+                let markup = kb.clone();
+
+                join_set.spawn(async move {
+                    let _permit = permit;
+                    let res = b.send_message(ChatId(uid), msg_text.clone())
+                        .parse_mode(ParseMode::Html)
+                        .reply_markup(markup.clone())
+                        .await;
+                    let mut blocked_uid = None;
+                    match res {
+                        Ok(_) => {}
+                        Err(teloxide::RequestError::RetryAfter(seconds)) => {
+                            tokio::time::sleep(seconds.duration()).await;
+                            let retry_res = b.send_message(ChatId(uid), msg_text)
+                                .parse_mode(ParseMode::Html)
+                                .reply_markup(markup)
+                                .await;
+                            if let Err(teloxide::RequestError::Api(teloxide::ApiError::BotBlocked | teloxide::ApiError::UserDeactivated)) = retry_res {
+                                blocked_uid = Some(uid);
+                            }
+                        }
+                        Err(teloxide::RequestError::Api(teloxide::ApiError::BotBlocked | teloxide::ApiError::UserDeactivated)) => {
+                            blocked_uid = Some(uid);
+                        }
+                        Err(_) => {}
+                    }
+                    blocked_uid
+                });
+            }
+
+            while let Some(res) = join_set.join_next().await {
+                if let Ok(Some(uid)) = res {
+                    db.add_broadcast_block(uid);
+                }
+            }
+        });
+    } else {
+        // Default / test mode: "admin_only"
+        info!(
+            "👑 Sending out-of-stock notification for '{}' to {} admins (Admin Test Mode)",
+            product.name, ctx.config.admin_ids.len()
+        );
+        for &admin_id in &ctx.config.admin_ids {
+            let _ = ctx.bot.send_message(ChatId(admin_id), text.clone())
+                .parse_mode(ParseMode::Html)
+                .reply_markup(kb.clone())
+                .await;
+        }
+    }
+}
+
 /// Sends an immediate test restock notification for a real or mock product to the specified admin.
 pub async fn send_test_restock_notification(
     bot: &Bot,
@@ -433,6 +567,7 @@ pub async fn refresh_products_and_check_balance(
         let is_init = STOCK_TRACKER_INITIALIZED.load(Ordering::SeqCst);
         let mut new_prods = Vec::new();
         let mut restock_prods = Vec::new();
+        let mut out_of_stock_prods = Vec::new();
 
         {
             let mut tracker = LAST_KNOWN_STOCKS.lock();
@@ -456,25 +591,27 @@ pub async fn refresh_products_and_check_balance(
                         let old_stock = tracker.get(key).copied().unwrap_or(0);
                         let new_stock = p.stock;
 
-                        // Brand-new API product -> notify admin first with edit & broadcast buttons
+                        // 1) Brand-new API product -> notify admin first with edit & broadcast buttons
                         if is_brand_new && new_stock > 0 {
                             new_prods.push(p.clone());
-                        } else if !is_brand_new && new_stock > old_stock && new_stock > 0 {
-                            let added_qty = new_stock - old_stock;
-                            let is_from_zero = old_stock == 0;
-                            // Only qualify as restock if:
-                            // 1. Previously completely out of stock (old_stock == 0 && new_stock > 0): ALWAYS restock!
-                            // 2. Added batch is >= 2: Genuine restock batch
-                            if is_from_zero || added_qty >= 2 {
-                                restock_prods.push((p.clone(), added_qty, is_from_zero));
+                        } else if !is_brand_new {
+                            // 2) Product was out of stock (0) and is now back in stock (>0)
+                            if old_stock == 0 && new_stock > 0 {
+                                restock_prods.push(p.clone());
                             }
+                            // 3) Product was in stock (>0) and is now completely out of stock (==0)
+                            else if old_stock > 0 && new_stock == 0 {
+                                out_of_stock_prods.push(p.clone());
+                            }
+                            // Note: Normal stock increases (e.g. 5 -> 10) while already in stock are intentionally
+                            // NOT broadcasted to prevent spamming customers.
                         }
 
                         tracker.insert(key.clone(), new_stock);
                     }
                 }
 
-                // Cap at max 5 new products and 10 restock notifications per refresh cycle to avoid spamming
+                // Cap notifications per refresh cycle to avoid bursts
                 if new_prods.len() > 5 {
                     warn!(
                         "New API products burst detected: {} products added in one cycle. Capping at 5 notifications.",
@@ -485,12 +622,15 @@ pub async fn refresh_products_and_check_balance(
                 if restock_prods.len() > 10 {
                     restock_prods.truncate(10);
                 }
+                if out_of_stock_prods.len() > 10 {
+                    out_of_stock_prods.truncate(10);
+                }
             }
         } // `tracker` MutexGuard is dropped here before any await
 
-        (new_prods, restock_prods)
+        (new_prods, restock_prods, out_of_stock_prods)
     } else {
-        (Vec::new(), Vec::new())
+        (Vec::new(), Vec::new(), Vec::new())
     };
 
     // 1) Brand new API products -> notify admin to review / set price / broadcast
@@ -502,33 +642,53 @@ pub async fn refresh_products_and_check_balance(
         send_new_api_product_admin_notification(ctx, &prod).await;
     }
 
-    // 2) Existing API products restocked -> broadcast restock notification to customers (admins excluded)
+    // 2) Existing API products back in stock (0 -> >0) -> broadcast to customers (admins excluded)
     let now = Instant::now();
-    for (prod, added_qty, is_from_zero) in new_api_products.1 {
-        // If product was completely out of stock (old_stock == 0), notify immediately without cooldown!
-        // If it already had stock and was merely topped up, debounce with 120s cooldown so rapid API oscillations don't spam.
-        if !is_from_zero {
+    for prod in new_api_products.1 {
+        // Enforce a 2-minute debounce cooldown per product to guard against rapid flipping
+        {
             let mut last_broadcast = LAST_RESTOCK_BROADCAST.lock();
             if let Some(&last_time) = last_broadcast.get(&prod.key) {
                 if now.duration_since(last_time) < Duration::from_secs(120) {
                     debug!(
-                        "Skipping restock broadcast for '{}': 2-min debounce cooldown active ({:?} remaining)",
-                        prod.name,
-                        Duration::from_secs(120).saturating_sub(now.duration_since(last_time))
+                        "Skipping back-in-stock broadcast for '{}': 2-min debounce cooldown active",
+                        prod.name
                     );
                     continue;
                 }
             }
             last_broadcast.insert(prod.key.clone(), now);
-        } else {
-            LAST_RESTOCK_BROADCAST.lock().insert(prod.key.clone(), now);
         }
 
         info!(
-            "📢 Existing product restocked: '{}' (+{}, new stock: {}) -> broadcasting to customers",
-            prod.name, added_qty, prod.stock
+            "📢 Product back in stock: '{}' (stock: {}) -> broadcasting to customers",
+            prod.name, prod.stock
         );
-        send_restock_notification(ctx, &prod, added_qty).await;
+        send_restock_notification(ctx, &prod, prod.stock).await;
+    }
+
+    // 3) Existing API products out of stock (>0 -> 0) -> broadcast to customers (admins excluded)
+    for prod in new_api_products.2 {
+        // Enforce a 2-minute debounce cooldown per product
+        {
+            let mut last_broadcast = LAST_OUT_OF_STOCK_BROADCAST.lock();
+            if let Some(&last_time) = last_broadcast.get(&prod.key) {
+                if now.duration_since(last_time) < Duration::from_secs(120) {
+                    debug!(
+                        "Skipping out-of-stock broadcast for '{}': 2-min debounce cooldown active",
+                        prod.name
+                    );
+                    continue;
+                }
+            }
+            last_broadcast.insert(prod.key.clone(), now);
+        }
+
+        info!(
+            "📢 Product out of stock: '{}' -> broadcasting to customers",
+            prod.name
+        );
+        send_out_of_stock_notification(ctx, &prod).await;
     }
 
     // 3. Query Hypervin Balance
@@ -671,5 +831,46 @@ mod tests {
 
         reset_stock_tracker();
         assert!(LAST_RESTOCK_BROADCAST.lock().is_empty());
+        assert!(LAST_OUT_OF_STOCK_BROADCAST.lock().is_empty());
+    }
+
+    #[test]
+    fn test_build_out_of_stock_notification_format() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("test_db.json");
+        let db = DbStore::open(&db_path).unwrap();
+
+        let prod = ProductItem {
+            key: "test_canva".to_string(),
+            name: "Canva Pro 1 Năm".to_string(),
+            name_en: None,
+            description: None,
+            description_en: None,
+            base_price: 50000,
+            price: 60000,
+            price_usdt: None,
+            stock: 0,
+            api_source: ApiSource::Hypervin,
+            category: "canva".to_string(),
+            category_name: "Canva".to_string(),
+            category_icon: "🎨".to_string(),
+            is_custom_local: false,
+            is_auto_delivered: false,
+            is_hidden: false,
+            format: None,
+        };
+
+        let (text, kb) = build_out_of_stock_notification(&db, &prod);
+        assert!(text.contains("Canva Pro 1 Năm"));
+        assert!(text.contains("TẠM HẾT HÀNG"));
+
+        let rows = kb.inline_keyboard;
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].len(), 1);
+        if let teloxide::types::InlineKeyboardButtonKind::CallbackData(ref data) = rows[0][0].kind {
+            assert_eq!(data, "viewcat_canva");
+        } else {
+            panic!("Expected CallbackData button");
+        }
     }
 }
