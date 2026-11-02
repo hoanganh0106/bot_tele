@@ -186,6 +186,11 @@ struct HypervinOrderResponse {
     items: Option<Vec<serde_json::Value>>,
     #[serde(default)]
     total_charged: Option<serde_json::Value>,
+    #[serde(default)]
+    total_price: Option<serde_json::Value>,
+    #[serde(default)]
+    #[allow(dead_code)]
+    status: Option<String>,
 }
 
 // ----------------------------------------------------------------------------
@@ -421,15 +426,9 @@ impl HypervinClient {
 
         self.circuit_breaker.lock().record_success();
 
-        // Extract items and totals flexibly
-        let order_obj = body.order.as_ref().unwrap_or(&serde_json::Value::Null);
-        let items_val = order_obj.get("items")
-            .or_else(|| order_obj.get("accounts"))
-            .or_else(|| order_obj.get("data"))
-            .or(body.items.as_ref().map(|_| order_obj));
-
+        // Extract items from root-level `items` or nested `order.items`
         let mut items = Vec::new();
-        if let Some(arr) = items_val.and_then(|v| v.as_array()) {
+        if let Some(arr) = &body.items {
             for item in arr {
                 if let Some(s) = item.as_str() {
                     items.push(s.to_string());
@@ -437,21 +436,57 @@ impl HypervinClient {
                     items.push(item.to_string());
                 }
             }
+        } else if let Some(order_obj) = &body.order {
+            let items_val = order_obj.get("items")
+                .or_else(|| order_obj.get("accounts"))
+                .or_else(|| order_obj.get("data"));
+            if let Some(arr) = items_val.and_then(|v| v.as_array()) {
+                for item in arr {
+                    if let Some(s) = item.as_str() {
+                        items.push(s.to_string());
+                    } else {
+                        items.push(item.to_string());
+                    }
+                }
+            }
         }
 
-        let order_code = order_obj.get("order_id")
-            .or_else(|| order_obj.get("order_code"))
-            .or_else(|| order_obj.get("code"))
-            .and_then(|v| v.as_str().map(|s| s.to_string()))
-            .or_else(|| body.order_id.and_then(|v| v.as_str().map(|s| s.to_string())))
+        // Extract order_id from root-level `order_id` or nested `order.order_id`
+        let order_code = body.order_id
+            .as_ref()
+            .and_then(|v| {
+                if let Some(s) = v.as_str() {
+                    Some(s.to_string())
+                } else if let Some(n) = v.as_i64() {
+                    Some(n.to_string())
+                } else {
+                    None
+                }
+            })
+            .or_else(|| {
+                body.order.as_ref().and_then(|o| {
+                    o.get("order_id")
+                        .or_else(|| o.get("order_code"))
+                        .or_else(|| o.get("code"))
+                        .and_then(|v| v.as_str().map(|s| s.to_string()))
+                })
+            })
             .unwrap_or_else(|| format!("HV_{}", product_id));
 
-        let total = order_obj.get("total_charged")
-            .or_else(|| order_obj.get("total_price"))
-            .or_else(|| order_obj.get("total"))
-            .or_else(|| order_obj.get("amount"))
+        // Extract total charged (root `total_price`, root `total_charged`, or nested)
+        let total = body.total_price
+            .as_ref()
             .and_then(|v| v.as_i64())
             .or_else(|| body.total_charged.as_ref().and_then(|v| v.as_i64()))
+            .or_else(|| {
+                body.order.as_ref().and_then(|o| {
+                    o.get("total_price")
+                        .or_else(|| o.get("total_charged"))
+                        .or_else(|| o.get("total"))
+                        .or_else(|| o.get("amount"))
+                        .and_then(|v| v.as_i64())
+                })
+            })
             .unwrap_or(0);
 
         Ok(SupplierOrderResult {

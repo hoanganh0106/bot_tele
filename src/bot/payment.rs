@@ -950,28 +950,47 @@ async fn process_paid_order_locked(
                 ..Default::default()
             })?;
 
-            let items_block = format!("<pre><code>{}</code></pre>", order_res.items.join("\n"));
+            let delivery_section = if order_res.items.is_empty() {
+                if !order.emails.is_empty() {
+                    format!(
+                        "📧 <b>Email nhận kích hoạt:</b> <code>{}</code>\n\
+                        ⏳ <i>Hệ thống đối tác đã tiếp nhận đơn và đang kích hoạt/gửi lời mời vào email của bạn trong ít phút!</i>",
+                        order.emails.join(", ")
+                    )
+                } else {
+                    "⏳ <i>Đơn hàng đã được ghi nhận thành công và chuyển sang hệ thống đối tác xử lý!</i>".to_string()
+                }
+            } else {
+                let items_block = format!("<pre><code>{}</code></pre>", order_res.items.join("\n"));
+                format!("🔑 <b>Tài khoản / Key bản quyền:</b>\n{}", items_block)
+            };
+
             let cust_msg = format!(
                 "🎉 <b>ĐƠN HÀNG HOÀN TẤT!</b>\n\
                 ━━━━━━━━━━━━━━━━━━\n\
                 📋 Mã đơn: <code>#{}</code>\n\
                 📦 Sản phẩm: <b>{}</b> x{}\n\n\
-                🔑 <b>Tài khoản / Key bản quyền:</b>\n\
-                {}\n\
+                {}\n\n\
                 💡 <i>Cảm ơn quý khách đã mua sắm!</i>",
                 order_code,
                 order.product_name,
                 order.qty,
-                items_block,
+                delivery_section,
             );
             let _ = ctx.bot.send_message(ChatId(order.user_id), cust_msg).parse_mode(ParseMode::Html).await;
 
             let user_link = format_user_link_html(order.username.as_deref(), order.user_id);
+            let email_line = if !order.emails.is_empty() {
+                format!("\n📧 Email: <code>{}</code>", order.emails.join(", "))
+            } else {
+                String::new()
+            };
+
             let admin_msg = format!(
                 "💰 <b>[ĐƠN THÀNH CÔNG]</b>\n\
                 ━━━━━━━━━━━━━━━━━━\n\
                 📋 Mã: <code>#{}</code> | Khách: {}\n\
-                📦 {} x{}\n\
+                📦 {} x{}{}\n\
                 💵 Thu: <b>{}</b> | Vốn: <b>{}</b>\n\
                 📈 Lợi nhuận: <b>+{}</b>\n\
                 💳 Nguồn: {}",
@@ -979,6 +998,7 @@ async fn process_paid_order_locked(
                 user_link,
                 order.product_name,
                 order.qty,
+                email_line,
                 format_money(order.total),
                 format_money(cost),
                 format_money(profit),
