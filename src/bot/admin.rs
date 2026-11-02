@@ -1633,28 +1633,42 @@ pub async fn execute_broadcast(
     let mut success_count = 0usize;
     let mut failed_count = 0usize;
 
+    let semaphore = Arc::new(tokio::sync::Semaphore::new(25));
+    let mut join_set = tokio::task::JoinSet::new();
     let mut interval = tokio::time::interval(Duration::from_millis(35)); // ~28 requests/sec
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
     for uid in recipients {
         interval.tick().await;
 
-        let mut all_sent = true;
-        for &msg_id in &message_ids {
-            let mut res = bot.copy_message(ChatId(uid), admin_chat_id, teloxide::types::MessageId(msg_id)).await;
-            if let Err(teloxide::RequestError::RetryAfter(seconds)) = res {
-                tokio::time::sleep(seconds.duration()).await;
-                res = bot.copy_message(ChatId(uid), admin_chat_id, teloxide::types::MessageId(msg_id)).await;
-            }
-            if res.is_err() {
-                all_sent = false;
-            }
-        }
+        let permit = match semaphore.clone().acquire_owned().await {
+            Ok(p) => p,
+            Err(_) => break,
+        };
+        let bot_clone = bot.clone();
+        let message_ids_clone = message_ids.clone();
 
-        if all_sent {
-            success_count += 1;
-        } else {
-            failed_count += 1;
+        join_set.spawn(async move {
+            let _permit = permit;
+            let mut all_sent = true;
+            for &msg_id in &message_ids_clone {
+                let mut res = bot_clone.copy_message(ChatId(uid), admin_chat_id, teloxide::types::MessageId(msg_id)).await;
+                if let Err(teloxide::RequestError::RetryAfter(seconds)) = res {
+                    tokio::time::sleep(seconds.duration()).await;
+                    res = bot_clone.copy_message(ChatId(uid), admin_chat_id, teloxide::types::MessageId(msg_id)).await;
+                }
+                if res.is_err() {
+                    all_sent = false;
+                }
+            }
+            all_sent
+        });
+    }
+
+    while let Some(res) = join_set.join_next().await {
+        match res {
+            Ok(true) => success_count += 1,
+            _ => failed_count += 1,
         }
     }
 

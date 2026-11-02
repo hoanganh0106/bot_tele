@@ -199,28 +199,44 @@ pub async fn broadcast_new_product_to_customers(
     LAST_RESTOCK_BROADCAST.lock().insert(product.key.clone(), Instant::now());
 
     info!(
-        "📢 Broadcasting new product announcement for '{}' (stock: {}, price: {}) to {} customers",
+        "📢 Broadcasting new product announcement for '{}' (stock: {}, price: {}) to {} customers concurrently",
         product.name, product.stock, product.price, count
     );
 
     tokio::spawn(async move {
+        let semaphore = Arc::new(tokio::sync::Semaphore::new(25));
+        let mut join_set = tokio::task::JoinSet::new();
         let mut interval = tokio::time::interval(Duration::from_millis(35));
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
         for uid in recipients {
             interval.tick().await;
-            let res = bot_clone.send_message(ChatId(uid), text.clone())
-                .parse_mode(ParseMode::Html)
-                .reply_markup(kb.clone())
-                .await;
-            if let Err(teloxide::RequestError::RetryAfter(seconds)) = res {
-                tokio::time::sleep(seconds.duration()).await;
-                let _ = bot_clone.send_message(ChatId(uid), text.clone())
+
+            let permit = match semaphore.clone().acquire_owned().await {
+                Ok(p) => p,
+                Err(_) => break,
+            };
+            let b = bot_clone.clone();
+            let msg_text = text.clone();
+            let markup = kb.clone();
+
+            join_set.spawn(async move {
+                let _permit = permit;
+                let res = b.send_message(ChatId(uid), msg_text.clone())
                     .parse_mode(ParseMode::Html)
-                    .reply_markup(kb.clone())
+                    .reply_markup(markup.clone())
                     .await;
-            }
+                if let Err(teloxide::RequestError::RetryAfter(seconds)) = res {
+                    tokio::time::sleep(seconds.duration()).await;
+                    let _ = b.send_message(ChatId(uid), msg_text)
+                        .parse_mode(ParseMode::Html)
+                        .reply_markup(markup)
+                        .await;
+                }
+            });
         }
+
+        while join_set.join_next().await.is_some() {}
     });
 
     count
@@ -257,29 +273,45 @@ pub async fn send_restock_notification(
         });
 
         info!(
-            "📢 Broadcasting restock notification for '{}' (added: {}) to {} customers (admins excluded)",
+            "📢 Broadcasting restock notification for '{}' (added: {}) to {} customers concurrently (admins excluded)",
             product.name, added_qty, recipients.len()
         );
 
         let bot = ctx.bot.clone();
         tokio::spawn(async move {
+            let semaphore = Arc::new(tokio::sync::Semaphore::new(25));
+            let mut join_set = tokio::task::JoinSet::new();
             let mut interval = tokio::time::interval(Duration::from_millis(35));
             interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
             for uid in recipients {
                 interval.tick().await;
-                let res = bot.send_message(ChatId(uid), text.clone())
-                    .parse_mode(ParseMode::Html)
-                    .reply_markup(kb.clone())
-                    .await;
-                if let Err(teloxide::RequestError::RetryAfter(seconds)) = res {
-                    tokio::time::sleep(seconds.duration()).await;
-                    let _ = bot.send_message(ChatId(uid), text.clone())
+
+                let permit = match semaphore.clone().acquire_owned().await {
+                    Ok(p) => p,
+                    Err(_) => break,
+                };
+                let b = bot.clone();
+                let msg_text = text.clone();
+                let markup = kb.clone();
+
+                join_set.spawn(async move {
+                    let _permit = permit;
+                    let res = b.send_message(ChatId(uid), msg_text.clone())
                         .parse_mode(ParseMode::Html)
-                        .reply_markup(kb.clone())
+                        .reply_markup(markup.clone())
                         .await;
-                }
+                    if let Err(teloxide::RequestError::RetryAfter(seconds)) = res {
+                        tokio::time::sleep(seconds.duration()).await;
+                        let _ = b.send_message(ChatId(uid), msg_text)
+                            .parse_mode(ParseMode::Html)
+                            .reply_markup(markup)
+                            .await;
+                    }
+                });
             }
+
+            while join_set.join_next().await.is_some() {}
         });
     } else {
         // Default / test mode: "admin_only"
