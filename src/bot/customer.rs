@@ -205,16 +205,19 @@ pub async fn handle_product_select(
     }
 
     let product_opt = catalog.get_product(&product_key).await?;
-    let custom_stocks = db.read_data(|d| d.custom_stocks.clone());
 
     let (product, is_out_of_stock, effective_stock) = match product_opt {
         Some(p) => {
-            let stock = if let Some(&s) = custom_stocks.get(&product_key) {
-                s
-            } else {
-                p.stock
-            };
-            let is_oos = stock <= 0;
+            let stock = db.read_data(|d| {
+                if let Some(inv) = d.custom_accounts_inventory.get(&product_key) {
+                    inv.len() as i64
+                } else if let Some(&s) = d.custom_stocks.get(&product_key) {
+                    s
+                } else {
+                    p.stock
+                }
+            });
+            let is_oos = stock != -1 && stock <= 0;
             (Some(p), is_oos, stock)
         }
         None => (None, true, 0),
@@ -446,16 +449,19 @@ pub async fn handle_qty_select(
     }
 
     let product_opt = catalog.get_product(&product_key).await?;
-    let custom_stocks = db.read_data(|d| d.custom_stocks.clone());
 
     let (product, is_out_of_stock, effective_stock) = match product_opt {
         Some(p) => {
-            let stock = if let Some(&s) = custom_stocks.get(&product_key) {
-                s
-            } else {
-                p.stock
-            };
-            let is_oos = stock <= 0;
+            let stock = db.read_data(|d| {
+                if let Some(inv) = d.custom_accounts_inventory.get(&product_key) {
+                    inv.len() as i64
+                } else if let Some(&s) = d.custom_stocks.get(&product_key) {
+                    s
+                } else {
+                    p.stock
+                }
+            });
+            let is_oos = stock != -1 && stock <= 0;
             (Some(p), is_oos, stock)
         }
         None => (None, true, 0),
@@ -480,11 +486,51 @@ pub async fn handle_qty_select(
             .unwrap_or_else(|| "Sản phẩm này".to_string())
         };
 
+        let cid = if let Some(ref p) = product {
+            let categories_def = catalog.get_categories().await.unwrap_or_default();
+            let custom_cats = db.read_data(|d| d.custom_categories.clone());
+            let admin_override = custom_cats.get(&product_key).map(|s| s.as_str());
+            let (_, _, cat_id) = classify_product(&product_key, &p.name, &categories_def, admin_override);
+            cat_id
+        } else if let Some(ref m) = meta {
+            m.category.clone()
+        } else {
+            "khac".to_string()
+        };
+
         let alert_text = if lang.as_str() == "en" {
             format!("❌ '{}' is currently out of stock. Please check back later!", prod_name)
         } else {
             format!("❌ Sản phẩm '{}' hiện đã hết hàng, vui lòng quay lại sau!", prod_name)
         };
+
+        let text = if lang.as_str() == "en" {
+            format!(
+                "❌ <b>{}</b> is currently out of stock.\n\n\
+                Please check back later or explore other products in our shop!",
+                escape_html(&prod_name)
+            )
+        } else {
+            format!(
+                "❌ <b>{}</b> hiện đang hết hàng.\n\n\
+                Quý khách vui lòng quay lại sau hoặc tham khảo các sản phẩm khác nhé!",
+                escape_html(&prod_name)
+            )
+        };
+
+        let kb = InlineKeyboardMarkup::new(vec![vec![
+            InlineKeyboardButton::callback("⬅️ Quay lại", format!("viewcat_{}", cid)),
+            InlineKeyboardButton::callback("🏠 Trang chủ", "back_start"),
+        ]]);
+
+        if let Some(msg) = q.message {
+            let _ = measure("telegram.edit_message_text", async {
+                bot.edit_message_text(msg.chat().id, msg.id(), text)
+                    .parse_mode(ParseMode::Html)
+                    .reply_markup(kb)
+                    .await
+            }).await;
+        }
 
         measure("telegram.answer_callback_query", async {
             bot.answer_callback_query(q.id)
@@ -497,7 +543,7 @@ pub async fn handle_qty_select(
 
     let product = product.unwrap();
 
-    if effective_stock < qty {
+    if effective_stock != -1 && effective_stock < qty {
         let alert_text = if lang.as_str() == "en" {
             format!("❌ Only {} items left in stock for '{}'.", effective_stock, product.name)
         } else {

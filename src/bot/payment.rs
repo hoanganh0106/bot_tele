@@ -85,6 +85,99 @@ pub struct BotContext {
 // Payment Initiation Handlers
 // ----------------------------------------------------------------------------
 
+async fn abort_pending_order_if_out_of_stock(
+    bot: &Bot,
+    q: &CallbackQuery,
+    db: &DbStore,
+    ctx: &BotContext,
+    order: &crate::db::OrderRecord,
+) -> Result<bool, AppError> {
+    let product_opt = ctx.catalog.get_product(&order.product_key).await?;
+    let effective_stock = match product_opt {
+        Some(ref p) => db.read_data(|d| {
+            if let Some(inv) = d.custom_accounts_inventory.get(&order.product_key) {
+                inv.len() as i64
+            } else if let Some(&s) = d.custom_stocks.get(&order.product_key) {
+                s
+            } else {
+                p.stock
+            }
+        }),
+        None => 0,
+    };
+
+    if effective_stock == -1 || effective_stock >= order.qty {
+        return Ok(false);
+    }
+
+    let _ = db.cancel_order_if_pending(&order.order_code, "cancelled");
+    let _ = db.refund_order_wallet_if_needed(&order.order_code);
+    db.write_data(|d| d.crypto_reservations.retain(|_, code| code != &order.order_code), true);
+
+    let lang = i18n::get_user_lang(order.user_id, |uid| db.get_user(uid).map(|u| u.lang));
+    let (alert_text, msg_text) = if effective_stock <= 0 {
+        if lang.as_str() == "en" {
+            (
+                format!("❌ '{}' is currently out of stock. Please check back later!", order.product_name),
+                format!(
+                    "❌ <b>{}</b> is currently out of stock.\n\nOrder <code>#{}</code> has been cancelled. Please check back later!",
+                    escape_html(&order.product_name),
+                    order.order_code
+                ),
+            )
+        } else {
+            (
+                format!("❌ Sản phẩm '{}' hiện đã hết hàng, vui lòng quay lại sau!", order.product_name),
+                format!(
+                    "❌ <b>{}</b> hiện đã hết hàng.\n\nĐơn hàng <code>#{}</code> đã tự động hủy. Quý khách vui lòng quay lại sau hoặc tham khảo sản phẩm khác nhé!",
+                    escape_html(&order.product_name),
+                    order.order_code
+                ),
+            )
+        }
+    } else if lang.as_str() == "en" {
+        (
+            format!("❌ Only {} left in stock for '{}'.", effective_stock, order.product_name),
+            format!(
+                "❌ <b>{}</b> only has <b>{}</b> left in stock (requested x{}).\n\nOrder <code>#{}</code> has been cancelled.",
+                escape_html(&order.product_name),
+                effective_stock,
+                order.qty,
+                order.order_code
+            ),
+        )
+    } else {
+        (
+            format!("❌ Sản phẩm '{}' chỉ còn {} trong kho, không đủ số lượng yêu cầu!", order.product_name, effective_stock),
+            format!(
+                "❌ <b>{}</b> chỉ còn <b>{}</b> trong kho (bạn chọn x{}).\n\nĐơn hàng <code>#{}</code> đã tự động hủy.",
+                escape_html(&order.product_name),
+                effective_stock,
+                order.qty,
+                order.order_code
+            ),
+        )
+    };
+
+    let kb = InlineKeyboardMarkup::new(vec![vec![
+        InlineKeyboardButton::callback("🏠 Trang chủ", "back_start"),
+    ]]);
+
+    if let Some(ref msg) = q.message {
+        let _ = bot.edit_message_text(msg.chat().id, msg.id(), msg_text)
+            .parse_mode(ParseMode::Html)
+            .reply_markup(kb)
+            .await;
+    }
+
+    bot.answer_callback_query(q.id.clone())
+        .text(alert_text)
+        .show_alert(true)
+        .await?;
+
+    Ok(true)
+}
+
 /// Handle "paybank_{order_code}" callback.
 pub async fn handle_pay_bank(
     bot: Bot,
@@ -116,6 +209,10 @@ pub async fn handle_pay_bank(
         if let Some(msg) = q.message {
             let _ = bot.edit_message_text(msg.chat().id, msg.id(), cancel_text).await;
         }
+        return Ok(());
+    }
+
+    if abort_pending_order_if_out_of_stock(&bot, &q, &db, &ctx, &order).await? {
         return Ok(());
     }
 
@@ -231,6 +328,10 @@ pub async fn handle_pay_crypto(
         return Ok(());
     }
 
+    if abort_pending_order_if_out_of_stock(&bot, &q, &db, &ctx, &order).await? {
+        return Ok(());
+    }
+
     let rate = db.read_data(|d| d.settings.usdt_vnd_rate).unwrap_or(26500);
     let base_usdt = estimate_order_usdt(None, order.total, order.qty, rate);
 
@@ -331,6 +432,10 @@ pub async fn handle_pay_wallet(
         return Ok(());
     }
 
+    if abort_pending_order_if_out_of_stock(&bot, &q, &db, &ctx, &order).await? {
+        return Ok(());
+    }
+
     // Release crypto offset
     db.write_data(|d| d.crypto_reservations.retain(|_, code| code != order_code), true);
 
@@ -383,6 +488,10 @@ pub async fn handle_pay_partial(
     if db.read_data(|d| d.custom_hiddens.contains(&order.product_key)) {
         let _ = db.cancel_order_if_pending(order_code, "cancelled");
         bot.answer_callback_query(q.id).text("Sản phẩm đã ngừng kinh doanh.").show_alert(true).await?;
+        return Ok(());
+    }
+
+    if abort_pending_order_if_out_of_stock(&bot, &q, &db, &ctx, &order).await? {
         return Ok(());
     }
 

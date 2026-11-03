@@ -77,6 +77,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         (*config).clone(),
     ));
 
+    // Preload persisted product keys into ShortKeyRegistry so historical broadcast/order buttons
+    // continue resolving cleanly across restarts even if an item vanished from supplier API while out of stock.
+    db.read_data(|d| {
+        for k in d.price_deltas.keys()
+            .chain(d.custom_names.keys())
+            .chain(d.custom_descriptions.keys())
+            .chain(d.custom_categories.keys())
+            .chain(d.custom_products.keys())
+        {
+            bot_tele::bot::helpers::GLOBAL_SHORT_KEYS.preload(k);
+        }
+        for o in d.orders.values() {
+            if !o.product_key.is_empty() {
+                bot_tele::bot::helpers::GLOBAL_SHORT_KEYS.preload(&o.product_key);
+            }
+        }
+    });
+
     match catalog.refresh_catalog().await {
         Ok(_) => {
             info!("Product catalog cache pre-warmed successfully.");
