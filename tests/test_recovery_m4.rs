@@ -207,3 +207,82 @@ async fn test_recover_unfulfilled_paid_orders_with_inventory() {
         assert!(d.custom_accounts_inventory.get("local_vpn").unwrap().is_empty());
     });
 }
+
+#[tokio::test]
+async fn test_recover_skips_completed_manual_and_email_invite_orders() {
+    let (db, ctx) = create_test_context();
+
+    db.write_data(|d| {
+        d.custom_products.insert(
+            "cursor".into(),
+            bot_tele::db::models::CustomProduct {
+                name: "Cursor Pro 1 tháng BHF".into(),
+                price: 300_000,
+                ..Default::default()
+            },
+        );
+        d.custom_stocks.insert("cursor".into(), 5);
+    }, true);
+
+    // 1. Completed manual local order (direct contact) — must NOT re-trigger or decrement stock
+    let mut manual_paid = OrderRecord::default();
+    manual_paid.order_code = "BOT1793599084000002".into();
+    manual_paid.user_id = 9001;
+    manual_paid.product_key = "cursor".into();
+    manual_paid.product_name = "Cursor Pro 1 tháng BHF".into();
+    manual_paid.qty = 1;
+    manual_paid.total = 300_000;
+    manual_paid.status = "paid".into();
+    manual_paid.is_custom_local = true;
+    manual_paid.is_auto_delivered = false;
+    manual_paid.needs_email = false;
+    manual_paid.items = Vec::new();
+    db.save_order(manual_paid, true);
+
+    // 2. Completed supplier email-invite order — must NOT trigger false crash-recovery alert
+    let mut hv_email_paid = OrderRecord::default();
+    hv_email_paid.order_code = "BOT_HV_EMAIL_PAID".into();
+    hv_email_paid.user_id = 9002;
+    hv_email_paid.product_key = "hv_canva".into();
+    hv_email_paid.product_name = "Canva Pro".into();
+    hv_email_paid.qty = 1;
+    hv_email_paid.status = "paid".into();
+    hv_email_paid.is_custom_local = false;
+    hv_email_paid.needs_email = true;
+    hv_email_paid.emails = vec!["buyer@example.com".into()];
+    hv_email_paid.api_order_code = Some("HV_555".into());
+    hv_email_paid.items = Vec::new();
+    db.save_order(hv_email_paid, true);
+
+    // 3. Order awaiting customer email input ("paid_waiting_email") — must restore DialogState::WaitingEmail
+    let mut waiting_email = OrderRecord::default();
+    waiting_email.order_code = "BOT_WAIT_EMAIL".into();
+    waiting_email.user_id = 9003;
+    waiting_email.product_key = "hv_yt".into();
+    waiting_email.product_name = "YouTube Premium".into();
+    waiting_email.qty = 2;
+    waiting_email.status = "paid_waiting_email".into();
+    waiting_email.needs_email = true;
+    waiting_email.emails = Vec::new();
+    waiting_email.items = Vec::new();
+    db.save_order(waiting_email, true);
+
+    let count = recover_unfulfilled_paid_orders(ctx.clone()).await;
+    assert_eq!(count, 1, "Only the waiting-email order should be evaluated");
+
+    // Manual order stock must remain untouched (5, not decremented to 4)
+    db.read_data(|d| {
+        assert_eq!(d.custom_stocks.get("cursor"), Some(&5));
+    });
+    assert_eq!(db.get_order("BOT1793599084000002").unwrap().status, "paid");
+
+    // WaitingEmail state must be restored for user 9003
+    assert!(matches!(
+        ctx.state_mgr.get(9003),
+        bot_tele::bot::state::DialogState::WaitingEmail {
+            ref order_code,
+            expected_count: 2,
+            ..
+        } if order_code == "BOT_WAIT_EMAIL"
+    ));
+}

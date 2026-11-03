@@ -12,7 +12,7 @@ use tracing::{info, warn};
 use crate::bot::payment::{notify_all_admins, process_paid_order};
 use crate::bot::state::DialogState;
 use crate::bot::BotContext;
-use crate::db::DbStore;
+use crate::db::{DbStore, OrderRecord};
 
 /// Summary statistics collected during the post-boot crash recovery execution.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -115,18 +115,62 @@ pub async fn recover_confirmed_wallet_orders(ctx: Arc<BotContext>) -> usize {
     count
 }
 
-/// Phase 4: Handles edge cases where orders are marked "paid" but credentials/items are missing.
+/// Determines whether an order requires Phase 4 post-boot recovery evaluation.
+///
+/// Legitimately completed orders with empty `items` MUST be excluded so restarts never
+/// re-trigger duplicate notifications or stock deductions:
+/// - Manual local orders (`is_custom_local && !is_auto_delivered`) once not waiting for email.
+/// - External supplier email-activation orders (`!is_custom_local && api_order_code.is_some()`)
+///   where `needs_email` is true or customer emails were submitted.
+pub fn is_anomalous_unfulfilled_paid(o: &OrderRecord) -> bool {
+    if !o.items.is_empty() {
+        return false;
+    }
+
+    // Orders awaiting customer email input after payment (both current "paid_waiting_email"
+    // and legacy "paid" statuses) need their in-memory DialogState::WaitingEmail restored.
+    if (o.status == "paid_waiting_email" || o.status == "paid")
+        && o.needs_email
+        && o.emails.is_empty()
+    {
+        return true;
+    }
+
+    if o.status != "paid" {
+        return false;
+    }
+
+    // Manual local delivery (direct contact or email already submitted to admin):
+    // empty `items` is the normal final completed state.
+    if o.is_custom_local && !o.is_auto_delivered {
+        return false;
+    }
+
+    // External supplier email-invite / email-activation order:
+    // supplier already accepted the order (`api_order_code` recorded) and delivers via email.
+    if !o.is_custom_local
+        && o.api_order_code.is_some()
+        && (o.needs_email || !o.emails.is_empty())
+    {
+        return false;
+    }
+
+    true
+}
+
+/// Phase 4: Handles edge cases where orders are marked "paid" (or "paid_waiting_email")
+/// but credentials/items are missing.
 ///
 /// Scenarios handled:
 /// 1. Products requiring customer email: preserves `DialogState::WaitingEmail`.
 /// 2. Out-of-inventory local goods: leaves in paid status (admin was already notified).
-/// 3. External supplier order with `api_order_code`: sends admin warning to check partner portal.
+/// 3. External non-email supplier order with `api_order_code` but 0 items: sends admin warning.
 /// 4. Interrupted local auto-delivery or uncalled supplier: resets status to `"pending"` and re-invokes fulfillment.
 pub async fn recover_unfulfilled_paid_orders(ctx: Arc<BotContext>) -> usize {
     let anomalous_orders = ctx.db.read_data(|data| {
         data.orders
             .values()
-            .filter(|o| o.status == "paid" && o.items.is_empty())
+            .filter(|o| is_anomalous_unfulfilled_paid(o))
             .cloned()
             .collect::<Vec<_>>()
     });
@@ -221,4 +265,88 @@ pub async fn run_crash_recovery(ctx: Arc<BotContext>) -> RecoveryStats {
     );
 
     stats
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn manual_local_paid_order_is_not_anomalous() {
+        let order = OrderRecord {
+            order_code: "BOT1793599084000002".to_string(),
+            user_id: 1015825328,
+            product_key: "cursor".to_string(),
+            product_name: "Cursor Pro 1 tháng BHF".to_string(),
+            qty: 1,
+            total: 300_000,
+            status: "paid".to_string(),
+            is_custom_local: true,
+            is_auto_delivered: false,
+            needs_email: false,
+            items: Vec::new(),
+            ..Default::default()
+        };
+        assert!(!is_anomalous_unfulfilled_paid(&order));
+    }
+
+    #[test]
+    fn manual_local_email_order_after_submission_is_not_anomalous() {
+        let order = OrderRecord {
+            order_code: "BOT_MANUAL_EMAIL_DONE".to_string(),
+            status: "paid".to_string(),
+            is_custom_local: true,
+            is_auto_delivered: false,
+            needs_email: true,
+            emails: vec!["customer@example.com".to_string()],
+            items: Vec::new(),
+            ..Default::default()
+        };
+        assert!(!is_anomalous_unfulfilled_paid(&order));
+    }
+
+    #[test]
+    fn supplier_email_invite_paid_order_is_not_anomalous() {
+        let order = OrderRecord {
+            order_code: "BOT_HV_EMAIL_DONE".to_string(),
+            status: "paid".to_string(),
+            is_custom_local: false,
+            is_auto_delivered: false,
+            needs_email: true,
+            emails: vec!["customer@example.com".to_string()],
+            api_order_code: Some("HV_998877".to_string()),
+            items: Vec::new(),
+            ..Default::default()
+        };
+        assert!(!is_anomalous_unfulfilled_paid(&order));
+    }
+
+    #[test]
+    fn paid_waiting_email_order_is_selected_to_restore_dialog_state() {
+        let order = OrderRecord {
+            order_code: "BOT_WAITING_EMAIL".to_string(),
+            status: "paid_waiting_email".to_string(),
+            is_custom_local: true,
+            is_auto_delivered: false,
+            needs_email: true,
+            emails: Vec::new(),
+            items: Vec::new(),
+            ..Default::default()
+        };
+        assert!(is_anomalous_unfulfilled_paid(&order));
+    }
+
+    #[test]
+    fn interrupted_auto_delivered_local_order_is_anomalous() {
+        let order = OrderRecord {
+            order_code: "BOT_AUTO_INTERRUPTED".to_string(),
+            status: "paid".to_string(),
+            is_custom_local: true,
+            is_auto_delivered: true,
+            needs_email: false,
+            items: Vec::new(),
+            ..Default::default()
+        };
+        assert!(is_anomalous_unfulfilled_paid(&order));
+    }
 }

@@ -917,6 +917,9 @@ pub async fn handle_text_input(
             db.write_data(|d| {
                 if let Some(o) = d.orders.get_mut(&order_code) {
                     o.emails = emails.clone();
+                    if o.status == "paid" {
+                        o.status = "paid_waiting_email".to_string();
+                    }
                 }
             }, true);
 

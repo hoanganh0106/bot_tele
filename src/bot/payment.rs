@@ -830,7 +830,9 @@ async fn process_paid_order_locked(
                         popped.push(list.remove(0));
                     }
                     if let Some(st) = d.custom_stocks.get_mut(&order.product_key) {
-                        *st = (*st - order.qty).max(0);
+                        if *st != -1 {
+                            *st = (*st - order.qty).max(0);
+                        }
                     }
                     Some(popped)
                 }
@@ -923,7 +925,9 @@ async fn process_paid_order_locked(
             // Manual delivery
             ctx.db.write_data(|d| {
                 if let Some(st) = d.custom_stocks.get_mut(&order.product_key) {
-                    *st = (*st - order.qty).max(0);
+                    if *st != -1 {
+                        *st = (*st - order.qty).max(0);
+                    }
                 }
             }, true);
 
