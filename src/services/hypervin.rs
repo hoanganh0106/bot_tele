@@ -42,6 +42,23 @@ pub struct SupplierOrderResult {
 
 pub type HypervinBuyResult = SupplierOrderResult;
 
+/// Detects whether a supplier error message indicates depleted stock or unavailable upstream inventory.
+pub fn is_out_of_stock_message(msg: &str) -> bool {
+    let lower = msg.to_lowercase();
+    lower.contains("out of stock")
+        || lower.contains("insufficient stock")
+        || lower.contains("not enough stock")
+        || lower.contains("product source is temporarily unavailable")
+        || lower.contains("temporarily out of stock")
+        || lower.contains("source unavailable")
+        || lower.contains("hết hàng")
+        || lower.contains("het hang")
+        || lower.contains("không đủ số lượng")
+        || lower.contains("khong du so luong")
+        || lower.contains("hết kho")
+        || lower.contains("het kho")
+}
+
 // ----------------------------------------------------------------------------
 // Circuit Breaker State Machine
 // ----------------------------------------------------------------------------
@@ -412,7 +429,7 @@ impl HypervinClient {
 
         if !body.success {
             let err_msg = body.error.unwrap_or_else(|| "Hypervin order failed".to_string());
-            if err_msg.to_lowercase().contains("out of stock") {
+            if is_out_of_stock_message(&err_msg) {
                 return Err(SupplierError::OutOfStock {
                     service: "HYPERVIN",
                     product_key: product_id.to_string(),

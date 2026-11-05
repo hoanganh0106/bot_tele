@@ -27,6 +27,7 @@ use super::{CatalogService, ServiceError};
 
 pub const API_CACHE_TTL_SECS: u64 = 120;
 pub const API_STALE_TTL_SECS: u64 = 1800;
+pub const CHECKOUT_FRESH_SECS: u64 = 5;
 pub const DEFAULT_USDT_VND_RATE: i64 = 26500;
 pub const DEFAULT_MARKUP_FIXED: i64 = 10000;
 
@@ -413,43 +414,59 @@ impl CatalogAggregator {
         measure("catalog.fetch_merge", async {
         let now = Instant::now();
 
-        // 1. Fetch CTV products & balance
-        let (ctv_products, ctv_balance) = if let Some(ref ctv_client) = self.ctv {
-            match measure("supplier.ctv.get_stock", ctv_client.get_stock()).await {
-                Ok((prods, bal)) => (prods, bal),
-                Err(e) => {
-                    warn!("Failed to fetch CTV products: {}", e);
-                    (HashMap::new(), 0)
+        // 1 & 2. Fetch CTV and Hypervin products & balances concurrently
+        let ctv_fut = async {
+            if let Some(ref ctv_client) = self.ctv {
+                match measure("supplier.ctv.get_stock", ctv_client.get_stock()).await {
+                    Ok((prods, bal)) => (prods, bal),
+                    Err(e) => {
+                        warn!("Failed to fetch CTV products: {}", e);
+                        (HashMap::new(), 0)
+                    }
                 }
+            } else {
+                (HashMap::new(), 0)
             }
-        } else {
-            (HashMap::new(), 0)
         };
 
-        // 2. Fetch Hypervin products & balance
-        let (hv_products, hv_balance) = if let Some(ref hv_client) = self.hypervin {
-            if hv_client.is_enabled() {
-                let prods = match measure("supplier.hypervin.get_products", hv_client.get_products()).await {
-                    Ok(p) => p,
-                    Err(e) => {
-                        warn!("Failed to fetch Hypervin products: {}", e);
-                        HashMap::new()
+        let hv_prods_fut = async {
+            if let Some(ref hv_client) = self.hypervin {
+                if hv_client.is_enabled() {
+                    match measure("supplier.hypervin.get_products", hv_client.get_products()).await {
+                        Ok(p) => p,
+                        Err(e) => {
+                            warn!("Failed to fetch Hypervin products: {}", e);
+                            HashMap::new()
+                        }
                     }
-                };
-                let bal = match measure("supplier.hypervin.get_balance", hv_client.get_balance()).await {
-                    Ok(b) => Some(b),
-                    Err(e) => {
-                        warn!("Failed to fetch Hypervin balance: {}", e);
-                        None
-                    }
-                };
-                (prods, bal)
+                } else {
+                    HashMap::new()
+                }
             } else {
-                (HashMap::new(), None)
+                HashMap::new()
             }
-        } else {
-            (HashMap::new(), None)
         };
+
+        let hv_bal_fut = async {
+            if let Some(ref hv_client) = self.hypervin {
+                if hv_client.is_enabled() {
+                    match measure("supplier.hypervin.get_balance", hv_client.get_balance()).await {
+                        Ok(b) => Some(b),
+                        Err(e) => {
+                            warn!("Failed to fetch Hypervin balance: {}", e);
+                            None
+                        }
+                    }
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        };
+
+        let ((ctv_products, ctv_balance), hv_products, hv_balance) =
+            tokio::join!(ctv_fut, hv_prods_fut, hv_bal_fut);
 
         // 3. Merge with DbStore custom products, stock overrides, deltas, and categories
         let categories = self.get_categories_map();
@@ -714,6 +731,38 @@ impl CatalogService for CatalogAggregator {
     async fn get_product(&self, key: &str) -> Result<Option<ProductItem>, ServiceError> {
         let catalog = self.get_catalog().await?;
         Ok(catalog.get(key).cloned())
+    }
+
+    async fn get_product_fresh(&self, key: &str) -> Result<Option<ProductItem>, ServiceError> {
+        // Pure local custom products are backed directly by in-memory DbStore (real-time)
+        let is_local_custom = self.db.read_data(|d| d.custom_products.contains_key(key));
+        if is_local_custom {
+            return self.get_product(key).await;
+        }
+
+        // If supplier cache was refreshed within the last CHECKOUT_FRESH_SECS (5s), reuse it;
+        // otherwise pull live stock from supplier APIs before letting customer proceed to payment.
+        let now = Instant::now();
+        {
+            let guard = self.cache.read();
+            if let Some(ref entry) = *guard {
+                if now.saturating_duration_since(entry.fetched_at) < Duration::from_secs(CHECKOUT_FRESH_SECS) {
+                    return Ok(entry.products.get(key).cloned());
+                }
+            }
+        }
+
+        let catalog = self.fetch_and_merge().await?;
+        Ok(catalog.products.get(key).cloned())
+    }
+
+    fn mark_product_out_of_stock(&self, key: &str) {
+        let mut guard = self.cache.write();
+        if let Some(ref mut entry) = *guard {
+            if let Some(prod) = entry.products.get_mut(key) {
+                prod.stock = 0;
+            }
+        }
     }
 
     async fn refresh_catalog(&self) -> Result<(), ServiceError> {

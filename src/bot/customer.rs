@@ -204,7 +204,7 @@ pub async fn handle_product_select(
         return Ok(());
     }
 
-    let product_opt = catalog.get_product(&product_key).await?;
+    let product_opt = catalog.get_product_fresh(&product_key).await?;
 
     let (product, is_out_of_stock, effective_stock) = match product_opt {
         Some(p) => {
@@ -448,7 +448,7 @@ pub async fn handle_qty_select(
         return Ok(());
     }
 
-    let product_opt = catalog.get_product(&product_key).await?;
+    let product_opt = catalog.get_product_fresh(&product_key).await?;
 
     let (product, is_out_of_stock, effective_stock) = match product_opt {
         Some(p) => {
@@ -580,7 +580,7 @@ pub async fn handle_qty_select(
         (is_auto, needs_mail)
     });
 
-    let order = crate::db::OrderRecord {
+    let mut order = crate::db::OrderRecord {
         order_code: order_code.clone(),
         user_id,
         username: q.from.username.clone(),
@@ -599,6 +599,10 @@ pub async fn handle_qty_select(
         remaining_amount: total,
         ..Default::default()
     };
+
+    if let Some(ref msg) = q.message {
+        order.set_payment_message(msg.chat().id.0, msg.id().0);
+    }
 
     db.save_order(order, true);
 

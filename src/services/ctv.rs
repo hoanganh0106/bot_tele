@@ -231,7 +231,7 @@ impl CtvClient {
 
         if !buy_resp.success {
             let msg = buy_resp.error.unwrap_or_else(|| "CTV purchase failed".to_string());
-            if msg.to_lowercase().contains("out of stock") {
+            if super::hypervin::is_out_of_stock_message(&msg) {
                 return Err(SupplierError::OutOfStock {
                     service: "CTV",
                     product_key: product_key.to_string(),

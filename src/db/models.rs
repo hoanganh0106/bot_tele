@@ -270,6 +270,21 @@ impl Default for OrderRecord {
     }
 }
 
+impl OrderRecord {
+    /// Stores the Telegram chat_id and message_id displaying the active payment prompt / QR code.
+    pub fn set_payment_message(&mut self, chat_id: i64, message_id: i32) {
+        self.extra.insert("payment_chat_id".to_string(), serde_json::json!(chat_id));
+        self.extra.insert("payment_message_id".to_string(), serde_json::json!(message_id));
+    }
+
+    /// Retrieves the Telegram (chat_id, message_id) of the active payment prompt / QR code, if recorded.
+    pub fn payment_message(&self) -> Option<(i64, i32)> {
+        let chat_id = self.extra.get("payment_chat_id")?.as_i64()?;
+        let msg_id = self.extra.get("payment_message_id")?.as_i64()? as i32;
+        Some((chat_id, msg_id))
+    }
+}
+
 /// User account record stored in `users` map.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UserRecord {

@@ -94,6 +94,10 @@ pub trait SupplierClient: Send + Sync {
 pub trait CatalogService: Send + Sync {
     async fn get_catalog(&self) -> Result<HashMap<String, ProductItem>, ServiceError>;
     async fn get_product(&self, key: &str) -> Result<Option<ProductItem>, ServiceError>;
+    async fn get_product_fresh(&self, key: &str) -> Result<Option<ProductItem>, ServiceError> {
+        self.get_product(key).await
+    }
+    fn mark_product_out_of_stock(&self, _key: &str) {}
     async fn refresh_catalog(&self) -> Result<(), ServiceError>;
     async fn get_categories(&self) -> Result<HashMap<String, CategoryInfo>, ServiceError>;
     async fn get_hypervin_balance(&self) -> Result<Option<i64>, ServiceError>;
@@ -137,6 +141,12 @@ impl CatalogService for MockCatalogService {
 
     async fn get_product(&self, key: &str) -> Result<Option<ProductItem>, ServiceError> {
         Ok(self.catalog.read().get(key).cloned())
+    }
+
+    fn mark_product_out_of_stock(&self, key: &str) {
+        if let Some(prod) = self.catalog.write().get_mut(key) {
+            prod.stock = 0;
+        }
     }
 
     async fn refresh_catalog(&self) -> Result<(), ServiceError> {

@@ -92,7 +92,7 @@ async fn abort_pending_order_if_out_of_stock(
     ctx: &BotContext,
     order: &crate::db::OrderRecord,
 ) -> Result<bool, AppError> {
-    let product_opt = ctx.catalog.get_product(&order.product_key).await?;
+    let product_opt = ctx.catalog.get_product_fresh(&order.product_key).await?;
     let effective_stock = match product_opt {
         Some(ref p) => db.read_data(|d| {
             if let Some(inv) = d.custom_accounts_inventory.get(&order.product_key) {
@@ -226,10 +226,14 @@ pub async fn handle_pay_bank(
     };
     let transfer_content = format!("DH{}", suffix.to_uppercase());
 
+    let msg_coords = q.message.as_ref().map(|m| (m.chat().id.0, m.id().0));
     db.write_data(|d| {
         if let Some(o) = d.orders.get_mut(order_code) {
             o.payment_method = Some("bank".to_string());
             o.transfer_content = Some(transfer_content.clone());
+            if let Some((cid, mid)) = msg_coords {
+                o.set_payment_message(cid, mid);
+            }
         }
     }, true);
 
@@ -344,12 +348,16 @@ pub async fn handle_pay_crypto(
     }, true)?;
 
     let now_iso = Utc::now().to_rfc3339();
+    let msg_coords = q.message.as_ref().map(|m| (m.chat().id.0, m.id().0));
     db.write_data(|d| {
         if let Some(o) = d.orders.get_mut(order_code) {
             o.payment_method = Some("crypto".to_string());
             o.usdt_amount = Some(reserved_str.clone());
             o.usdt_network = Some(config.usdt_network.clone());
             o.crypto_created_at = Some(now_iso);
+            if let Some((cid, mid)) = msg_coords {
+                o.set_payment_message(cid, mid);
+            }
         }
     }, true);
 
@@ -522,9 +530,13 @@ pub async fn handle_pay_partial(
     };
     let transfer_content = format!("DH{}", suffix.to_uppercase());
 
+    let msg_coords = q.message.as_ref().map(|m| (m.chat().id.0, m.id().0));
     db.write_data(|d| {
         if let Some(o) = d.orders.get_mut(order_code) {
             o.transfer_content = Some(transfer_content.clone());
+            if let Some((cid, mid)) = msg_coords {
+                o.set_payment_message(cid, mid);
+            }
         }
     }, true);
 
@@ -1122,8 +1134,27 @@ async fn process_paid_order_locked(
             Ok(true)
         }
         Err(err) => {
+            let is_initial_failure = order.status != "failed";
+            let is_oos = matches!(err, crate::error::SupplierError::OutOfStock { .. })
+                || crate::services::hypervin::is_out_of_stock_message(&err.to_string());
+
+            if is_oos {
+                ctx.catalog.mark_product_out_of_stock(&order.product_key);
+                if let Ok(products) = ctx.catalog.get_catalog().await {
+                    let _ = revoke_pending_orders_if_out_of_stock(ctx, &products).await;
+                }
+                let catalog_clone = ctx.catalog.clone();
+                tokio::spawn(async move {
+                    let _ = catalog_clone.refresh_catalog().await;
+                });
+            }
+
             let err_msg = err.to_string();
-            let new_retry = order.retry_count + 1;
+            let new_retry = if is_initial_failure {
+                order.retry_count + 1
+            } else {
+                order.retry_count
+            };
 
             ctx.db.complete_order_payment(order_code, OrderUpdate {
                 status: Some("failed".to_string()),
@@ -1134,12 +1165,146 @@ async fn process_paid_order_locked(
                 ..Default::default()
             })?;
 
-            notify_admins_order_failed(ctx, order_code, &err_msg, payment_source).await;
-            notify_customer_order_error(ctx, order_code).await;
+            if is_initial_failure {
+                notify_admins_order_failed(ctx, order_code, &err_msg, payment_source).await;
+                notify_customer_order_error(ctx, order_code).await;
+            }
 
             Ok(false)
         }
     }
+}
+
+/// Proactively cancels any pending unpaid orders whose product stock dropped below `order.qty`,
+/// immediately wiping the QR code / payment instructions from the customer's Telegram chat.
+pub async fn revoke_pending_orders_if_out_of_stock(
+    ctx: &BotContext,
+    products: &std::collections::HashMap<String, crate::services::ProductItem>,
+) -> usize {
+    let pending_orders = ctx.db.get_orders_by_status("pending");
+    if pending_orders.is_empty() {
+        return 0;
+    }
+
+    let mut revoked_count = 0usize;
+    for order in pending_orders {
+        let effective_stock_opt = ctx.db.read_data(|d| {
+            if let Some(inv) = d.custom_accounts_inventory.get(&order.product_key) {
+                Some(inv.len() as i64)
+            } else if let Some(&s) = d.custom_stocks.get(&order.product_key) {
+                Some(s)
+            } else if let Some(p) = products.get(&order.product_key) {
+                Some(p.stock)
+            } else if d.custom_products.contains_key(&order.product_key) {
+                Some(0)
+            } else {
+                None
+            }
+        });
+
+        let Some(effective_stock) = effective_stock_opt else {
+            continue;
+        };
+
+        if effective_stock == -1 || effective_stock >= order.qty {
+            continue;
+        }
+
+        // Transition to "cancelled_timeout" so secondary indexes still match late in-flight bank/crypto transfers
+        let cancelled = match ctx.db.cancel_order_if_pending(&order.order_code, "cancelled_timeout") {
+            Ok(Some(o)) => o,
+            _ => continue,
+        };
+
+        let _ = ctx.db.complete_order_payment(&order.order_code, OrderUpdate {
+            error: Some("Auto-cancelled before payment: product went out of stock".to_string()),
+            ..Default::default()
+        });
+        ctx.db.write_data(|d| d.crypto_reservations.retain(|_, code| code != &order.order_code), true);
+        let (refunded, new_bal) = ctx.db.refund_order_wallet_if_needed(&order.order_code);
+
+        let lang = i18n::get_user_lang(order.user_id, |uid| ctx.db.get_user(uid).map(|u| u.lang));
+        let mut msg_text = if effective_stock <= 0 {
+            if lang.as_str() == "en" {
+                format!(
+                    "❌ <b>{}</b> (x<b>{}</b>) just went out of stock!\n\n\
+                    📋 Order <code>#{}</code> has been <b>automatically cancelled</b>.\n\
+                    🚫 <b>Please DO NOT transfer money for this order!</b>",
+                    escape_html(&order.product_name),
+                    order.qty,
+                    order.order_code
+                )
+            } else {
+                format!(
+                    "❌ <b>Sản phẩm vừa hết hàng!</b>\n\n\
+                    📦 Sản phẩm: <b>{}</b> x<b>{}</b>\n\
+                    📋 Đơn hàng <code>#{}</code> đã được <b>hủy tự động</b> để tránh thanh toán nhầm.\n\
+                    🚫 <b>Vui lòng KHÔNG chuyển khoản cho mã đơn này!</b>",
+                    escape_html(&order.product_name),
+                    order.qty,
+                    order.order_code
+                )
+            }
+        } else if lang.as_str() == "en" {
+            format!(
+                "❌ <b>{}</b> only has <b>{}</b> left in stock (requested x<b>{}</b>)!\n\n\
+                📋 Order <code>#{}</code> has been <b>automatically cancelled</b>.\n\
+                🚫 <b>Please DO NOT transfer money for this order!</b>",
+                escape_html(&order.product_name),
+                effective_stock,
+                order.qty,
+                order.order_code
+            )
+        } else {
+            format!(
+                "❌ <b>Không đủ số lượng tồn kho!</b>\n\n\
+                📦 Sản phẩm: <b>{}</b> chỉ còn <b>{}</b> trong kho (bạn chọn x<b>{}</b>).\n\
+                📋 Đơn hàng <code>#{}</code> đã được <b>hủy tự động</b>.\n\
+                🚫 <b>Vui lòng KHÔNG chuyển khoản cho mã đơn này!</b>",
+                escape_html(&order.product_name),
+                effective_stock,
+                order.qty,
+                order.order_code
+            )
+        };
+
+        if refunded > 0 {
+            msg_text.push_str(&format!(
+                "\n\n💰 Đã hoàn lại <b>+{}</b> vào ví của bạn (Số dư: <b>{}</b>).",
+                format_money(refunded),
+                format_money(new_bal)
+            ));
+        }
+
+        let kb = InlineKeyboardMarkup::new(vec![vec![
+            InlineKeyboardButton::callback("🏠 Trang chủ", "back_start"),
+        ]]);
+
+        let mut edited = false;
+        if let Some((chat_id, message_id)) = cancelled.payment_message() {
+            if ctx.bot
+                .edit_message_text(ChatId(chat_id), teloxide::types::MessageId(message_id), msg_text.clone())
+                .parse_mode(ParseMode::Html)
+                .reply_markup(kb.clone())
+                .await
+                .is_ok()
+            {
+                edited = true;
+            }
+        }
+
+        if !edited {
+            let _ = ctx.bot
+                .send_message(ChatId(order.user_id), msg_text)
+                .parse_mode(ParseMode::Html)
+                .reply_markup(kb)
+                .await;
+        }
+
+        revoked_count += 1;
+    }
+
+    revoked_count
 }
 
 pub async fn notify_all_admins_with_kb(
@@ -1161,6 +1326,47 @@ pub async fn notify_all_admins(ctx: &BotContext, text: &str) {
     notify_all_admins_with_kb(ctx, text, None).await;
 }
 
+pub fn build_admin_order_failed_text(
+    order_code: &str,
+    order: Option<&crate::db::OrderRecord>,
+    err_msg: &str,
+    source: &str,
+) -> String {
+    let user_link = order
+        .map(|o| format_user_link_html(o.username.as_deref(), o.user_id))
+        .unwrap_or_else(|| "Khách".to_string());
+    let prod_name = order
+        .map(|o| escape_html(&o.product_name))
+        .unwrap_or_else(|| "Sản phẩm".to_string());
+    let qty = order.map(|o| o.qty).unwrap_or(1);
+    let paid_total = order
+        .map(|o| o.original_total.unwrap_or(o.total))
+        .unwrap_or(0);
+    let email_line = order
+        .filter(|o| !o.emails.is_empty())
+        .map(|o| format!("\n📧 Email: <code>{}</code>", escape_html(&o.emails.join(", "))))
+        .unwrap_or_default();
+
+    format!(
+        "🚨 <b>[LỖI GIAO HÀNG ĐỐI TÁC]</b>\n\
+        ━━━━━━━━━━━━━━━━━━\n\
+        📋 Mã: <code>#{}</code> | Khách: {}\n\
+        📦 Sản phẩm: <b>{}</b> x<b>{}</b>{}\n\
+        💰 Đã thu: <b>{}</b> | 💳 Nguồn: {}\n\
+        ⚠️ <b>Nguyên nhân lỗi:</b>\n\
+        <code>{}</code>\n\n\
+        ⚡ <i>Vui lòng kiểm tra và giao tay hoặc hoàn ví cho khách!</i>",
+        escape_html(order_code),
+        user_link,
+        prod_name,
+        qty,
+        email_line,
+        format_money(paid_total),
+        escape_html(source),
+        escape_html(err_msg),
+    )
+}
+
 pub async fn notify_admins_order_failed(
     ctx: &BotContext,
     order_code: &str,
@@ -1168,26 +1374,10 @@ pub async fn notify_admins_order_failed(
     source: &str,
 ) {
     let order = ctx.db.get_order(order_code);
-    let user_link = order.as_ref().map(|o| format_user_link_html(o.username.as_deref(), o.user_id)).unwrap_or_else(|| "Khách".to_string());
-    let prod_name = order.as_ref().map(|o| o.product_name.as_str()).unwrap_or("Sản phẩm");
     let user_id = order.as_ref().map(|o| o.user_id).unwrap_or(0);
     let username = order.as_ref().and_then(|o| o.username.clone());
 
-    let text = format!(
-        "🚨 <b>[LỖI GIAO HÀNG ĐỐI TÁC]</b>\n\
-        ━━━━━━━━━━━━━━━━━━\n\
-        📋 Mã: <code>#{}</code> | Khách: {}\n\
-        📦 Sản phẩm: {}\n\
-        💳 Nguồn thanh toán: {}\n\
-        ⚠️ <b>Nguyên nhân lỗi:</b>\n\
-        <code>{}</code>\n\n\
-        ⚡ <i>Vui lòng vào trang Admin kiểm tra và xử lý hoặc hoàn tiền cho khách!</i>",
-        order_code,
-        user_link,
-        prod_name,
-        source,
-        escape_html(err_msg),
-    );
+    let text = build_admin_order_failed_text(order_code, order.as_ref(), err_msg, source);
 
     let mut action_row = Vec::new();
     if user_id > 0 {
@@ -1220,16 +1410,22 @@ pub async fn notify_admins_order_failed(
 
 pub async fn notify_customer_order_error(ctx: &BotContext, order_code: &str) {
     if let Some(order) = ctx.db.get_order(order_code) {
+        let paid_total = order.original_total.unwrap_or(order.total);
         let text = format!(
-            "⚠️ Đơn **#{}** gặp sự cố trong quá trình giao hàng tự động.\n\n\
-            ✅ Thanh toán của bạn **đã được ghi nhận** — Admin đã nhận thông báo và sẽ liên hệ giao hàng hoặc hoàn tiền cho bạn sớm nhất.\n\n\
-            🚫 **Vui lòng KHÔNG chuyển khoản lại lần nữa.**\n\
-            💬 Cần hỗ trợ nhanh, hãy nhắn tin admin kèm mã đơn `#{}`.",
-            order_code,
-            order_code,
+            "⚠️ <b>Đơn hàng <code>#{}</code> gặp sự cố khi giao tự động!</b>\n\n\
+            📦 Sản phẩm: <b>{}</b> x<b>{}</b>\n\
+            💰 Đã thanh toán: <b>{}</b>\n\n\
+            ✅ Thanh toán của bạn <b>đã được ghi nhận</b> — Admin đã nhận thông báo và sẽ liên hệ giao hàng hoặc hoàn tiền cho bạn sớm nhất.\n\n\
+            🚫 <b>Vui lòng KHÔNG chuyển khoản lại lần nữa.</b>\n\
+            💬 Cần hỗ trợ nhanh, hãy nhắn tin Admin kèm mã đơn <code>#{}</code>.",
+            escape_html(order_code),
+            escape_html(&order.product_name),
+            order.qty,
+            format_money(paid_total),
+            escape_html(order_code),
         );
         let _ = ctx.bot.send_message(ChatId(order.user_id), text)
-            .parse_mode(ParseMode::Markdown)
+            .parse_mode(ParseMode::Html)
             .await;
     }
 }
@@ -1247,4 +1443,62 @@ fn urlencoding_simple(s: &str) -> String {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::OrderRecord;
+
+    #[test]
+    fn failed_order_admin_text_includes_quantity_total_and_emails() {
+        let order = OrderRecord {
+            order_code: "BOT1793885320000009".to_string(),
+            user_id: 1742089888,
+            username: Some("iamqh98".to_string()),
+            product_key: "hv_gmail_random_ip_2020".to_string(),
+            product_name: "Gmail IP US NEW log all thiết bị".to_string(),
+            qty: 2,
+            total: 50_000,
+            original_total: Some(80_000),
+            emails: vec!["buyer@example.com".to_string()],
+            ..Default::default()
+        };
+
+        let rendered = build_admin_order_failed_text(
+            &order.order_code,
+            Some(&order),
+            "Out of stock on supplier 'HYPERVIN' for product 'hv_gmail_random_ip_2020'",
+            "sepay",
+        );
+
+        assert!(rendered.contains("Gmail IP US NEW log all thiết bị</b> x<b>2</b>"));
+        assert!(rendered.contains("80,000đ") || rendered.contains("80.000đ"));
+        assert!(rendered.contains("buyer@example.com"));
+        assert!(rendered.contains("sepay"));
+    }
+
+    #[test]
+    fn out_of_stock_error_messages_are_detected() {
+        assert!(crate::services::hypervin::is_out_of_stock_message(
+            "Product source is temporarily unavailable. Try again later."
+        ));
+        assert!(crate::services::hypervin::is_out_of_stock_message(
+            "Insufficient stock for requested quantity"
+        ));
+        assert!(crate::services::hypervin::is_out_of_stock_message(
+            "Sản phẩm đã hết hàng"
+        ));
+        assert!(!crate::services::hypervin::is_out_of_stock_message(
+            "email is required for invite products"
+        ));
+    }
+
+    #[test]
+    fn order_payment_message_roundtrips_cleanly() {
+        let mut order = OrderRecord::default();
+        assert_eq!(order.payment_message(), None);
+        order.set_payment_message(1742089888, 4210);
+        assert_eq!(order.payment_message(), Some((1742089888, 4210)));
+    }
 }

@@ -17,7 +17,7 @@ use tokio::sync::broadcast;
 use tracing::{debug, info, warn};
 
 use crate::bot::helpers::{escape_html, format_money, GLOBAL_SHORT_KEYS};
-use crate::bot::payment::notify_all_admins;
+use crate::bot::payment::{notify_all_admins, revoke_pending_orders_if_out_of_stock};
 use crate::bot::BotContext;
 use crate::db::DbStore;
 use crate::error::AppError;
@@ -476,11 +476,17 @@ pub async fn refresh_products_and_check_balance(
         }
     }
 
-    // 2. Check Newly Added & Restocked API Products
+    // 2. Check Newly Added & Restocked API Products, and proactively revoke pending orders if stock depleted
     let new_api_products = if let Ok(products) = ctx.catalog.get_catalog().await {
         for (key, p) in &products {
             GLOBAL_SHORT_KEYS.register_meta(key, &p.name, &p.category, &p.category_icon);
         }
+
+        let revoked = revoke_pending_orders_if_out_of_stock(ctx, &products).await;
+        if revoked > 0 {
+            info!("🛑 Auto-revoked {} pending order(s) whose product went out of stock before payment", revoked);
+        }
+
         let is_init = STOCK_TRACKER_INITIALIZED.load(Ordering::SeqCst);
 
         let transitions = {
